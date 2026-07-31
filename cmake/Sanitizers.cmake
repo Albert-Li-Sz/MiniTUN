@@ -1,0 +1,35 @@
+if(MINITUN_ENABLE_TSAN AND (MINITUN_ENABLE_ASAN OR MINITUN_ENABLE_UBSAN))
+    message(FATAL_ERROR "ThreadSanitizer must be enabled in its own build")
+endif()
+
+function(minitun_apply_sanitizers target)
+    if(MSVC)
+        if(MINITUN_ENABLE_ASAN)
+            target_compile_options("${target}" PRIVATE /fsanitize=address)
+            target_link_options("${target}" PRIVATE /fsanitize=address)
+        elseif(MINITUN_ENABLE_UBSAN OR MINITUN_ENABLE_TSAN)
+            message(FATAL_ERROR "The selected sanitizer is not supported by this MSVC setup")
+        endif()
+        return()
+    endif()
+
+    set(sanitizers "")
+    if(MINITUN_ENABLE_ASAN)
+        list(APPEND sanitizers "address")
+    endif()
+    if(MINITUN_ENABLE_UBSAN)
+        list(APPEND sanitizers "undefined")
+    endif()
+    if(MINITUN_ENABLE_TSAN)
+        list(APPEND sanitizers "thread")
+    endif()
+
+    if(sanitizers)
+        list(JOIN sanitizers "," sanitizer_flags)
+        target_compile_options("${target}" PRIVATE
+            "-fsanitize=${sanitizer_flags}"
+            -fno-omit-frame-pointer
+        )
+        target_link_options("${target}" PRIVATE "-fsanitize=${sanitizer_flags}")
+    endif()
+endfunction()

@@ -1,0 +1,142 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Ubuntu 22.04 - GCC - Debug
+            os: ubuntu-22.04
+            build_type: Debug
+            cc: gcc
+            cxx: g++
+          - name: Ubuntu 24.04 - GCC - Release
+            os: ubuntu-24.04
+            build_type: Release
+            cc: gcc
+            cxx: g++
+          - name: Ubuntu 24.04 - Clang - Debug
+            os: ubuntu-24.04
+            build_type: Debug
+            cc: clang
+            cxx: clang++
+
+    env:
+      BUILD_DIR: build
+      CI_LOG_DIR: ci-logs
+      CTEST_OUTPUT_ON_FAILURE: "1"
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes \
+            cmake \
+            ninja-build \
+            g++ \
+            clang \
+            libssl-dev \
+            libsqlite3-dev \
+            libasio-dev \
+            libboost-system-dev \
+            libspdlog-dev \
+            nlohmann-json3-dev \
+            libcli11-dev \
+            libgtest-dev \
+            pkg-config
+
+      - name: Configure
+        run: |
+          mkdir -p "${CI_LOG_DIR}"
+          cmake --list-presets=all
+          cmake \
+            -S . \
+            -B "${BUILD_DIR}" \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE="${{ matrix.build_type }}" \
+            -DCMAKE_CXX_FLAGS="-Wall -Wextra -Wpedantic -Wconversion -Wshadow" \
+            -DMINITUN_USE_SYSTEM_DEPS=ON \
+            -DMINITUN_BUILD_TESTS=ON \
+            2>&1 | tee "${CI_LOG_DIR}/configure.log"
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+
+      - name: Build
+        run: |
+          cmake --build "${BUILD_DIR}" --parallel 2 \
+            2>&1 | tee "${CI_LOG_DIR}/build.log"
+
+      - name: Run CTest
+        run: |
+          ctest \
+            --test-dir "${BUILD_DIR}" \
+            --build-config "${{ matrix.build_type }}" \
+            --output-on-failure \
+            --no-tests=error \
+            2>&1 | tee "${CI_LOG_DIR}/ctest.log"
+
+      - name: Run CLI smoke tests
+        run: |
+          "${BUILD_DIR}/minitun" version \
+            2>&1 | tee "${CI_LOG_DIR}/smoke.log"
+          "${BUILD_DIR}/minitund" --help \
+            2>&1 | tee --append "${CI_LOG_DIR}/smoke.log"
+          "${BUILD_DIR}/minitun-server" --help \
+            2>&1 | tee --append "${CI_LOG_DIR}/smoke.log"
+
+      - name: Upload tested build
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: minitun-${{ matrix.os }}-${{ matrix.cxx }}-${{ matrix.build_type }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            ci-logs/
+            build/minitun
+            build/minitund
+            build/minitun-server
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-failure-${{ matrix.os }}-${{ matrix.cxx }}-${{ matrix.build_type }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            ci-logs/
+            build/Testing/Temporary/
+            build/CMakeFiles/CMakeConfigureLog.yaml
+            build/CMakeFiles/CMakeError.log
+            build/CMakeFiles/CMakeOutput.log
+            build/CMakeCache.txt
+            build/.ninja_log

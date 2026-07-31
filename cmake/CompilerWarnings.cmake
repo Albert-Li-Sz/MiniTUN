@@ -1,0 +1,11 @@
+add_library(minitun_project_warnings INTERFACE)
+
+target_compile_options(minitun_project_warnings
+    INTERFACE
+        "$<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall>"
+        "$<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wextra>"
+        "$<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wpedantic>"
+        "$<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wconversion>"
+        "$<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wshadow>"
+        "$<$<CXX_COMPILER_ID:MSVC>:/W4>"
+)
