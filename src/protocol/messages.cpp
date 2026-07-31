@@ -28,6 +28,46 @@ namespace {
     return common::Result<void>::success();
 }
 
+[[nodiscard]] common::Result<void> validate_tunnel_id(const std::string_view value) {
+    const auto parsed = common::Id::parse(value, common::IdKind::tunnel);
+    if (!parsed) {
+        return common::Result<void>::failure(common::ErrorCode::protocol_error,
+                                             "remote message contains an invalid tunnel ID");
+    }
+    return common::Result<void>::success();
+}
+
+[[nodiscard]] common::Result<std::vector<std::uint8_t>>
+encode_tunnel_id(const std::string_view tunnel_id) {
+    auto valid = validate_tunnel_id(tunnel_id);
+    if (!valid) {
+        return common::Result<std::vector<std::uint8_t>>::failure(valid.error());
+    }
+    PayloadWriter writer;
+    if (auto written = writer.write_string(tunnel_id); !written) {
+        return common::Result<std::vector<std::uint8_t>>::failure(written.error());
+    }
+    return std::move(writer).finish();
+}
+
+[[nodiscard]] common::Result<std::string>
+decode_tunnel_id(const std::vector<std::uint8_t>& payload) {
+    PayloadReader reader{payload};
+    auto tunnel_id = reader.read_string(kMaxProtocolIdentifierBytes);
+    if (!tunnel_id) {
+        return common::Result<std::string>::failure(tunnel_id.error());
+    }
+    auto valid = validate_tunnel_id(*tunnel_id);
+    if (!valid) {
+        return common::Result<std::string>::failure(valid.error());
+    }
+    auto ended = reader.require_end();
+    if (!ended) {
+        return common::Result<std::string>::failure(ended.error());
+    }
+    return tunnel_id;
+}
+
 template <std::size_t Size>
 [[nodiscard]] common::Result<std::array<std::uint8_t, Size>>
 read_fixed_bytes(PayloadReader& reader) {
@@ -53,12 +93,10 @@ read_fixed_bytes(PayloadReader& reader) {
     }
     if (message.heartbeat_interval_milliseconds < 1'000U ||
         message.heartbeat_interval_milliseconds > 60'000U) {
-        return common::Result<void>::failure(
-            common::ErrorCode::protocol_error,
-            "heartbeat interval is outside the protocol limits");
+        return common::Result<void>::failure(common::ErrorCode::protocol_error,
+                                             "heartbeat interval is outside the protocol limits");
     }
-    if (message.min_idle_workers > message.max_idle_workers ||
-        message.max_idle_workers > 128U) {
+    if (message.min_idle_workers > message.max_idle_workers || message.max_idle_workers > 128U) {
         return common::Result<void>::failure(common::ErrorCode::protocol_error,
                                              "worker limits are inconsistent");
     }
@@ -97,8 +135,7 @@ common::Result<HelloMessage> decode_hello(const std::vector<std::uint8_t>& paylo
     return HelloMessage{std::move(*client_id)};
 }
 
-common::Result<std::vector<std::uint8_t>>
-encode_hello_ack(const HelloAckMessage& message) {
+common::Result<std::vector<std::uint8_t>> encode_hello_ack(const HelloAckMessage& message) {
     auto valid = validate_server_id(message.server_id);
     if (!valid) {
         return common::Result<std::vector<std::uint8_t>>::failure(valid.error());
@@ -117,8 +154,7 @@ encode_hello_ack(const HelloAckMessage& message) {
     return std::move(writer).finish();
 }
 
-common::Result<HelloAckMessage>
-decode_hello_ack(const std::vector<std::uint8_t>& payload) {
+common::Result<HelloAckMessage> decode_hello_ack(const std::vector<std::uint8_t>& payload) {
     PayloadReader reader{payload};
     auto server_id = reader.read_string(kMaxProtocolIdentifierBytes);
     if (!server_id) {
@@ -217,16 +253,15 @@ common::Result<std::vector<std::uint8_t>> encode_auth_ok(const AuthOkMessage& me
     return std::move(writer).finish();
 }
 
-common::Result<AuthOkMessage>
-decode_auth_ok(const std::vector<std::uint8_t>& payload) {
+common::Result<AuthOkMessage> decode_auth_ok(const std::vector<std::uint8_t>& payload) {
     PayloadReader reader{payload};
     auto generation = reader.read_u64();
     auto heartbeat = reader.read_u32();
     auto minimum_workers = reader.read_u16();
     auto maximum_workers = reader.read_u16();
     if (!generation || !heartbeat || !minimum_workers || !maximum_workers) {
-        return common::Result<AuthOkMessage>::failure(
-            common::ErrorCode::protocol_error, "AUTH_OK payload is truncated");
+        return common::Result<AuthOkMessage>::failure(common::ErrorCode::protocol_error,
+                                                      "AUTH_OK payload is truncated");
     }
     auto ended = reader.require_end();
     if (!ended) {
@@ -240,8 +275,7 @@ decode_auth_ok(const std::vector<std::uint8_t>& payload) {
     return message;
 }
 
-common::Result<std::vector<std::uint8_t>>
-encode_auth_error(const AuthErrorMessage& message) {
+common::Result<std::vector<std::uint8_t>> encode_auth_error(const AuthErrorMessage& message) {
     if (message.code == common::ErrorCode::ok) {
         return common::Result<std::vector<std::uint8_t>>::failure(
             common::ErrorCode::invalid_argument, "AUTH_ERROR must contain a failure code");
@@ -254,8 +288,7 @@ encode_auth_error(const AuthErrorMessage& message) {
     return std::move(writer).finish();
 }
 
-common::Result<AuthErrorMessage>
-decode_auth_error(const std::vector<std::uint8_t>& payload) {
+common::Result<AuthErrorMessage> decode_auth_error(const std::vector<std::uint8_t>& payload) {
     PayloadReader reader{payload};
     auto code_text = reader.read_string(64U);
     if (!code_text) {
@@ -273,8 +306,7 @@ decode_auth_error(const std::vector<std::uint8_t>& payload) {
     return AuthErrorMessage{*code};
 }
 
-common::Result<std::vector<std::uint8_t>>
-encode_heartbeat(const HeartbeatMessage& message) {
+common::Result<std::vector<std::uint8_t>> encode_heartbeat(const HeartbeatMessage& message) {
     PayloadWriter writer;
     auto written = writer.write_u64(message.sequence);
     if (!written) {
@@ -283,8 +315,7 @@ encode_heartbeat(const HeartbeatMessage& message) {
     return std::move(writer).finish();
 }
 
-common::Result<HeartbeatMessage>
-decode_heartbeat(const std::vector<std::uint8_t>& payload) {
+common::Result<HeartbeatMessage> decode_heartbeat(const std::vector<std::uint8_t>& payload) {
     PayloadReader reader{payload};
     auto sequence = reader.read_u64();
     if (!sequence) {
@@ -295,6 +326,135 @@ decode_heartbeat(const std::vector<std::uint8_t>& payload) {
         return common::Result<HeartbeatMessage>::failure(ended.error());
     }
     return HeartbeatMessage{*sequence};
+}
+
+common::Result<std::vector<std::uint8_t>>
+encode_register_tunnel(const RegisterTunnelMessage& message) {
+    auto valid = validate_tunnel_id(message.tunnel_id);
+    if (!valid) {
+        return common::Result<std::vector<std::uint8_t>>::failure(valid.error());
+    }
+    if (message.bind_host.empty() || message.bind_host.size() > kMaxTunnelBindHostBytes ||
+        message.bind_port == 0U) {
+        return common::Result<std::vector<std::uint8_t>>::failure(
+            common::ErrorCode::invalid_argument, "remote tunnel binding is invalid");
+    }
+    PayloadWriter writer;
+    if (auto written = writer.write_string(message.tunnel_id); !written) {
+        return common::Result<std::vector<std::uint8_t>>::failure(written.error());
+    }
+    if (auto written = writer.write_string(message.bind_host); !written) {
+        return common::Result<std::vector<std::uint8_t>>::failure(written.error());
+    }
+    if (auto written = writer.write_u16(message.bind_port); !written) {
+        return common::Result<std::vector<std::uint8_t>>::failure(written.error());
+    }
+    return std::move(writer).finish();
+}
+
+common::Result<RegisterTunnelMessage>
+decode_register_tunnel(const std::vector<std::uint8_t>& payload) {
+    PayloadReader reader{payload};
+    auto tunnel_id = reader.read_string(kMaxProtocolIdentifierBytes);
+    auto bind_host = reader.read_string(kMaxTunnelBindHostBytes);
+    auto bind_port = reader.read_u16();
+    if (!tunnel_id || !bind_host || !bind_port) {
+        return common::Result<RegisterTunnelMessage>::failure(
+            common::ErrorCode::protocol_error, "REGISTER_TUNNEL payload is truncated");
+    }
+    auto valid = validate_tunnel_id(*tunnel_id);
+    if (!valid) {
+        return common::Result<RegisterTunnelMessage>::failure(valid.error());
+    }
+    if (bind_host->empty() || *bind_port == 0U) {
+        return common::Result<RegisterTunnelMessage>::failure(common::ErrorCode::protocol_error,
+                                                              "REGISTER_TUNNEL binding is invalid");
+    }
+    auto ended = reader.require_end();
+    if (!ended) {
+        return common::Result<RegisterTunnelMessage>::failure(ended.error());
+    }
+    return RegisterTunnelMessage{std::move(*tunnel_id), std::move(*bind_host), *bind_port};
+}
+
+common::Result<std::vector<std::uint8_t>>
+encode_register_tunnel_ok(const RegisterTunnelOkMessage& message) {
+    return encode_tunnel_id(message.tunnel_id);
+}
+
+common::Result<RegisterTunnelOkMessage>
+decode_register_tunnel_ok(const std::vector<std::uint8_t>& payload) {
+    auto tunnel_id = decode_tunnel_id(payload);
+    if (!tunnel_id) {
+        return common::Result<RegisterTunnelOkMessage>::failure(tunnel_id.error());
+    }
+    return RegisterTunnelOkMessage{std::move(*tunnel_id)};
+}
+
+common::Result<std::vector<std::uint8_t>>
+encode_register_tunnel_error(const RegisterTunnelErrorMessage& message) {
+    auto valid = validate_tunnel_id(message.tunnel_id);
+    if (!valid) {
+        return common::Result<std::vector<std::uint8_t>>::failure(valid.error());
+    }
+    if (message.code == common::ErrorCode::ok) {
+        return common::Result<std::vector<std::uint8_t>>::failure(
+            common::ErrorCode::invalid_argument, "REGISTER_TUNNEL_ERROR requires a failure code");
+    }
+    PayloadWriter writer;
+    if (auto written = writer.write_string(message.tunnel_id); !written) {
+        return common::Result<std::vector<std::uint8_t>>::failure(written.error());
+    }
+    if (auto written = writer.write_string(common::to_string(message.code)); !written) {
+        return common::Result<std::vector<std::uint8_t>>::failure(written.error());
+    }
+    return std::move(writer).finish();
+}
+
+common::Result<RegisterTunnelErrorMessage>
+decode_register_tunnel_error(const std::vector<std::uint8_t>& payload) {
+    PayloadReader reader{payload};
+    auto tunnel_id = reader.read_string(kMaxProtocolIdentifierBytes);
+    auto code_text = reader.read_string(64U);
+    if (!tunnel_id || !code_text) {
+        return common::Result<RegisterTunnelErrorMessage>::failure(
+            common::ErrorCode::protocol_error, "REGISTER_TUNNEL_ERROR payload is truncated");
+    }
+    auto valid = validate_tunnel_id(*tunnel_id);
+    const auto code = common::error_code_from_string(*code_text);
+    if (!valid || !code.has_value() || *code == common::ErrorCode::ok) {
+        return common::Result<RegisterTunnelErrorMessage>::failure(
+            common::ErrorCode::protocol_error, "REGISTER_TUNNEL_ERROR payload is invalid");
+    }
+    auto ended = reader.require_end();
+    if (!ended) {
+        return common::Result<RegisterTunnelErrorMessage>::failure(ended.error());
+    }
+    return RegisterTunnelErrorMessage{std::move(*tunnel_id), *code};
+}
+
+common::Result<std::vector<std::uint8_t>>
+encode_unregister_tunnel(const UnregisterTunnelMessage& message) {
+    return encode_tunnel_id(message.tunnel_id);
+}
+
+common::Result<UnregisterTunnelMessage>
+decode_unregister_tunnel(const std::vector<std::uint8_t>& payload) {
+    auto tunnel_id = decode_tunnel_id(payload);
+    if (!tunnel_id) {
+        return common::Result<UnregisterTunnelMessage>::failure(tunnel_id.error());
+    }
+    return UnregisterTunnelMessage{std::move(*tunnel_id)};
+}
+
+common::Result<std::vector<std::uint8_t>>
+encode_unregister_tunnel_ok(const UnregisterTunnelOkMessage& message) {
+    return encode_tunnel_id(message.tunnel_id);
+}
+
+common::Result<UnregisterTunnelOkMessage>
+decode_unregister_tunnel_ok(const std::vector<std::uint8_t>& payload) {
+    return decode_unregister_tunnel(payload);
 }
 
 } // namespace minitun::protocol

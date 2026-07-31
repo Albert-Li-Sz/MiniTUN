@@ -25,5 +25,11 @@ must not place credential files in shared directories.
 Remote control transport requires TLS 1.2 or newer, hostname verification, HMAC-SHA256
 challenge authentication, bounded nonce replay protection, clock-skew validation,
 failure throttling, fresh session generations, and heartbeat deadlines. Each public
-server has an isolated daemon session and reconnect controller. Port authorization,
-worker connections, and public TCP relay are not implemented until later stages.
+server has an isolated daemon session and reconnect controller. Worker connections and
+public TCP relay are not implemented until later stages.
+
+Stage 8 adds numeric-only public bind addresses, a required finite `--allow-ports`
+policy, per-client registered-tunnel limits, generation-scoped listener ownership, and
+stable `permission_denied`, `resource_exhausted`, and `remote_port_in_use` failures.
+Local target hosts and ports never cross the control protocol. Accepted public sockets
+are closed until the bounded worker and relay stages are enabled.

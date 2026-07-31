@@ -206,3 +206,20 @@ work. It supports a platform trust store or explicit `--tls-ca`, hostname verifi
 and SNI by default, and fixed `--io-threads` bounded to 1..16. A development-only
 `--insecure-skip-verify` switch emits a prominent warning. Tunnel registration, worker
 pools, and relay remain the next data-plane stages.
+
+## Stage-8 tunnel reconciliation
+
+Each online client session compares persisted tunnel desired state with its in-memory
+registered set during heartbeat processing. Missing active tunnels transition through
+`registering` to `active`; server policy or bind failures transition only that tunnel
+to `failed` with a stable error code and are retried on later reconciliation. Removed
+or disabled tunnels are unregistered idempotently. A disconnected session clears its
+runtime set and changes active tunnels back to `pending`, allowing a fresh generation
+to recreate every listener after server or daemon restart.
+
+The public server owns a `TunnelRegistry` on its Asio strand. A listener key contains
+the authenticated `client_id` and `tunnel_id`, while ownership also records the current
+session generation. Numeric address parsing, `--allow-ports`, per-client counts, and OS
+bind errors are checked before acknowledgment. Stage 8 accepts public TCP connections
+only to prove listener ownership and immediately closes them; worker assignment begins
+in stage 9.

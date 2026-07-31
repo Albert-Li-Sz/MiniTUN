@@ -53,5 +53,13 @@ All notable changes to MiniTun will be documented here.
   an explicitly warned development-only TLS verification bypass.
 - Dual-server integration coverage for failure isolation, server restart recovery,
   daemon restart recovery, and stable identity reuse.
+- Bounded REGISTER/UNREGISTER tunnel payload codecs with correlated success and stable
+  failure responses.
+- Server-side public listener registry with numeric bind validation, explicit port
+  allowlists, per-client tunnel limits, idempotent removal, and port-conflict mapping.
+- Daemon tunnel reconciliation that persists `registering`, `active`, `failed`,
+  `pending`, and `removing` transitions and restores listeners after reconnect.
+- Registration integration coverage for policy rejection, port conflicts and recovery,
+  listener release, and daemon/server restart restoration.
 - `minitun`, `minitund`, and `minitun-server` stage-0 executables.
 - Unit-test and GitHub Actions CI foundations.

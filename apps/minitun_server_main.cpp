@@ -72,11 +72,9 @@ int run_server(const minitun::server::ServerOptions& options,
         return kInternalErrorExitCode;
     }
 
-    minitun::common::log_info(
-        "TLS server started",
-        {.component = "server",
-         .server_id = (*server)->server_id(),
-         .remote_endpoint = options.listen_endpoint});
+    minitun::common::log_info("TLS server started", {.component = "server",
+                                                     .server_id = (*server)->server_id(),
+                                                     .remote_endpoint = options.listen_endpoint});
 
     asio::signal_set signals{io_context, SIGINT, SIGTERM};
     signals.async_wait([&server, &io_context](const asio::error_code& error, int) {
@@ -135,8 +133,15 @@ int main(int argc, char** argv) {
     app.add_option("--token-file", options.token_file_path, "Private authentication Token file")
         ->required()
         ->check(CLI::ExistingFile);
+    app.add_option("--allow-ports", options.allowed_ports,
+                   "Allowed public tunnel port or inclusive range")
+        ->capture_default_str();
     app.add_option("--max-clients", options.max_clients, "Maximum authenticated clients")
         ->check(CLI::Range(1U, 100'000U))
+        ->capture_default_str();
+    app.add_option("--max-tunnels-per-client", options.max_tunnels_per_client,
+                   "Maximum registered tunnels per authenticated client")
+        ->check(CLI::Range(1U, 4'096U))
         ->capture_default_str();
 
     int handshake_timeout_seconds = static_cast<int>(options.handshake_timeout.count());

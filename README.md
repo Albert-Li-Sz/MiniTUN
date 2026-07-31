@@ -3,7 +3,7 @@
 MiniTun is an independently implemented TCP reverse-tunnelling system for Linux. It
 uses C++20 and is intentionally not compatible with the FRP protocol.
 
-The repository is currently at **development stage 7**. The local control plane is
+The repository is currently at **development stage 8**. The local control plane is
 operational: the stateless `minitun` CLI talks to `minitund` over a protected Unix
 socket, and the daemon persists server and tunnel intent in SQLite. It supports all
 `server`, `tun`, `status`, and `daemon status` commands, structured JSON inspection,
@@ -16,6 +16,9 @@ heartbeat timeouts, replay protection, and authentication rate limiting. `minitu
 now persists a stable client identity and runs one strand-isolated TLS control session,
 heartbeat, and exponential reconnect controller per configured server. A failed or
 restarting server does not interrupt the daemon's other online server sessions.
+Active tunnel intent is now reconciled over those sessions into allowlisted public TCP
+listeners. Registration failures remain isolated to one tunnel, and listeners are
+restored after either endpoint restarts and released after tunnel removal.
 
 Authentication material is stored separately in `/var/lib/minitun/credentials.db`,
 whose file mode is enforced as `0600`; Tokens are never stored in `state.db`, returned
@@ -23,8 +26,9 @@ by IPC, or printed by the CLI. `server login` stores a Token and wakes reconcili
 the daemon then authenticates the corresponding remote session without exposing the
 secret.
 
-This is not yet a deployable tunnel service. Tunnel registration, worker pools, TCP
-relay, service installation, and packages belong to later stages.
+This is not yet a deployable tunnel service. Public listeners intentionally close
+accepted sockets until worker pools and TCP relay arrive in stages 9 and 10. Service
+installation and packages also belong to later stages.
 
 ## Run the TLS server
 
@@ -38,7 +42,8 @@ build/dev/minitun-server \
   --listen 0.0.0.0:2333 \
   --tls-cert /path/to/server.crt \
   --tls-key /path/to/server.key \
-  --token-file /path/to/token
+  --token-file /path/to/token \
+  --allow-ports 6000-6999
 ```
 
 ## Build

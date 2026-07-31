@@ -178,6 +178,7 @@ minitun_apply_lto(minitun_daemon)
 add_library(minitun_server_core STATIC
     src/server/server.cpp
     src/server/session_registry.cpp
+    src/server/tunnel_registry.cpp
 )
 add_library(MiniTun::server ALIAS minitun_server_core)
 

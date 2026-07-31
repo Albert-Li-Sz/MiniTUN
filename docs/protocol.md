@@ -75,3 +75,23 @@ Every successful authentication replaces the client's previous random 64-bit
 `session_generation`; generation zero is invalid. The server then sends numbered
 `PING` messages and requires matching `PONG` responses before the bounded heartbeat
 deadline.
+
+## Tunnel registration
+
+An authenticated control connection reconciles each locally persisted active tunnel:
+
+```text
+client -> REGISTER_TUNNEL(tunnel_id, bind_host, bind_port)
+server -> REGISTER_TUNNEL_OK(tunnel_id)
+       or REGISTER_TUNNEL_ERROR(tunnel_id, error_code)
+
+client -> UNREGISTER_TUNNEL(tunnel_id)
+server -> UNREGISTER_TUNNEL_OK(tunnel_id)
+```
+
+The client never sends `local_host` or `local_port`; those remain local-only persisted
+configuration. The server accepts numeric public bind addresses only, applies its
+`--allow-ports` range before binding, limits tunnels per authenticated client, and maps
+OS address conflicts to `remote_port_in_use`. Request IDs correlate every response.
+Registration and removal are idempotent, and all listeners belong to one client
+session generation so stale control sessions cannot retain them.

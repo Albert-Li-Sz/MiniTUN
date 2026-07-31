@@ -17,8 +17,10 @@ struct ServerOptions final {
     std::string tls_certificate_path;
     std::string tls_private_key_path;
     std::string token_file_path;
+    std::string allowed_ports{"1-65535"};
 
     std::size_t max_clients{1'000U};
+    std::size_t max_tunnels_per_client{128U};
     std::chrono::seconds handshake_timeout{10};
     std::chrono::seconds heartbeat_interval{5};
     std::chrono::seconds heartbeat_timeout{15};

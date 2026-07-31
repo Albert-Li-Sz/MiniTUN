@@ -36,6 +36,7 @@
 #include <minitun/common/endpoint.hpp>
 #include <minitun/common/id.hpp>
 #include <minitun/common/logging.hpp>
+#include <minitun/common/port_range.hpp>
 #include <minitun/common/secure_string.hpp>
 #include <minitun/common/time.hpp>
 #include <minitun/protocol/auth.hpp>
@@ -43,6 +44,7 @@
 #include <minitun/protocol/state_machine.hpp>
 #include <minitun/protocol/tls.hpp>
 #include <minitun/server/session_registry.hpp>
+#include <minitun/server/tunnel_registry.hpp>
 
 namespace minitun::server {
 namespace {
@@ -69,11 +71,10 @@ class FileDescriptor final {
     int value_;
 };
 
-[[nodiscard]] common::Result<common::SecureString>
-load_token_file(const std::string& path) {
+[[nodiscard]] common::Result<common::SecureString> load_token_file(const std::string& path) {
     if (path.empty() || path.size() > 4'096U || path.find('\0') != std::string::npos) {
-        return common::Result<common::SecureString>::failure(
-            common::ErrorCode::invalid_argument, "Token file path is invalid");
+        return common::Result<common::SecureString>::failure(common::ErrorCode::invalid_argument,
+                                                             "Token file path is invalid");
     }
 
     int flags = O_RDONLY | O_CLOEXEC;
@@ -89,27 +90,26 @@ load_token_file(const std::string& path) {
     }
     const FileDescriptor descriptor{raw_descriptor};
 
-    struct stat status {};
+    struct stat status{};
     if (::fstat(descriptor.get(), &status) != 0 || !S_ISREG(status.st_mode)) {
-        return common::Result<common::SecureString>::failure(
-            common::ErrorCode::permission_denied,
-            "Token file must be a regular file");
+        return common::Result<common::SecureString>::failure(common::ErrorCode::permission_denied,
+                                                             "Token file must be a regular file");
     }
     if (status.st_uid != ::geteuid() || (status.st_mode & 0077) != 0) {
         return common::Result<common::SecureString>::failure(
             common::ErrorCode::permission_denied,
             "Token file must be owned by the server user and inaccessible to group and others");
     }
-    if (status.st_size <= 0 ||
-        static_cast<std::uint64_t>(status.st_size) > kMaxTokenFileBytes) {
-        return common::Result<common::SecureString>::failure(
-            common::ErrorCode::invalid_argument, "Token file size is invalid");
+    if (status.st_size <= 0 || static_cast<std::uint64_t>(status.st_size) > kMaxTokenFileBytes) {
+        return common::Result<common::SecureString>::failure(common::ErrorCode::invalid_argument,
+                                                             "Token file size is invalid");
     }
 
     std::vector<char> bytes(static_cast<std::size_t>(status.st_size));
     std::size_t offset = 0U;
     while (offset < bytes.size()) {
-        const ssize_t count = ::read(descriptor.get(), bytes.data() + offset, bytes.size() - offset);
+        const ssize_t count =
+            ::read(descriptor.get(), bytes.data() + offset, bytes.size() - offset);
         if (count < 0 && errno == EINTR) {
             continue;
         }
@@ -126,8 +126,8 @@ load_token_file(const std::string& path) {
     }
     if (bytes.empty()) {
         common::secure_erase_memory(bytes.data(), bytes.capacity());
-        return common::Result<common::SecureString>::failure(
-            common::ErrorCode::invalid_argument, "Token file contains an empty Token");
+        return common::Result<common::SecureString>::failure(common::ErrorCode::invalid_argument,
+                                                             "Token file contains an empty Token");
     }
 
     common::SecureString token{{bytes.data(), bytes.size()}};
@@ -140,6 +140,10 @@ load_token_file(const std::string& path) {
         return common::Result<void>::failure(common::ErrorCode::invalid_argument,
                                              "max clients is outside 1..100000");
     }
+    if (options.max_tunnels_per_client == 0U || options.max_tunnels_per_client > 4'096U) {
+        return common::Result<void>::failure(common::ErrorCode::invalid_argument,
+                                             "max tunnels per client is outside 1..4096");
+    }
     if (options.handshake_timeout <= std::chrono::seconds::zero() ||
         options.handshake_timeout > kMaxConfiguredTimeout ||
         options.heartbeat_interval <= std::chrono::seconds::zero() ||
@@ -151,8 +155,7 @@ load_token_file(const std::string& path) {
         return common::Result<void>::failure(common::ErrorCode::invalid_argument,
                                              "server timeout configuration is invalid");
     }
-    if (options.min_idle_workers > options.max_idle_workers ||
-        options.max_idle_workers > 128U) {
+    if (options.min_idle_workers > options.max_idle_workers || options.max_idle_workers > 128U) {
         return common::Result<void>::failure(common::ErrorCode::invalid_argument,
                                              "server worker limits are invalid");
     }
@@ -163,8 +166,8 @@ load_token_file(const std::string& path) {
 
 class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
   public:
-    [[nodiscard]] static common::Result<std::shared_ptr<Impl>>
-    create(asio::io_context& io_context, ServerOptions options) {
+    [[nodiscard]] static common::Result<std::shared_ptr<Impl>> create(asio::io_context& io_context,
+                                                                      ServerOptions options) {
         auto valid = validate_options(options);
         if (!valid) {
             return common::Result<std::shared_ptr<Impl>>::failure(valid.error());
@@ -172,6 +175,10 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
         auto endpoint = common::Endpoint::parse(options.listen_endpoint);
         if (!endpoint) {
             return common::Result<std::shared_ptr<Impl>>::failure(endpoint.error());
+        }
+        auto allowed_ports = common::PortRange::parse(options.allowed_ports);
+        if (!allowed_ports) {
+            return common::Result<std::shared_ptr<Impl>>::failure(allowed_ports.error());
         }
         asio::error_code address_error;
         auto address = asio::ip::make_address(endpoint->host(), address_error);
@@ -199,7 +206,7 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
         return std::shared_ptr<Impl>{new Impl(io_context, std::move(options),
                                               asio::ip::tcp::endpoint{address, endpoint->port()},
                                               std::move(*tls_context), std::move(*token),
-                                              server_id->str())};
+                                              server_id->str(), std::move(*allowed_ports))};
     }
 
     ~Impl() noexcept { stop(); }
@@ -249,9 +256,7 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
         acceptor_.close(ignored);
     }
 
-    [[nodiscard]] std::uint16_t listening_port() const noexcept {
-        return listening_port_.load();
-    }
+    [[nodiscard]] std::uint16_t listening_port() const noexcept { return listening_port_.load(); }
 
     [[nodiscard]] const std::string& server_id() const noexcept { return server_id_; }
 
@@ -260,8 +265,7 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
       public:
         ControlSession(asio::ip::tcp::socket socket, std::shared_ptr<Impl> server)
             : server_(std::move(server)), stream_(std::move(socket), *server_->tls_context_),
-              operation_timer_(stream_.get_executor()),
-              heartbeat_timer_(stream_.get_executor()),
+              operation_timer_(stream_.get_executor()), heartbeat_timer_(stream_.get_executor()),
               state_(protocol::PeerRole::server, protocol::ConnectionKind::control) {
             asio::error_code endpoint_error;
             const auto endpoint = stream_.lowest_layer().remote_endpoint(endpoint_error);
@@ -274,6 +278,7 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
 
         ~ControlSession() {
             if (generation_ != 0U && !client_id_.empty()) {
+                server_->tunnel_registry_.remove_session(client_id_, generation_);
                 server_->session_registry_.close(client_id_, generation_);
             }
             server_->active_connections_.fetch_sub(1U);
@@ -282,16 +287,14 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
 
         void start() {
             auto self = shared_from_this();
-            asio::co_spawn(
-                stream_.get_executor(), run(),
-                [self](const std::exception_ptr failure) {
-                    if (failure) {
-                        common::log_warn("remote control session ended with an exception",
-                                         self->log_context(common::ErrorCode::internal_error));
-                    }
-                    self->cancel_timers();
-                    protocol::close_tls_stream(self->stream_);
-                });
+            asio::co_spawn(stream_.get_executor(), run(), [self](const std::exception_ptr failure) {
+                if (failure) {
+                    common::log_warn("remote control session ended with an exception",
+                                     self->log_context(common::ErrorCode::internal_error));
+                }
+                self->cancel_timers();
+                protocol::close_tls_stream(self->stream_);
+            });
         }
 
       private:
@@ -309,9 +312,8 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
         [[nodiscard]] asio::awaitable<bool> perform_tls_handshake() {
             arm_operation_timeout(server_->options_.handshake_timeout);
             asio::error_code error;
-            co_await stream_.async_handshake(
-                asio::ssl::stream_base::server,
-                asio::redirect_error(asio::use_awaitable, error));
+            co_await stream_.async_handshake(asio::ssl::stream_base::server,
+                                             asio::redirect_error(asio::use_awaitable, error));
             cancel_operation_timeout();
             if (error) {
                 common::log_warn("TLS handshake failed", log_context(common::ErrorCode::tls_error));
@@ -373,8 +375,8 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
             }
             if (accepted) {
                 auto verified = protocol::verify_authentication_data(
-                    server_->token_.view(), auth->client_id, auth->timestamp_seconds,
-                    auth->nonce, auth->authentication_data);
+                    server_->token_.view(), auth->client_id, auth->timestamp_seconds, auth->nonce,
+                    auth->authentication_data);
                 accepted = verified && *verified;
             }
             if (!accepted) {
@@ -384,20 +386,22 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
 
             auto generation = server_->session_registry_.open(client_id_);
             if (!generation) {
-                auto error_payload = protocol::encode_auth_error(
-                    {common::ErrorCode::resource_exhausted});
+                auto error_payload =
+                    protocol::encode_auth_error({common::ErrorCode::resource_exhausted});
                 if (error_payload) {
-                    static_cast<void>(co_await write_frame(
-                        {protocol::MessageType::auth_error, 0U, auth_frame->request_id,
-                         std::move(*error_payload)},
-                        server_->options_.handshake_timeout));
+                    static_cast<void>(
+                        co_await write_frame({protocol::MessageType::auth_error, 0U,
+                                              auth_frame->request_id, std::move(*error_payload)},
+                                             server_->options_.handshake_timeout));
                 }
                 co_return false;
             }
             generation_ = *generation;
+            server_->tunnel_registry_.remove_client(client_id_);
 
-            const auto heartbeat_milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(
-                server_->options_.heartbeat_interval);
+            const auto heartbeat_milliseconds =
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    server_->options_.heartbeat_interval);
             auto ok_payload = protocol::encode_auth_ok({
                 .session_generation = generation_,
                 .heartbeat_interval_milliseconds =
@@ -406,8 +410,8 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
                 .max_idle_workers = server_->options_.max_idle_workers,
             });
             if (!ok_payload ||
-                !co_await write_frame({protocol::MessageType::auth_ok, 0U,
-                                       auth_frame->request_id, std::move(*ok_payload)},
+                !co_await write_frame({protocol::MessageType::auth_ok, 0U, auth_frame->request_id,
+                                       std::move(*ok_payload)},
                                       server_->options_.handshake_timeout)) {
                 co_return false;
             }
@@ -415,10 +419,8 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
             co_return true;
         }
 
-        [[nodiscard]] asio::awaitable<bool>
-        reject_authentication(const std::uint64_t request_id) {
-            auto payload = protocol::encode_auth_error(
-                {common::ErrorCode::authentication_failed});
+        [[nodiscard]] asio::awaitable<bool> reject_authentication(const std::uint64_t request_id) {
+            auto payload = protocol::encode_auth_error({common::ErrorCode::authentication_failed});
             if (payload) {
                 static_cast<void>(co_await write_frame(
                     {protocol::MessageType::auth_error, 0U, request_id, std::move(*payload)},
@@ -432,6 +434,9 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
         [[nodiscard]] asio::awaitable<void> heartbeat_loop() {
             std::uint64_t sequence = 1U;
             for (;;) {
+                if (!server_->session_registry_.is_current(client_id_, generation_)) {
+                    co_return;
+                }
                 heartbeat_timer_.expires_after(server_->options_.heartbeat_interval);
                 asio::error_code timer_error;
                 co_await heartbeat_timer_.async_wait(
@@ -441,10 +446,9 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
                 }
 
                 auto ping_payload = protocol::encode_heartbeat({sequence});
-                if (!ping_payload ||
-                    !co_await write_frame({protocol::MessageType::ping, 0U, sequence,
-                                           std::move(*ping_payload)},
-                                          server_->options_.heartbeat_timeout)) {
+                if (!ping_payload || !co_await write_frame({protocol::MessageType::ping, 0U,
+                                                            sequence, std::move(*ping_payload)},
+                                                           server_->options_.heartbeat_timeout)) {
                     co_return;
                 }
 
@@ -463,6 +467,9 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
                     if (!frame) {
                         co_return;
                     }
+                    if (!server_->session_registry_.is_current(client_id_, generation_)) {
+                        co_return;
+                    }
                     if (frame->type == protocol::MessageType::pong) {
                         auto pong = protocol::decode_heartbeat(frame->payload);
                         if (!pong || pong->sequence != sequence || frame->request_id != sequence) {
@@ -479,9 +486,20 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
                         auto pong_payload = protocol::encode_heartbeat(*ping);
                         if (!pong_payload ||
                             !co_await write_frame({protocol::MessageType::pong, 0U,
-                                                   frame->request_id,
-                                                   std::move(*pong_payload)},
+                                                   frame->request_id, std::move(*pong_payload)},
                                                   remaining)) {
+                            co_return;
+                        }
+                        continue;
+                    }
+                    if (frame->type == protocol::MessageType::register_tunnel) {
+                        if (!co_await handle_register_tunnel(*frame, remaining)) {
+                            co_return;
+                        }
+                        continue;
+                    }
+                    if (frame->type == protocol::MessageType::unregister_tunnel) {
+                        if (!co_await handle_unregister_tunnel(*frame, remaining)) {
                             co_return;
                         }
                         continue;
@@ -493,6 +511,47 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
                     sequence = 1U;
                 }
             }
+        }
+
+        [[nodiscard]] asio::awaitable<bool>
+        handle_register_tunnel(const protocol::Frame& frame, const std::chrono::seconds timeout) {
+            auto registration = protocol::decode_register_tunnel(frame.payload);
+            if (!registration) {
+                co_return false;
+            }
+            auto registered = server_->tunnel_registry_.register_tunnel({
+                .client_id = client_id_,
+                .session_generation = generation_,
+                .tunnel_id = registration->tunnel_id,
+                .bind_host = registration->bind_host,
+                .bind_port = registration->bind_port,
+            });
+            if (!registered) {
+                auto payload = protocol::encode_register_tunnel_error(
+                    {registration->tunnel_id, registered.error().code()});
+                co_return payload&& co_await write_frame(
+                    {protocol::MessageType::register_tunnel_error, 0U, frame.request_id,
+                     std::move(*payload)},
+                    timeout);
+            }
+            auto payload = protocol::encode_register_tunnel_ok({registration->tunnel_id});
+            co_return payload&& co_await write_frame({protocol::MessageType::register_tunnel_ok, 0U,
+                                                      frame.request_id, std::move(*payload)},
+                                                     timeout);
+        }
+
+        [[nodiscard]] asio::awaitable<bool>
+        handle_unregister_tunnel(const protocol::Frame& frame, const std::chrono::seconds timeout) {
+            auto removal = protocol::decode_unregister_tunnel(frame.payload);
+            if (!removal) {
+                co_return false;
+            }
+            server_->tunnel_registry_.unregister_tunnel(client_id_, generation_,
+                                                        removal->tunnel_id);
+            auto payload = protocol::encode_unregister_tunnel_ok({removal->tunnel_id});
+            co_return payload&& co_await write_frame({protocol::MessageType::unregister_tunnel_ok,
+                                                      0U, frame.request_id, std::move(*payload)},
+                                                     timeout);
         }
 
         [[nodiscard]] asio::awaitable<common::Result<protocol::Frame>>
@@ -510,8 +569,8 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
             co_return frame;
         }
 
-        [[nodiscard]] asio::awaitable<bool>
-        write_frame(protocol::Frame frame, const std::chrono::seconds timeout) {
+        [[nodiscard]] asio::awaitable<bool> write_frame(protocol::Frame frame,
+                                                        const std::chrono::seconds timeout) {
             auto transition = state_.on_send(frame.type);
             if (!transition) {
                 co_return false;
@@ -575,33 +634,34 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
     Impl(asio::io_context& io_context, ServerOptions options,
          const asio::ip::tcp::endpoint listen_endpoint,
          std::shared_ptr<asio::ssl::context> tls_context, common::SecureString token,
-         std::string server_id)
-        : options_(std::move(options)), strand_(asio::make_strand(io_context)),
-          acceptor_(strand_), listen_endpoint_(listen_endpoint),
-          tls_context_(std::move(tls_context)), token_(std::move(token)),
-          server_id_(std::move(server_id)), session_registry_(options_.max_clients) {}
+         std::string server_id, common::PortRange allowed_ports)
+        : options_(std::move(options)), strand_(asio::make_strand(io_context)), acceptor_(strand_),
+          listen_endpoint_(listen_endpoint), tls_context_(std::move(tls_context)),
+          token_(std::move(token)), server_id_(std::move(server_id)),
+          session_registry_(options_.max_clients),
+          tunnel_registry_(strand_, std::move(allowed_ports), options_.max_tunnels_per_client) {}
 
     void accept_next() {
         if (!running_.load()) {
             return;
         }
         auto self = shared_from_this();
-        acceptor_.async_accept([self](const asio::error_code& error,
-                                      asio::ip::tcp::socket socket) mutable {
-            if (!error && self->running_.load()) {
-                const std::size_t previous = self->active_connections_.fetch_add(1U);
-                if (previous < self->options_.max_clients) {
-                    std::make_shared<ControlSession>(std::move(socket), self)->start();
-                } else {
-                    self->active_connections_.fetch_sub(1U);
-                    asio::error_code ignored;
-                    socket.close(ignored);
+        acceptor_.async_accept(
+            [self](const asio::error_code& error, asio::ip::tcp::socket socket) mutable {
+                if (!error && self->running_.load()) {
+                    const std::size_t previous = self->active_connections_.fetch_add(1U);
+                    if (previous < self->options_.max_clients) {
+                        std::make_shared<ControlSession>(std::move(socket), self)->start();
+                    } else {
+                        self->active_connections_.fetch_sub(1U);
+                        asio::error_code ignored;
+                        socket.close(ignored);
+                    }
                 }
-            }
-            if (self->running_.load()) {
-                self->accept_next();
-            }
-        });
+                if (self->running_.load()) {
+                    self->accept_next();
+                }
+            });
     }
 
     ServerOptions options_;
@@ -614,6 +674,7 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
     protocol::NonceReplayCache nonce_cache_;
     protocol::AuthRateLimiter auth_rate_limiter_;
     SessionRegistry session_registry_;
+    TunnelRegistry tunnel_registry_;
     std::atomic<std::size_t> active_connections_{0U};
     std::atomic<std::uint16_t> listening_port_{0U};
     std::atomic<bool> running_{false};
@@ -637,9 +698,7 @@ common::Result<void> Server::start() { return implementation_->start(); }
 
 void Server::stop() noexcept { implementation_->stop(); }
 
-std::uint16_t Server::listening_port() const noexcept {
-    return implementation_->listening_port();
-}
+std::uint16_t Server::listening_port() const noexcept { return implementation_->listening_port(); }
 
 const std::string& Server::server_id() const noexcept { return implementation_->server_id(); }
 

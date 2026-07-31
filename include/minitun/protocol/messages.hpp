@@ -14,6 +14,7 @@ namespace minitun::protocol {
 inline constexpr std::size_t kAuthenticationNonceSize = 32U;
 inline constexpr std::size_t kAuthenticationDataSize = 32U;
 inline constexpr std::size_t kMaxProtocolIdentifierBytes = 64U;
+inline constexpr std::size_t kMaxTunnelBindHostBytes = 253U;
 inline constexpr std::uint32_t kDefaultHeartbeatIntervalMilliseconds = 5'000U;
 inline constexpr std::uint16_t kDefaultMinIdleWorkers = 2U;
 inline constexpr std::uint16_t kDefaultMaxIdleWorkers = 32U;
@@ -65,6 +66,38 @@ struct HeartbeatMessage final {
     friend bool operator==(const HeartbeatMessage&, const HeartbeatMessage&) = default;
 };
 
+struct RegisterTunnelMessage final {
+    std::string tunnel_id;
+    std::string bind_host;
+    std::uint16_t bind_port{0U};
+
+    friend bool operator==(const RegisterTunnelMessage&, const RegisterTunnelMessage&) = default;
+};
+
+struct RegisterTunnelOkMessage final {
+    std::string tunnel_id;
+
+    friend bool operator==(const RegisterTunnelOkMessage&,
+                           const RegisterTunnelOkMessage&) = default;
+};
+
+struct RegisterTunnelErrorMessage final {
+    std::string tunnel_id;
+    common::ErrorCode code{common::ErrorCode::internal_error};
+
+    friend bool operator==(const RegisterTunnelErrorMessage&,
+                           const RegisterTunnelErrorMessage&) = default;
+};
+
+struct UnregisterTunnelMessage final {
+    std::string tunnel_id;
+
+    friend bool operator==(const UnregisterTunnelMessage&,
+                           const UnregisterTunnelMessage&) = default;
+};
+
+using UnregisterTunnelOkMessage = UnregisterTunnelMessage;
+
 [[nodiscard]] common::Result<std::vector<std::uint8_t>> encode_hello(const HelloMessage& message);
 [[nodiscard]] common::Result<HelloMessage> decode_hello(const std::vector<std::uint8_t>& payload);
 
@@ -76,7 +109,8 @@ decode_hello_ack(const std::vector<std::uint8_t>& payload);
 [[nodiscard]] common::Result<std::vector<std::uint8_t>> encode_auth(const AuthMessage& message);
 [[nodiscard]] common::Result<AuthMessage> decode_auth(const std::vector<std::uint8_t>& payload);
 
-[[nodiscard]] common::Result<std::vector<std::uint8_t>> encode_auth_ok(const AuthOkMessage& message);
+[[nodiscard]] common::Result<std::vector<std::uint8_t>>
+encode_auth_ok(const AuthOkMessage& message);
 [[nodiscard]] common::Result<AuthOkMessage>
 decode_auth_ok(const std::vector<std::uint8_t>& payload);
 
@@ -89,5 +123,30 @@ decode_auth_error(const std::vector<std::uint8_t>& payload);
 encode_heartbeat(const HeartbeatMessage& message);
 [[nodiscard]] common::Result<HeartbeatMessage>
 decode_heartbeat(const std::vector<std::uint8_t>& payload);
+
+[[nodiscard]] common::Result<std::vector<std::uint8_t>>
+encode_register_tunnel(const RegisterTunnelMessage& message);
+[[nodiscard]] common::Result<RegisterTunnelMessage>
+decode_register_tunnel(const std::vector<std::uint8_t>& payload);
+
+[[nodiscard]] common::Result<std::vector<std::uint8_t>>
+encode_register_tunnel_ok(const RegisterTunnelOkMessage& message);
+[[nodiscard]] common::Result<RegisterTunnelOkMessage>
+decode_register_tunnel_ok(const std::vector<std::uint8_t>& payload);
+
+[[nodiscard]] common::Result<std::vector<std::uint8_t>>
+encode_register_tunnel_error(const RegisterTunnelErrorMessage& message);
+[[nodiscard]] common::Result<RegisterTunnelErrorMessage>
+decode_register_tunnel_error(const std::vector<std::uint8_t>& payload);
+
+[[nodiscard]] common::Result<std::vector<std::uint8_t>>
+encode_unregister_tunnel(const UnregisterTunnelMessage& message);
+[[nodiscard]] common::Result<UnregisterTunnelMessage>
+decode_unregister_tunnel(const std::vector<std::uint8_t>& payload);
+
+[[nodiscard]] common::Result<std::vector<std::uint8_t>>
+encode_unregister_tunnel_ok(const UnregisterTunnelOkMessage& message);
+[[nodiscard]] common::Result<UnregisterTunnelOkMessage>
+decode_unregister_tunnel_ok(const std::vector<std::uint8_t>& payload);
 
 } // namespace minitun::protocol

@@ -1,8 +1,8 @@
 # Security policy
 
-MiniTun is pre-release software. Do not deploy the stage-7 build as a public tunnel
-service: port policy, relay limits, service accounts, and installation hardening are
-not complete.
+MiniTun is pre-release software. Do not deploy the stage-8 build as a public tunnel
+service: worker assignment, relay limits, service accounts, and installation hardening
+are not complete.
 
 Stage 7 provides a functional local security boundary, a bounded remote protocol
 parser, an isolated multi-server TLS client, and a TLS server with certificate/key

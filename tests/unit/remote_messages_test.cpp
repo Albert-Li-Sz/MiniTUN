@@ -83,5 +83,43 @@ TEST(RemoteMessagesTest, EnforcesAuthOkBoundsAndFailureCodes) {
     EXPECT_FALSE(encode_auth_error({common::ErrorCode::ok}));
 }
 
+TEST(RemoteMessagesTest, RoundTripsTunnelRegistrationPayloads) {
+    const std::string tunnel_id = generated_id(common::IdKind::tunnel);
+    const RegisterTunnelMessage registration{tunnel_id, "0.0.0.0", 6'000U};
+    const RegisterTunnelOkMessage registered{tunnel_id};
+    const RegisterTunnelErrorMessage rejected{tunnel_id, common::ErrorCode::remote_port_in_use};
+    const UnregisterTunnelMessage removal{tunnel_id};
+
+    const auto registration_payload = encode_register_tunnel(registration);
+    const auto registered_payload = encode_register_tunnel_ok(registered);
+    const auto rejected_payload = encode_register_tunnel_error(rejected);
+    const auto removal_payload = encode_unregister_tunnel(removal);
+    const auto removed_payload = encode_unregister_tunnel_ok(removal);
+    ASSERT_TRUE(registration_payload);
+    ASSERT_TRUE(registered_payload);
+    ASSERT_TRUE(rejected_payload);
+    ASSERT_TRUE(removal_payload);
+    ASSERT_TRUE(removed_payload);
+
+    EXPECT_EQ(*decode_register_tunnel(*registration_payload), registration);
+    EXPECT_EQ(*decode_register_tunnel_ok(*registered_payload), registered);
+    EXPECT_EQ(*decode_register_tunnel_error(*rejected_payload), rejected);
+    EXPECT_EQ(*decode_unregister_tunnel(*removal_payload), removal);
+    EXPECT_EQ(*decode_unregister_tunnel_ok(*removed_payload), removal);
+}
+
+TEST(RemoteMessagesTest, RejectsInvalidTunnelRegistrationPayloads) {
+    const std::string tunnel_id = generated_id(common::IdKind::tunnel);
+    EXPECT_FALSE(encode_register_tunnel({"tun_invalid", "0.0.0.0", 6'000U}));
+    EXPECT_FALSE(encode_register_tunnel({tunnel_id, "", 6'000U}));
+    EXPECT_FALSE(encode_register_tunnel({tunnel_id, "0.0.0.0", 0U}));
+    EXPECT_FALSE(encode_register_tunnel_error({tunnel_id, common::ErrorCode::ok}));
+
+    auto registration = encode_register_tunnel({tunnel_id, "0.0.0.0", 6'000U});
+    ASSERT_TRUE(registration);
+    registration->push_back(0U);
+    EXPECT_FALSE(decode_register_tunnel(*registration));
+}
+
 } // namespace
 } // namespace minitun::protocol

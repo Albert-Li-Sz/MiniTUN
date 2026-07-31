@@ -23,6 +23,7 @@ add_executable(minitun_unit_tests
     unit/storage_models_test.cpp
     unit/storage_repository_test.cpp
     unit/time_test.cpp
+    unit/tunnel_registry_test.cpp
 )
 
 target_link_libraries(minitun_unit_tests
@@ -115,5 +116,18 @@ if(UNIX)
         LABELS "integration;tls;multi-server"
         TIMEOUT 45
         PASS_REGULAR_EXPRESSION "multi-server session integration passed"
+    )
+
+    add_test(NAME integration.tunnel-registration
+        COMMAND
+            "${CMAKE_CURRENT_SOURCE_DIR}/integration/tunnel_registration.sh"
+            $<TARGET_FILE:minitun>
+            $<TARGET_FILE:minitund>
+            $<TARGET_FILE:minitun-server>
+    )
+    set_tests_properties(integration.tunnel-registration PROPERTIES
+        LABELS "integration;tls;tunnel"
+        TIMEOUT 60
+        PASS_REGULAR_EXPRESSION "tunnel registration integration passed"
     )
 endif()
