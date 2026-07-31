@@ -71,8 +71,8 @@ class WorkerPool::Impl final {
         return common::Result<void>::success();
     }
 
-    [[nodiscard]] bool assign(const TunnelBinding& binding,
-                              asio::ip::tcp::socket& public_socket) noexcept {
+    [[nodiscard]] bool assign(const TunnelBinding& binding, asio::ip::tcp::socket& public_socket,
+                              ConnectionQuota::Lease& connection_lease) noexcept {
         for (auto iterator = entries_.begin(); iterator != entries_.end(); ++iterator) {
             const auto& registration = iterator->second.registration;
             if (registration.client_id != binding.client_id ||
@@ -82,7 +82,7 @@ class WorkerPool::Impl final {
             auto handler = std::move(iterator->second.assignment_handler);
             entries_.erase(iterator);
             try {
-                handler(binding, std::move(public_socket));
+                handler(binding, std::move(public_socket), std::move(connection_lease));
             } catch (...) {
                 close_socket(public_socket);
             }
@@ -176,9 +176,9 @@ common::Result<void> WorkerPool::add(WorkerRegistration registration,
                                 std::move(removal_handler));
 }
 
-bool WorkerPool::assign(const TunnelBinding& binding,
-                        asio::ip::tcp::socket& public_socket) noexcept {
-    return implementation_->assign(binding, public_socket);
+bool WorkerPool::assign(const TunnelBinding& binding, asio::ip::tcp::socket& public_socket,
+                        ConnectionQuota::Lease& connection_lease) noexcept {
+    return implementation_->assign(binding, public_socket, connection_lease);
 }
 
 void WorkerPool::remove(const std::string_view worker_id) noexcept {

@@ -10,6 +10,7 @@
 #include <asio/ip/tcp.hpp>
 
 #include <minitun/common/result.hpp>
+#include <minitun/server/connection_quota.hpp>
 #include <minitun/server/tunnel_registry.hpp>
 
 namespace minitun::server {
@@ -23,7 +24,8 @@ struct WorkerRegistration final {
 };
 
 using WorkerAssignmentHandler =
-    std::function<void(TunnelBinding binding, asio::ip::tcp::socket public_socket)>;
+    std::function<void(TunnelBinding binding, asio::ip::tcp::socket public_socket,
+                       ConnectionQuota::Lease connection_lease)>;
 using WorkerRemovalHandler = std::function<void()>;
 
 class WorkerPool final {
@@ -37,8 +39,8 @@ class WorkerPool final {
     [[nodiscard]] common::Result<void> add(WorkerRegistration registration,
                                            WorkerAssignmentHandler assignment_handler,
                                            WorkerRemovalHandler removal_handler = {});
-    [[nodiscard]] bool assign(const TunnelBinding& binding,
-                              asio::ip::tcp::socket& public_socket) noexcept;
+    [[nodiscard]] bool assign(const TunnelBinding& binding, asio::ip::tcp::socket& public_socket,
+                              ConnectionQuota::Lease& connection_lease) noexcept;
     void remove(std::string_view worker_id) noexcept;
     void remove_session(std::string_view client_id, std::uint64_t session_generation) noexcept;
     void remove_client(std::string_view client_id) noexcept;

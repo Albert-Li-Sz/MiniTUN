@@ -211,10 +211,10 @@ int run_daemon_impl(const std::string& socket_path, const std::string& database_
         minitun::ipc::LocalServerOptions{.socket_path = socket_path},
     };
     asio::signal_set signals{io_context, SIGINT, SIGTERM};
-    signals.async_wait([&ipc_server, &io_context](const asio::error_code& error, int) {
+    signals.async_wait([&ipc_server, &server_manager](const asio::error_code& error, int) {
         if (!error) {
             ipc_server.stop();
-            io_context.stop();
+            (*server_manager)->stop();
         }
     });
 
@@ -328,6 +328,30 @@ int main(int argc, char** argv) {
         ->check(CLI::Range(1, 86'400))
         ->capture_default_str();
 
+    int shutdown_timeout_seconds = 10;
+    app.add_option("--shutdown-timeout", shutdown_timeout_seconds,
+                   "Maximum graceful relay drain time in seconds")
+        ->check(CLI::Range(1, 300))
+        ->capture_default_str();
+
+    std::size_t max_idle_workers_per_server = 32U;
+    app.add_option("--max-idle-workers-per-server", max_idle_workers_per_server,
+                   "Maximum idle Workers retained for each remote server")
+        ->check(CLI::Range(1U, 128U))
+        ->capture_default_str();
+
+    std::size_t max_total_idle_workers = 128U;
+    app.add_option("--max-total-idle-workers", max_total_idle_workers,
+                   "Maximum idle Workers retained across all remote servers")
+        ->check(CLI::Range(1U, 4'096U))
+        ->capture_default_str();
+
+    std::size_t max_total_connections = 10'000U;
+    app.add_option("--max-total-connections", max_total_connections,
+                   "Maximum Worker and relay connections across all remote servers")
+        ->check(CLI::Range(1U, 100'000U))
+        ->capture_default_str();
+
     std::size_t io_threads = default_io_threads();
     app.add_option("--io-threads", io_threads, "Fixed Asio I/O thread count")
         ->check(CLI::Range(1U, 16U))
@@ -364,6 +388,10 @@ int main(int argc, char** argv) {
             .ca_certificate_path = std::move(tls_ca_path),
             .insecure_skip_verify = insecure_skip_verify,
             .relay_inactivity_timeout = std::chrono::seconds{relay_idle_timeout_seconds},
+            .graceful_shutdown_timeout = std::chrono::seconds{shutdown_timeout_seconds},
+            .max_idle_workers_per_server = max_idle_workers_per_server,
+            .max_total_idle_workers = max_total_idle_workers,
+            .max_total_connections = max_total_connections,
         },
         *log_level, io_threads);
 }

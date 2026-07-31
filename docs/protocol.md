@@ -76,6 +76,12 @@ Every successful authentication replaces the client's previous random 64-bit
 `PING` messages and requires matching `PONG` responses before the bounded heartbeat
 deadline.
 
+`GOAWAY` has an empty version-1 payload and may be sent by either authenticated control
+peer during orderly shutdown. Receipt ends control-plane reconciliation and prevents
+new Worker creation. Already assigned raw relays are independent connections and may
+drain until the local graceful-shutdown deadline; peers must still tolerate an
+immediate transport close when a deadline or fault prevents delivery of `GOAWAY`.
+
 ## Tunnel registration
 
 An authenticated control connection reconciles each locally persisted active tunnel:
@@ -125,3 +131,6 @@ frame, both peers permanently leave framed mode. Each direction reads into one f
 and natural backpressure. EOF in one direction performs `shutdown_send` on the other
 socket while the reverse direction continues. Inactivity deadlines cancel both sides,
 and each completed relay reports duration and directional byte counts internally.
+Relay admission is bounded before Worker waiting begins. The public server holds a
+per-client and global quota lease until the assigned connection ends, while the daemon
+counts every Worker connection, including consumed Workers, against its global limit.

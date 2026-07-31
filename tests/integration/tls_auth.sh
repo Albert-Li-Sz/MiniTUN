@@ -7,11 +7,16 @@ client_bin=${2:?missing TLS test client binary}
 runtime_root=$(cd "${TMPDIR:-/tmp}" && pwd -P)
 runtime_dir=$(mktemp -d "$runtime_root/minitun-tls.XXXXXX")
 server_pid=
+goaway_client_pid=
 
 cleanup() {
     if [[ -n "$server_pid" ]] && kill -0 "$server_pid" 2>/dev/null; then
         kill -TERM "$server_pid" 2>/dev/null || true
         wait "$server_pid" 2>/dev/null || true
+    fi
+    if [[ -n "$goaway_client_pid" ]] && kill -0 "$goaway_client_pid" 2>/dev/null; then
+        kill -TERM "$goaway_client_pid" 2>/dev/null || true
+        wait "$goaway_client_pid" 2>/dev/null || true
     fi
     rm -rf "$runtime_dir"
 }
@@ -91,8 +96,19 @@ if rg -F "$token" "$runtime_dir/server.log"; then
     exit 1
 fi
 
+"$client_bin" \
+    --endpoint "127.0.0.1:$port" \
+    --server-name localhost \
+    --ca-cert "$runtime_dir/server.crt" \
+    --token-file "$runtime_dir/token" \
+    --expect-goaway \
+    --heartbeat-count 0 &
+goaway_client_pid=$!
+sleep 0.2
 kill -TERM "$server_pid"
 wait "$server_pid"
 server_pid=
+wait "$goaway_client_pid"
+goaway_client_pid=
 
 echo 'TLS authentication integration passed'

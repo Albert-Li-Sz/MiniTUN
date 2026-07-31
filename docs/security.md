@@ -1,7 +1,8 @@
 # Security design status
 
-Stage 10 provides a protected local control plane, authenticated TLS control sessions,
-generation-scoped TLS Worker Pools, and a bounded raw TCP relay data plane.
+Stage 11 provides a protected local control plane, authenticated TLS control sessions,
+generation-scoped TLS Worker Pools, a bounded raw TCP relay data plane, and tracked
+graceful shutdown.
 
 Implemented local protections include:
 
@@ -41,3 +42,9 @@ Stage 10 resolves only the locally persisted tunnel target after assignment. Rem
 messages cannot select an arbitrary local host or port. Local connection failures are
 generic, relay buffers are fixed at 16 KiB per direction, and inactivity deadlines
 bound otherwise silent connections.
+
+Stage 11 adds per-client and global public-relay quotas, a daemon-wide Worker/relay
+connection budget, strand-serialized session ownership, bounded pending-connection
+lifetimes, best-effort `GOAWAY`, and deadline-enforced relay draining. Capacity uses
+move-only leases so rejection, timeout, cancellation, half-close, and ordinary teardown
+cannot leak or double-release a quota slot.

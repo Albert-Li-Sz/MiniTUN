@@ -178,6 +178,7 @@ minitun_apply_sanitizers(minitun_daemon)
 minitun_apply_lto(minitun_daemon)
 
 add_library(minitun_server_core STATIC
+    src/server/connection_quota.cpp
     src/server/server.cpp
     src/server/session_registry.cpp
     src/server/tunnel_registry.cpp

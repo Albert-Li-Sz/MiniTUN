@@ -24,8 +24,10 @@ struct ServerManagerOptions final {
     std::chrono::seconds connect_timeout{10};
     std::chrono::seconds handshake_timeout{10};
     std::chrono::seconds relay_inactivity_timeout{300};
+    std::chrono::seconds graceful_shutdown_timeout{10};
     std::size_t max_idle_workers_per_server{32U};
     std::size_t max_total_idle_workers{128U};
+    std::size_t max_total_connections{10'000U};
 };
 
 class ServerManager final {

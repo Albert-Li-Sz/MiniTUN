@@ -37,6 +37,7 @@ struct Options final {
     std::string ca_certificate_path;
     std::string token_file_path;
     bool expect_auth_failure{false};
+    bool expect_goaway{false};
     std::size_t heartbeat_count{1U};
 };
 
@@ -140,7 +141,7 @@ run_protocol(minitun::protocol::TlsStream& stream, const Options& options,
     }
 
     std::size_t heartbeats = 0U;
-    while (heartbeats < options.heartbeat_count) {
+    while (heartbeats < options.heartbeat_count || options.expect_goaway) {
         auto ping_frame = co_await minitun::protocol::async_read_frame(stream);
         if (!ping_frame || !state.on_receive(ping_frame->type)) {
             co_return minitun::common::Result<void>::failure(
@@ -152,6 +153,12 @@ run_protocol(minitun::protocol::TlsStream& stream, const Options& options,
                     minitun::common::ErrorCode::protocol_error, "test worker request was invalid");
             }
             continue;
+        }
+        if (ping_frame->type == minitun::protocol::MessageType::goaway) {
+            co_return options.expect_goaway ? minitun::common::Result<void>::success()
+                                            : minitun::common::Result<void>::failure(
+                                                  minitun::common::ErrorCode::connection_failed,
+                                                  "test server sent an unexpected GOAWAY");
         }
         if (ping_frame->type != minitun::protocol::MessageType::ping) {
             co_return minitun::common::Result<void>::failure(
@@ -237,6 +244,7 @@ int main(int argc, char** argv) {
     app.add_option("--ca-cert", options.ca_certificate_path)->required();
     app.add_option("--token-file", options.token_file_path)->required();
     app.add_flag("--expect-auth-failure", options.expect_auth_failure);
+    app.add_flag("--expect-goaway", options.expect_goaway);
     app.add_option("--heartbeat-count", options.heartbeat_count)
         ->check(CLI::Range(0U, 10U))
         ->capture_default_str();

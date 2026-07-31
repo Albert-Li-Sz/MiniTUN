@@ -33,19 +33,24 @@ namespace {
 TEST(WorkerPoolTest, AssignsOnlyMatchingClientGeneration) {
     asio::io_context io_context;
     WorkerPool pool{4U, 8U};
+    ConnectionQuota connection_quota{4U, 8U};
     const std::string client_id = generated_id(common::IdKind::client);
     const std::string worker_id = generated_id(common::IdKind::connection);
     bool assigned = false;
 
     ASSERT_TRUE(pool.add({client_id, 7U, worker_id},
-                         [&assigned](TunnelBinding, asio::ip::tcp::socket) { assigned = true; }));
+                         [&assigned](TunnelBinding, asio::ip::tcp::socket, ConnectionQuota::Lease) {
+                             assigned = true;
+                         }));
     asio::ip::tcp::socket public_socket{io_context};
     public_socket.open(asio::ip::tcp::v4());
-    EXPECT_FALSE(pool.assign(binding_for(client_id, 8U), public_socket));
+    auto connection_lease = connection_quota.try_acquire(client_id);
+    ASSERT_TRUE(connection_lease);
+    EXPECT_FALSE(pool.assign(binding_for(client_id, 8U), public_socket, *connection_lease));
     EXPECT_TRUE(public_socket.is_open());
     EXPECT_EQ(pool.size(), 1U);
 
-    EXPECT_TRUE(pool.assign(binding_for(client_id, 7U), public_socket));
+    EXPECT_TRUE(pool.assign(binding_for(client_id, 7U), public_socket, *connection_lease));
     EXPECT_TRUE(assigned);
     EXPECT_EQ(pool.size(), 0U);
 }
@@ -54,7 +59,7 @@ TEST(WorkerPoolTest, EnforcesPerSessionAndGlobalIdleLimits) {
     WorkerPool pool{1U, 2U};
     const std::string first_client = generated_id(common::IdKind::client);
     const std::string second_client = generated_id(common::IdKind::client);
-    const auto handler = [](TunnelBinding, asio::ip::tcp::socket) {};
+    const auto handler = [](TunnelBinding, asio::ip::tcp::socket, ConnectionQuota::Lease) {};
 
     ASSERT_TRUE(pool.add({first_client, 1U, generated_id(common::IdKind::connection)}, handler));
     const auto per_session =
@@ -72,7 +77,7 @@ TEST(WorkerPoolTest, EnforcesPerSessionAndGlobalIdleLimits) {
 TEST(WorkerPoolTest, RemovesWorkersBySessionAndClient) {
     WorkerPool pool{4U, 8U};
     const std::string client_id = generated_id(common::IdKind::client);
-    const auto handler = [](TunnelBinding, asio::ip::tcp::socket) {};
+    const auto handler = [](TunnelBinding, asio::ip::tcp::socket, ConnectionQuota::Lease) {};
     std::size_t removals = 0U;
     ASSERT_TRUE(pool.add({client_id, 1U, generated_id(common::IdKind::connection)}, handler,
                          [&removals] { ++removals; }));

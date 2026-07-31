@@ -33,7 +33,7 @@ by IPC, or printed by the CLI. `server login` stores a Token and wakes reconcili
 the daemon then authenticates the corresponding remote session without exposing the
 secret.
 
-The TCP data path is operational. Remaining work focuses on graceful global shutdown,
+The TCP data path and graceful lifecycle are operational. Remaining work focuses on
 security validation, Linux installation, packages, and release automation.
 
 ## Run the TLS server

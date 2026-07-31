@@ -55,8 +55,12 @@ inline constexpr auto kMaximumRelayTimeout = std::chrono::hours{24};
         options.handshake_timeout > kMaximumConnectTimeout ||
         options.relay_inactivity_timeout <= std::chrono::seconds::zero() ||
         options.relay_inactivity_timeout > kMaximumRelayTimeout ||
+        options.graceful_shutdown_timeout <= std::chrono::seconds::zero() ||
+        options.graceful_shutdown_timeout > kMaximumConnectTimeout ||
         options.max_idle_workers_per_server == 0U || options.max_idle_workers_per_server > 128U ||
-        options.max_total_idle_workers == 0U || options.max_total_idle_workers > 4'096U) {
+        options.max_total_idle_workers == 0U || options.max_total_idle_workers > 4'096U ||
+        options.max_total_connections == 0U || options.max_total_connections > 100'000U ||
+        options.max_total_connections < options.max_total_idle_workers) {
         return common::Result<void>::failure(common::ErrorCode::invalid_argument,
                                              "remote session timeout configuration is invalid");
     }
@@ -85,12 +89,14 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
         ServerSession(asio::io_context& io_context, storage::StateRepository& repository,
                       storage::CredentialStore& credentials, common::Id client_id,
                       storage::ServerRecord server, std::shared_ptr<asio::ssl::context> tls_context,
-                      std::shared_ptr<WorkerBudget> worker_budget, ServerManagerOptions options)
+                      std::shared_ptr<WorkerBudget> worker_budget,
+                      std::shared_ptr<WorkerBudget> connection_budget, ServerManagerOptions options)
             : repository_(repository), credentials_(credentials), client_id_(std::move(client_id)),
               server_(std::move(server)), remote_endpoint_text_(server_.endpoint.to_string()),
               tls_context_(std::move(tls_context)), worker_budget_(std::move(worker_budget)),
-              options_(std::move(options)), strand_(asio::make_strand(io_context)),
-              resolver_(strand_), reconnect_timer_(strand_), operation_timer_(strand_) {}
+              connection_budget_(std::move(connection_budget)), options_(std::move(options)),
+              strand_(asio::make_strand(io_context)), resolver_(strand_), reconnect_timer_(strand_),
+              operation_timer_(strand_) {}
 
         ~ServerSession() {
             stop_worker_pool();
@@ -111,20 +117,15 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                 }
                 self->cancel_timers();
                 self->stop_worker_pool();
-                self->close_transport();
+                if (!self->goaway_in_progress_) {
+                    self->close_transport();
+                }
             });
         }
 
         void stop() {
             auto self = shared_from_this();
-            asio::dispatch(strand_, [self] {
-                self->stopping_ = true;
-                self->terminal_state_.store(TerminalState::stopped);
-                self->resolver_.cancel();
-                self->cancel_timers();
-                self->stop_worker_pool();
-                self->close_transport();
-            });
+            asio::dispatch(strand_, [self] { self->begin_stop(); });
         }
 
         [[nodiscard]] bool matches(const storage::ServerRecord& server) const {
@@ -293,7 +294,7 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
             const std::uint16_t min_idle_workers =
                 std::min(auth_ok->min_idle_workers, max_idle_workers);
             auto workers = WorkerPool::create(
-                strand_, tls_context_, worker_budget_,
+                strand_, tls_context_, worker_budget_, connection_budget_,
                 {
                     .endpoint = server_.endpoint,
                     .server_id = server_.id.str(),
@@ -305,6 +306,7 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                     .handshake_timeout = options_.handshake_timeout,
                     .idle_timeout = std::chrono::seconds{65},
                     .relay_inactivity_timeout = options_.relay_inactivity_timeout,
+                    .graceful_shutdown_timeout = options_.graceful_shutdown_timeout,
                     .insecure_skip_verify = options_.insecure_skip_verify,
                 },
                 [weak = weak_from_this()](const std::string_view tunnel_id) {
@@ -597,9 +599,41 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                 co_return transition;
             }
             arm_operation_timeout(timeout);
+            write_in_progress_ = true;
             auto written = co_await protocol::async_write_frame(*stream_, frame);
+            write_in_progress_ = false;
             cancel_operation_timeout();
             co_return written;
+        }
+
+        void begin_stop() {
+            if (stopping_) {
+                return;
+            }
+            stopping_ = true;
+            terminal_state_.store(TerminalState::stopped);
+            try {
+                static_cast<void>(reconnect_timer_.cancel());
+            } catch (...) {
+            }
+            stop_worker_pool();
+            if (stream_ != nullptr && session_generation_ != 0U && !write_in_progress_) {
+                goaway_in_progress_ = true;
+                auto self = shared_from_this();
+                asio::co_spawn(strand_,
+                               protocol::async_write_frame(
+                                   *stream_, {protocol::MessageType::goaway, 0U, 0U, {}}),
+                               [self](const std::exception_ptr, common::Result<void>) {
+                                   self->goaway_in_progress_ = false;
+                                   self->resolver_.cancel();
+                                   self->cancel_timers();
+                                   self->close_transport();
+                               });
+                return;
+            }
+            resolver_.cancel();
+            cancel_timers();
+            close_transport();
         }
 
         template <typename Rep, typename Period>
@@ -807,6 +841,7 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
         std::string remote_endpoint_text_;
         std::shared_ptr<asio::ssl::context> tls_context_;
         std::shared_ptr<WorkerBudget> worker_budget_;
+        std::shared_ptr<WorkerBudget> connection_budget_;
         ServerManagerOptions options_;
         asio::strand<asio::io_context::executor_type> strand_;
         asio::ip::tcp::resolver resolver_;
@@ -821,6 +856,8 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
         std::unordered_set<std::string> registered_tunnels_;
         std::atomic<TerminalState> terminal_state_{TerminalState::running};
         bool stopping_{false};
+        bool write_in_progress_{false};
+        bool goaway_in_progress_{false};
     };
 
   public:
@@ -861,16 +898,20 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
         if (!running_.exchange(false)) {
             return;
         }
-        try {
-            static_cast<void>(reconcile_timer_.cancel());
-        } catch (...) {
-        }
-        for (auto& [id, session] : sessions_) {
-            static_cast<void>(id);
-            session->stop();
-        }
-        sessions_.clear();
-        session_count_.store(0U);
+        auto self = shared_from_this();
+        asio::dispatch(strand_, [self] {
+            try {
+                static_cast<void>(self->reconcile_timer_.cancel());
+            } catch (...) {
+            }
+            auto sessions = std::move(self->sessions_);
+            self->sessions_.clear();
+            self->session_count_.store(0U);
+            for (auto& [id, session] : sessions) {
+                static_cast<void>(id);
+                session->stop();
+            }
+        });
     }
 
     void notify_changed() {
@@ -892,6 +933,7 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
           client_id_(std::move(client_id)), options_(std::move(options)),
           tls_context_(std::move(tls_context)),
           worker_budget_(std::make_shared<WorkerBudget>(options_.max_total_idle_workers)),
+          connection_budget_(std::make_shared<WorkerBudget>(options_.max_total_connections)),
           strand_(asio::make_strand(io_context)), reconcile_timer_(strand_) {}
 
     void reconcile() {
@@ -936,7 +978,7 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                 if (record.actual_state != storage::ServerActualState::not_authenticated) {
                     auto session = std::make_shared<ServerSession>(
                         io_context_, repository_, credentials_, client_id_, record, tls_context_,
-                        worker_budget_, options_);
+                        worker_budget_, connection_budget_, options_);
                     sessions_.emplace(id, session);
                     session->start();
                 }
@@ -975,6 +1017,7 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
     ServerManagerOptions options_;
     std::shared_ptr<asio::ssl::context> tls_context_;
     std::shared_ptr<WorkerBudget> worker_budget_;
+    std::shared_ptr<WorkerBudget> connection_budget_;
     asio::strand<asio::io_context::executor_type> strand_;
     asio::steady_timer reconcile_timer_;
     std::unordered_map<std::string, std::shared_ptr<ServerSession>> sessions_;

@@ -78,10 +78,9 @@ int run_server(const minitun::server::ServerOptions& options,
                                                      .remote_endpoint = options.listen_endpoint});
 
     asio::signal_set signals{io_context, SIGINT, SIGTERM};
-    signals.async_wait([&server, &io_context](const asio::error_code& error, int) {
+    signals.async_wait([&server](const asio::error_code& error, int) {
         if (!error) {
             (*server)->stop();
-            io_context.stop();
         }
     });
 
@@ -144,6 +143,14 @@ int main(int argc, char** argv) {
                    "Maximum registered tunnels per authenticated client")
         ->check(CLI::Range(1U, 4'096U))
         ->capture_default_str();
+    app.add_option("--max-connections-per-client", options.max_connections_per_client,
+                   "Maximum concurrent public relays per authenticated client")
+        ->check(CLI::Range(1U, 100'000U))
+        ->capture_default_str();
+    app.add_option("--max-total-connections", options.max_total_connections,
+                   "Maximum concurrent public relays across all clients")
+        ->check(CLI::Range(1U, 100'000U))
+        ->capture_default_str();
     app.add_option("--min-idle-workers", options.min_idle_workers,
                    "Minimum idle Workers requested per client session")
         ->check(CLI::Range(0U, 128U))
@@ -164,6 +171,7 @@ int main(int argc, char** argv) {
     int worker_wait_timeout_seconds = static_cast<int>(options.worker_wait_timeout.count());
     int worker_idle_timeout_seconds = static_cast<int>(options.worker_idle_timeout.count());
     int relay_idle_timeout_seconds = static_cast<int>(options.relay_inactivity_timeout.count());
+    int shutdown_timeout_seconds = static_cast<int>(options.graceful_shutdown_timeout.count());
     app.add_option("--handshake-timeout", handshake_timeout_seconds,
                    "TLS and authentication timeout in seconds")
         ->check(CLI::Range(1, 300))
@@ -191,6 +199,10 @@ int main(int argc, char** argv) {
     app.add_option("--relay-idle-timeout", relay_idle_timeout_seconds,
                    "Relay inactivity timeout in seconds")
         ->check(CLI::Range(1, 86'400))
+        ->capture_default_str();
+    app.add_option("--shutdown-timeout", shutdown_timeout_seconds,
+                   "Maximum graceful relay drain time in seconds")
+        ->check(CLI::Range(1, 300))
         ->capture_default_str();
 
     std::size_t io_threads = default_io_threads();
@@ -224,6 +236,7 @@ int main(int argc, char** argv) {
     options.worker_wait_timeout = std::chrono::seconds{worker_wait_timeout_seconds};
     options.worker_idle_timeout = std::chrono::seconds{worker_idle_timeout_seconds};
     options.relay_inactivity_timeout = std::chrono::seconds{relay_idle_timeout_seconds};
+    options.graceful_shutdown_timeout = std::chrono::seconds{shutdown_timeout_seconds};
     static_cast<void>(foreground);
 
     return run_server(options, *log_level, io_threads);

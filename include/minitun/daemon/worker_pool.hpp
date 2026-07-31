@@ -46,6 +46,7 @@ struct WorkerPoolOptions final {
     std::chrono::seconds handshake_timeout{10};
     std::chrono::seconds idle_timeout{65};
     std::chrono::seconds relay_inactivity_timeout{300};
+    std::chrono::seconds graceful_shutdown_timeout{10};
     bool insecure_skip_verify{false};
 };
 
@@ -53,7 +54,8 @@ class WorkerPool final {
   public:
     [[nodiscard]] static common::Result<std::unique_ptr<WorkerPool>>
     create(asio::any_io_executor executor, std::shared_ptr<asio::ssl::context> tls_context,
-           std::shared_ptr<WorkerBudget> budget, WorkerPoolOptions options,
+           std::shared_ptr<WorkerBudget> idle_budget,
+           std::shared_ptr<WorkerBudget> connection_budget, WorkerPoolOptions options,
            LocalEndpointResolver local_endpoint_resolver);
 
     ~WorkerPool() noexcept;

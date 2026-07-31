@@ -241,3 +241,20 @@ never queues an unbounded write, and records directional bytes and duration. EOF
 propagated as a send-side shutdown without discarding reverse traffic. Connection
 reset, broken pipe, EOF, and cancellation are treated as ordinary disconnects;
 unexpected I/O failures and bounded inactivity timeouts cancel both sockets.
+
+## Stage-11 stability and shutdown
+
+The public server tracks accepted TLS sessions and pending public sockets on its Asio
+strand. `SIGINT` and `SIGTERM` stop control and tunnel listeners first, reject new
+relay reservations, send best-effort `GOAWAY` frames to authenticated control peers,
+and retain active relays for at most `--shutdown-timeout`. A deadline then cancels any
+remaining sockets. The daemon follows the same foreground lifecycle: it stops IPC and
+reconciliation, sends `GOAWAY` on online control sessions, closes idle Workers, and
+allows consumed Workers to drain until the configured deadline. No signal callback
+mutates session registries from outside their owning strand.
+
+Public relay admission owns a move-only quota lease from accept through relay teardown.
+`--max-connections-per-client` and `--max-total-connections` therefore cover both the
+bounded Worker wait and the active data path, and capacity is restored exactly once on
+every failure or close path. The daemon separately applies `--max-total-connections`
+to all idle and consumed Worker sessions across its independent server pools.

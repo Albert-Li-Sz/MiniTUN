@@ -1,5 +1,6 @@
 add_executable(minitun_unit_tests
     unit/common_test.cpp
+    unit/connection_quota_test.cpp
     unit/credential_store_test.cpp
     unit/daemon_control_service_test.cpp
     unit/endpoint_test.cpp
@@ -157,5 +158,18 @@ if(UNIX)
         LABELS "integration;e2e;tls;relay"
         TIMEOUT 90
         PASS_REGULAR_EXPRESSION "TCP relay integration passed"
+    )
+
+    add_test(NAME integration.stability
+        COMMAND
+            "${CMAKE_CURRENT_SOURCE_DIR}/integration/stability.sh"
+            $<TARGET_FILE:minitun>
+            $<TARGET_FILE:minitund>
+            $<TARGET_FILE:minitun-server>
+    )
+    set_tests_properties(integration.stability PROPERTIES
+        LABELS "integration;e2e;tls;stability"
+        TIMEOUT 90
+        PASS_REGULAR_EXPRESSION "stability integration passed"
     )
 endif()

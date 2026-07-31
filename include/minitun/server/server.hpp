@@ -21,6 +21,8 @@ struct ServerOptions final {
 
     std::size_t max_clients{1'000U};
     std::size_t max_tunnels_per_client{128U};
+    std::size_t max_connections_per_client{10'000U};
+    std::size_t max_total_connections{50'000U};
     std::chrono::seconds handshake_timeout{10};
     std::chrono::seconds heartbeat_interval{5};
     std::chrono::seconds heartbeat_timeout{15};
@@ -28,6 +30,7 @@ struct ServerOptions final {
     std::chrono::seconds worker_wait_timeout{2};
     std::chrono::seconds worker_idle_timeout{60};
     std::chrono::seconds relay_inactivity_timeout{300};
+    std::chrono::seconds graceful_shutdown_timeout{10};
 
     std::uint16_t min_idle_workers{2U};
     std::uint16_t max_idle_workers{32U};
