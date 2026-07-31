@@ -14,5 +14,11 @@ All notable changes to MiniTun will be documented here.
 - Overflow-safe Unix/monotonic time helpers and thread-safe UTC formatting.
 - Move-only secret storage with explicit OpenSSL memory cleansing.
 - Bounded structured-log fields with UTF-8-safe truncation.
+- Transactional SQLite schema-version migration with WAL, foreign-key, synchronous,
+  busy-timeout, checkpoint, and journal-size policy verification.
+- Validated `ServerRepository` and `TunnelRepository` CRUD, tombstones, storage limits,
+  deterministic queries, and cross-repository transactions.
+- Atomic restart-state normalization and recovery snapshots for persisted servers and
+  tunnels.
 - `minitun`, `minitund`, and `minitun-server` stage-0 executables.
 - Unit-test and GitHub Actions CI foundations.

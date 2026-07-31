@@ -1,0 +1,365 @@
+#include <cstddef>
+#include <cstdint>
+#include <filesystem>
+#include <limits>
+#include <optional>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <utility>
+
+#include <gtest/gtest.h>
+
+#include <minitun/common/endpoint.hpp>
+#include <minitun/common/error.hpp>
+#include <minitun/common/id.hpp>
+#include <minitun/storage/database.hpp>
+#include <minitun/storage/models.hpp>
+#include <minitun/storage/state_repository.hpp>
+
+#include "storage_test_support.hpp"
+
+namespace minitun::storage {
+namespace {
+
+using test::NativeSqliteDatabase;
+using test::TemporaryDatabaseFile;
+
+[[nodiscard]] common::Id require_id(const std::string_view text,
+                                    const common::IdKind expected_kind) {
+    auto parsed = common::Id::parse(text, expected_kind);
+    if (!parsed) {
+        throw std::runtime_error("invalid fixed test ID");
+    }
+    return std::move(*parsed);
+}
+
+[[nodiscard]] common::Endpoint require_endpoint(const std::string_view text) {
+    auto parsed = common::Endpoint::parse(text);
+    if (!parsed) {
+        throw std::runtime_error("invalid fixed test endpoint");
+    }
+    return std::move(*parsed);
+}
+
+[[nodiscard]] ServerRecord sample_server() {
+    return ServerRecord{
+        .id = require_id("srv_00000000000000000000000000000001", common::IdKind::server),
+        .name = std::string{"primary"},
+        .endpoint = require_endpoint("127.0.0.1:2333"),
+        .credential_ref = std::nullopt,
+        .remote_server_id = std::nullopt,
+        .desired_state = ServerDesiredState::enabled,
+        .actual_state = ServerActualState::not_authenticated,
+        .last_error_code = std::nullopt,
+        .last_error_message = std::nullopt,
+        .reconnect_attempt = 0,
+        .latency_ms = std::nullopt,
+        .created_at_unix_ms = 1'000,
+        .updated_at_unix_ms = 1'000,
+    };
+}
+
+[[nodiscard]] TunnelRecord sample_tunnel_with_missing_server() {
+    return TunnelRecord{
+        .id = require_id("tun_00000000000000000000000000000001", common::IdKind::tunnel),
+        .name = std::string{"ssh"},
+        .server_id = require_id("srv_00000000000000000000000000000002", common::IdKind::server),
+        .protocol = TunnelProtocol::tcp,
+        .local_endpoint = require_endpoint("127.0.0.1:22"),
+        .remote_endpoint = require_endpoint("0.0.0.0:6000"),
+        .desired_state = TunnelDesiredState::active,
+        .actual_state = TunnelActualState::pending,
+        .last_error_code = std::nullopt,
+        .last_error_message = std::nullopt,
+        .created_at_unix_ms = 1'000,
+        .updated_at_unix_ms = 1'000,
+    };
+}
+
+TEST(StorageDatabaseTest, FreshDatabaseMigratesCompleteVersionOneSchema) {
+    TemporaryDatabaseFile temporary;
+    auto database = Database::open(temporary.path_string());
+
+    ASSERT_TRUE(database) << database.error();
+    const auto version = (*database)->schema_version();
+    ASSERT_TRUE(version) << version.error();
+    EXPECT_EQ(*version, kCurrentSchemaVersion);
+
+    NativeSqliteDatabase probe{temporary.path(), SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX};
+    EXPECT_EQ(probe.query_int64(
+                  "SELECT COUNT(*) FROM sqlite_master "
+                  "WHERE type = 'table' AND name IN ('schema_version', 'servers', 'tunnels')"),
+              3);
+    EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM pragma_table_info('schema_version')"), 2);
+    EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM pragma_table_info('servers')"), 13);
+    EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM pragma_table_info('tunnels')"), 14);
+    EXPECT_EQ(
+        probe.query_int64("SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name IN ("
+                          "'idx_servers_reconcile', 'idx_tunnels_reconcile', 'idx_tunnels_name')"),
+        3);
+    EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM schema_version"), 1);
+    EXPECT_EQ(probe.query_int64("SELECT version FROM schema_version"), kCurrentSchemaVersion);
+    EXPECT_GE(probe.query_int64("SELECT applied_at FROM schema_version"), 0);
+    EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM pragma_foreign_key_list('tunnels') "
+                                "WHERE \"table\" = 'servers' AND \"from\" = 'server_id' "
+                                "AND \"to\" = 'id' AND on_delete = 'CASCADE'"),
+              1);
+}
+
+TEST(StorageDatabaseTest, EnablesWalAndRequiredConnectionPolicy) {
+    TemporaryDatabaseFile temporary;
+    auto repository = StateRepository::open(temporary.path_string());
+
+    ASSERT_TRUE(repository) << repository.error();
+    NativeSqliteDatabase probe{temporary.path()};
+    EXPECT_EQ(probe.query_text("PRAGMA journal_mode"), "wal");
+    EXPECT_EQ(kDatabaseBusyTimeoutMilliseconds, 5'000);
+    EXPECT_EQ(kWalAutoCheckpointPages, 1'000);
+    EXPECT_EQ(kWalJournalSizeLimitBytes, 16 * 1024 * 1024);
+
+    const auto missing_parent =
+        (*repository)->tunnels().create(sample_tunnel_with_missing_server());
+    ASSERT_FALSE(missing_parent);
+    EXPECT_EQ(missing_parent.error().code(), common::ErrorCode::not_found);
+}
+
+TEST(StorageDatabaseTest, ReopeningCurrentSchemaIsIdempotentAndPreservesData) {
+    TemporaryDatabaseFile temporary;
+    std::int64_t first_applied_at = 0;
+    {
+        auto repository = StateRepository::open(temporary.path_string());
+        ASSERT_TRUE(repository) << repository.error();
+        ASSERT_TRUE((*repository)->servers().create(sample_server()));
+
+        NativeSqliteDatabase probe{temporary.path(), SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX};
+        first_applied_at = probe.query_int64("SELECT applied_at FROM schema_version");
+    }
+
+    auto reopened = StateRepository::open(temporary.path_string());
+    ASSERT_TRUE(reopened) << reopened.error();
+    const auto restored = (*reopened)->servers().get_by_id(sample_server().id);
+    ASSERT_TRUE(restored) << restored.error();
+    EXPECT_EQ(*restored, sample_server());
+
+    NativeSqliteDatabase probe{temporary.path(), SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX};
+    EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM schema_version"), 1);
+    EXPECT_EQ(probe.query_int64("SELECT applied_at FROM schema_version"), first_applied_at);
+    EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM servers"), 1);
+}
+
+TEST(StorageDatabaseTest, RejectsFutureSchemaWithoutChangingItsData) {
+    TemporaryDatabaseFile temporary;
+    {
+        NativeSqliteDatabase fixture{temporary.path()};
+        fixture.execute(
+            "CREATE TABLE schema_version(version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL);"
+            "INSERT INTO schema_version(version, applied_at) VALUES(2, 1234);"
+            "CREATE TABLE future_data(value TEXT NOT NULL);"
+            "INSERT INTO future_data(value) VALUES('preserve-me');");
+    }
+
+    const auto opened = Database::open(temporary.path_string());
+    ASSERT_FALSE(opened);
+    EXPECT_EQ(opened.error().code(), common::ErrorCode::unsupported_version);
+
+    NativeSqliteDatabase probe{temporary.path(), SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX};
+    EXPECT_EQ(probe.query_int64("SELECT version FROM schema_version"), 2);
+    EXPECT_EQ(probe.query_int64("SELECT applied_at FROM schema_version"), 1'234);
+    EXPECT_EQ(probe.query_text("SELECT value FROM future_data"), "preserve-me");
+    EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM sqlite_master "
+                                "WHERE type = 'table' AND name IN ('servers', 'tunnels')"),
+              0);
+}
+
+TEST(StorageDatabaseTest, RejectsUnversionedNonEmptyDatabaseWithoutChangingIt) {
+    TemporaryDatabaseFile temporary;
+    {
+        NativeSqliteDatabase fixture{temporary.path()};
+        fixture.execute("CREATE TABLE legacy_data(id INTEGER PRIMARY KEY, value TEXT NOT NULL);"
+                        "INSERT INTO legacy_data(id, value) VALUES(7, 'preserve-me');");
+    }
+
+    const auto opened = Database::open(temporary.path_string());
+    ASSERT_FALSE(opened);
+    EXPECT_EQ(opened.error().code(), common::ErrorCode::database_error);
+
+    NativeSqliteDatabase probe{temporary.path(), SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX};
+    EXPECT_EQ(probe.query_int64("SELECT id FROM legacy_data"), 7);
+    EXPECT_EQ(probe.query_text("SELECT value FROM legacy_data"), "preserve-me");
+    EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM sqlite_master "
+                                "WHERE type = 'table' AND name = 'schema_version'"),
+              0);
+}
+
+TEST(StorageDatabaseTest, RejectsViewOnlyUnversionedDatabaseWithoutChangingIt) {
+    TemporaryDatabaseFile temporary;
+    {
+        NativeSqliteDatabase fixture{temporary.path()};
+        fixture.execute("CREATE VIEW legacy_view AS SELECT 'pre-existing' AS marker");
+    }
+
+    const auto opened = Database::open(temporary.path_string());
+    ASSERT_FALSE(opened);
+    EXPECT_EQ(opened.error().code(), common::ErrorCode::database_error);
+
+    NativeSqliteDatabase probe{temporary.path(), SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX};
+    EXPECT_EQ(probe.query_text("SELECT marker FROM legacy_view"), "pre-existing");
+    EXPECT_EQ(
+        probe.query_int64(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'view' AND name = 'legacy_view'"),
+        1);
+    EXPECT_EQ(probe.query_int64(
+                  "SELECT COUNT(*) FROM sqlite_master "
+                  "WHERE type = 'table' AND name IN ('schema_version', 'servers', 'tunnels')"),
+              0);
+}
+
+TEST(StorageDatabaseTest, RejectsVersionOneSchemaDriftWithoutChangingIt) {
+    TemporaryDatabaseFile temporary;
+    {
+        auto repository = StateRepository::open(temporary.path_string());
+        ASSERT_TRUE(repository) << repository.error();
+        ASSERT_TRUE((*repository)->servers().create(sample_server()));
+    }
+    {
+        NativeSqliteDatabase fixture{temporary.path()};
+        fixture.execute("DROP INDEX idx_servers_reconcile;"
+                        "CREATE INDEX idx_servers_reconcile ON servers(name)");
+    }
+
+    const auto opened = Database::open(temporary.path_string());
+    ASSERT_FALSE(opened);
+    EXPECT_EQ(opened.error().code(), common::ErrorCode::database_error);
+
+    NativeSqliteDatabase probe{temporary.path()};
+    EXPECT_EQ(probe.query_text("SELECT sql FROM sqlite_master "
+                               "WHERE type = 'index' AND name = 'idx_servers_reconcile'"),
+              "CREATE INDEX idx_servers_reconcile ON servers(name)");
+    EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM servers"), 1);
+}
+
+TEST(StorageDatabaseTest, RejectsConstraintViolatingRowsWithoutChangingThem) {
+    TemporaryDatabaseFile temporary;
+    {
+        auto repository = StateRepository::open(temporary.path_string());
+        ASSERT_TRUE(repository) << repository.error();
+        ASSERT_TRUE((*repository)->servers().create(sample_server()));
+    }
+    {
+        NativeSqliteDatabase fixture{temporary.path()};
+        fixture.execute("PRAGMA ignore_check_constraints = ON");
+        fixture.execute("UPDATE servers SET desired_state = 'invalid-state'");
+    }
+
+    const auto opened = Database::open(temporary.path_string());
+    ASSERT_FALSE(opened);
+    EXPECT_EQ(opened.error().code(), common::ErrorCode::database_error);
+
+    NativeSqliteDatabase probe{temporary.path()};
+    EXPECT_EQ(probe.query_text("SELECT desired_state FROM servers"), "invalid-state");
+}
+
+TEST(StorageDatabaseTest, CorruptDatabaseIsRejectedWithoutBeingRecreated) {
+    TemporaryDatabaseFile temporary;
+    const std::string corrupt_contents =
+        "this is deliberately not a SQLite database and must remain untouched";
+    test::write_binary_file(temporary.path(), corrupt_contents);
+
+    const auto opened = Database::open(temporary.path_string());
+    ASSERT_FALSE(opened);
+    EXPECT_EQ(opened.error().code(), common::ErrorCode::database_error);
+    EXPECT_EQ(test::read_binary_file(temporary.path()), corrupt_contents);
+}
+
+TEST(StorageDatabaseTest, ExplicitTransactionCommitPersistsWrites) {
+    TemporaryDatabaseFile temporary;
+    auto repository = StateRepository::open(temporary.path_string());
+    ASSERT_TRUE(repository) << repository.error();
+
+    auto transaction = (*repository)->begin_transaction();
+    ASSERT_TRUE(transaction) << transaction.error();
+    ASSERT_TRUE((*repository)->servers().create(sample_server(), *transaction));
+    ASSERT_TRUE(transaction->active());
+    ASSERT_TRUE(transaction->commit());
+    EXPECT_FALSE(transaction->active());
+
+    const auto persisted = (*repository)->servers().get_by_id(sample_server().id);
+    ASSERT_TRUE(persisted) << persisted.error();
+    EXPECT_EQ(*persisted, sample_server());
+}
+
+TEST(StorageDatabaseTest, UncommittedTransactionIsRolledBackByDestruction) {
+    TemporaryDatabaseFile temporary;
+    auto repository = StateRepository::open(temporary.path_string());
+    ASSERT_TRUE(repository) << repository.error();
+
+    {
+        auto transaction = (*repository)->begin_transaction();
+        ASSERT_TRUE(transaction) << transaction.error();
+        ASSERT_TRUE((*repository)->servers().create(sample_server(), *transaction));
+    }
+
+    const auto missing = (*repository)->servers().get_by_id(sample_server().id);
+    ASSERT_FALSE(missing);
+    EXPECT_EQ(missing.error().code(), common::ErrorCode::not_found);
+}
+
+TEST(StorageDatabaseTest, NestedTransactionIsRejectedWithoutEndingOuterTransaction) {
+    TemporaryDatabaseFile temporary;
+    auto repository = StateRepository::open(temporary.path_string());
+    ASSERT_TRUE(repository) << repository.error();
+
+    auto outer = (*repository)->begin_transaction();
+    ASSERT_TRUE(outer) << outer.error();
+    const auto nested = (*repository)->begin_transaction();
+    ASSERT_FALSE(nested);
+    EXPECT_EQ(nested.error().code(), common::ErrorCode::invalid_argument);
+    EXPECT_TRUE(outer->active());
+    ASSERT_TRUE(outer->rollback());
+}
+
+TEST(StorageDatabaseTest, AnotherConnectionCannotSeeUncommittedWrites) {
+    TemporaryDatabaseFile temporary;
+    auto repository = StateRepository::open(temporary.path_string());
+    ASSERT_TRUE(repository) << repository.error();
+    NativeSqliteDatabase observer{temporary.path(), SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX};
+
+    auto transaction = (*repository)->begin_transaction();
+    ASSERT_TRUE(transaction) << transaction.error();
+    ASSERT_TRUE((*repository)->servers().create(sample_server(), *transaction));
+    EXPECT_EQ(observer.query_int64("SELECT COUNT(*) FROM servers"), 0);
+
+    ASSERT_TRUE(transaction->commit());
+    EXPECT_EQ(observer.query_int64("SELECT COUNT(*) FROM servers"), 1);
+}
+
+TEST(StorageDatabaseTest, RejectsInvalidStorageLimitsBeforeCreatingDatabase) {
+    TemporaryDatabaseFile temporary;
+
+    const auto no_servers = StateRepository::open(
+        temporary.path_string(), StorageLimits{.max_servers = 0, .max_tunnels = 1});
+    ASSERT_FALSE(no_servers);
+    EXPECT_EQ(no_servers.error().code(), common::ErrorCode::invalid_argument);
+    EXPECT_FALSE(std::filesystem::exists(temporary.path()));
+
+    const auto no_tunnels = StateRepository::open(
+        temporary.path_string(), StorageLimits{.max_servers = 1, .max_tunnels = 0});
+    ASSERT_FALSE(no_tunnels);
+    EXPECT_EQ(no_tunnels.error().code(), common::ErrorCode::invalid_argument);
+    EXPECT_FALSE(std::filesystem::exists(temporary.path()));
+
+    if constexpr (std::numeric_limits<std::size_t>::max() >
+                  static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max())) {
+        const std::size_t oversized =
+            static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max()) + 1U;
+        const auto excessive = StateRepository::open(
+            temporary.path_string(), StorageLimits{.max_servers = oversized, .max_tunnels = 1});
+        ASSERT_FALSE(excessive);
+        EXPECT_EQ(excessive.error().code(), common::ErrorCode::invalid_argument);
+        EXPECT_FALSE(std::filesystem::exists(temporary.path()));
+    }
+}
+
+} // namespace
+} // namespace minitun::storage

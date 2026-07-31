@@ -34,3 +34,26 @@ MINITUN_BUILD_PACKAGES
 
 Sanitizer builds have their own presets. TSan is intentionally kept separate from
 ASan/UBSan.
+
+## Stage-2 persistence development
+
+The storage implementation uses the system SQLite3 library in both dependency modes.
+Its default production path is `/var/lib/minitun/state.db`, but unit tests create
+isolated temporary database files and do not touch that location.
+
+Run only the storage and recovery tests after a persistence change with:
+
+```bash
+ctest --test-dir build/dev --output-on-failure -R '(Storage|Recovery)'
+```
+
+The tests cover fresh and repeated migration, refusal of future, drifted, or malformed
+schemas, migration rollback, connection policy, transaction commit/rollback/isolation,
+repository validation and constraints, monotonic timestamps, tombstone behavior,
+restart-state recovery, and reopen persistence.
+
+`minitund` currently links `MiniTun::storage` but remains a stage-2 placeholder. It
+does not yet accept `--database`, open the default database, or run recovery from
+`main()`. Those user-facing and lifecycle integrations belong to the IPC and daemon
+runtime stages. Until then, exercise persistence through the repository unit tests
+rather than treating the executables as a working tunnel service.

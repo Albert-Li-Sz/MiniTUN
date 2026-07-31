@@ -3,11 +3,18 @@
 MiniTun is an independently implemented TCP reverse-tunnelling system for Linux.
 It is written in C++20 and is intentionally not compatible with the FRP protocol.
 
-The repository is currently at **development stage 1**. In addition to the build and CI
-baseline, it contains validated endpoint and port-range types, cryptographically random
-typed IDs, overflow-safe time helpers, move-only secure-string storage, structured
-logging, and the common error/result model. TCP tunnelling, persistence, IPC, TLS, and
-packaging are deliberately not implemented yet.
+The repository is currently at **development stage 2**. In addition to the common
+types and build baseline, it contains a versioned SQLite storage layer, transactional
+server and tunnel repositories, and deterministic restart-state recovery. The default
+state database path is `/var/lib/minitun/state.db`; opening a database migrates it to
+schema version 1 and requires WAL mode, foreign keys, `synchronous=NORMAL`, and a
+5-second busy timeout.
+
+This is still not a deployable tunnel service. `minitund` links the storage layer, but
+its startup path does not open or recover the database yet. IPC, user-facing server and
+tunnel commands, credential-material storage, remote sessions, TLS, TCP relay, and
+packaging remain for later stages. SQLite stores only an opaque `credential_ref`;
+tokens, private keys, and other credential material must never be placed in that field.
 
 ## Build the current baseline
 

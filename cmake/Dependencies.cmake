@@ -102,6 +102,10 @@ function(minitun_setup_dependencies)
         message(FATAL_ERROR "The SQLite3 package did not provide a CMake target")
     endif()
 
+    add_library(minitun_sqlite INTERFACE)
+    add_library(MiniTun::sqlite ALIAS minitun_sqlite)
+    target_link_libraries(minitun_sqlite INTERFACE "${minitun_sqlite_target}")
+
     add_library(minitun_dependencies INTERFACE)
     add_library(MiniTun::dependencies ALIAS minitun_dependencies)
     target_link_libraries(minitun_dependencies
@@ -109,7 +113,6 @@ function(minitun_setup_dependencies)
             MiniTun::asio
             OpenSSL::SSL
             OpenSSL::Crypto
-            "${minitun_sqlite_target}"
             nlohmann_json::nlohmann_json
     )
 endfunction()

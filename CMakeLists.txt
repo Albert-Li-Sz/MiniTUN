@@ -76,11 +76,36 @@ minitun_apply_sanitizers(minitun_common)
 minitun_apply_version_definitions(minitun_common)
 minitun_apply_lto(minitun_common)
 
-function(minitun_add_program target source)
+add_library(minitun_storage STATIC
+    src/storage/database.cpp
+    src/storage/models.cpp
+    src/storage/server_repository.cpp
+    src/storage/sqlite_internal.cpp
+    src/storage/state_repository.cpp
+    src/storage/tunnel_repository.cpp
+)
+add_library(MiniTun::storage ALIAS minitun_storage)
+
+target_include_directories(minitun_storage
+    PUBLIC
+        "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+)
+target_link_libraries(minitun_storage
+    PUBLIC
+        MiniTun::common
+    PRIVATE
+        MiniTun::sqlite
+        Threads::Threads
+        minitun_project_warnings
+)
+minitun_apply_sanitizers(minitun_storage)
+minitun_apply_lto(minitun_storage)
+
+function(minitun_add_program target source core_library)
     add_executable("${target}" "${source}")
     target_link_libraries("${target}"
         PRIVATE
-            MiniTun::common
+            "${core_library}"
             CLI11::CLI11
             minitun_project_warnings
     )
@@ -89,9 +114,9 @@ function(minitun_add_program target source)
     minitun_apply_lto("${target}")
 endfunction()
 
-minitun_add_program(minitun apps/minitun_main.cpp)
-minitun_add_program(minitund apps/minitund_main.cpp)
-minitun_add_program(minitun-server apps/minitun_server_main.cpp)
+minitun_add_program(minitun apps/minitun_main.cpp MiniTun::common)
+minitun_add_program(minitund apps/minitund_main.cpp MiniTun::storage)
+minitun_add_program(minitun-server apps/minitun_server_main.cpp MiniTun::common)
 
 if(MINITUN_BUILD_TESTS)
     enable_testing()

@@ -5,12 +5,17 @@ add_executable(minitun_unit_tests
     unit/logging_test.cpp
     unit/port_range_test.cpp
     unit/secure_string_test.cpp
+    unit/state_recovery_test.cpp
+    unit/storage_database_test.cpp
+    unit/storage_models_test.cpp
+    unit/storage_repository_test.cpp
     unit/time_test.cpp
 )
 
 target_link_libraries(minitun_unit_tests
     PRIVATE
-        MiniTun::common
+        MiniTun::storage
+        MiniTun::sqlite
         GTest::gtest_main
         nlohmann_json::nlohmann_json
         minitun_project_warnings
