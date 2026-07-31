@@ -183,5 +183,7 @@ credential boundary. File permissions and cleansing reduce exposure but do not t
 the credential database into an encrypted vault; filesystem and host trust still
 matter.
 
-Later stages add the remote protocol, isolated server sessions, TLS authentication,
-reconciliation, worker pools, and TCP relay.
+The stage-5 remote protocol library provides explicit 24-byte network-order headers,
+a 64 KiB frame limit, incremental decoding, bounded payload fields, and separate
+control/worker connection state machines. Later stages connect it to isolated TLS
+server sessions, reconciliation, worker pools, and TCP relay.

@@ -3,12 +3,14 @@
 MiniTun is an independently implemented TCP reverse-tunnelling system for Linux. It
 uses C++20 and is intentionally not compatible with the FRP protocol.
 
-The repository is currently at **development stage 4**. The local control plane is
+The repository is currently at **development stage 5**. The local control plane is
 operational: the stateless `minitun` CLI talks to `minitund` over a protected Unix
 socket, and the daemon persists server and tunnel intent in SQLite. It supports all
 `server`, `tun`, `status`, and `daemon status` commands, structured JSON inspection,
 restart recovery, concurrent CLI requests, stable exit codes, and non-echoing Token
-input.
+input. The remote protocol library now provides bounded network-byte-order frames,
+incremental decoding, binary payload fields, strict message types, control/worker
+state validation, and a libFuzzer harness.
 
 Authentication material is stored separately in `/var/lib/minitun/credentials.db`,
 whose file mode is enforced as `0600`; Tokens are never stored in `state.db`, returned
@@ -16,9 +18,9 @@ by IPC, or printed by the CLI. `server login` currently stores a Token and chang
 local server state to `disconnected`. It does not contact or authenticate with the
 public server yet.
 
-This is not a deployable tunnel service. The remote binary protocol, TLS and remote
-authentication, multi-server sessions, tunnel registration, worker pools, TCP relay,
-service installation, and packages belong to later stages.
+This is not yet a deployable tunnel service. TLS and remote authentication,
+multi-server sessions, tunnel registration, worker pools, TCP relay, service
+installation, and packages belong to later stages.
 
 ## Build
 

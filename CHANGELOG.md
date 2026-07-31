@@ -34,5 +34,9 @@ All notable changes to MiniTun will be documented here.
   schema checks, secure deletion, and opaque references from `state.db`.
 - Non-echoing interactive Token input, explicit `--token-stdin`, and cleansing of
   Token-bearing CLI and IPC buffers.
+- Versioned 24-byte remote binary frames with explicit network-byte-order encoding,
+  a strict 64 KiB bound, incremental stream decoding, and complete message types.
+- Bounded binary payload primitives, strict UTF-8 fields, control/worker connection
+  state validation, and an ASan/UBSan-capable libFuzzer remote-frame target.
 - `minitun`, `minitund`, and `minitun-server` stage-0 executables.
 - Unit-test and GitHub Actions CI foundations.

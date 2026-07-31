@@ -10,6 +10,9 @@ add_executable(minitun_unit_tests
     unit/ipc_transport_test.cpp
     unit/logging_test.cpp
     unit/port_range_test.cpp
+    unit/remote_codec_test.cpp
+    unit/remote_frame_test.cpp
+    unit/remote_state_machine_test.cpp
     unit/secure_string_test.cpp
     unit/state_recovery_test.cpp
     unit/storage_database_test.cpp
@@ -21,6 +24,7 @@ add_executable(minitun_unit_tests
 target_link_libraries(minitun_unit_tests
     PRIVATE
         MiniTun::daemon
+        MiniTun::protocol
         MiniTun::storage
         MiniTun::ipc
         MiniTun::sqlite

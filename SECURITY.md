@@ -1,10 +1,11 @@
 # Security policy
 
-MiniTun is pre-release software. Do not deploy the stage-4 build as a public tunnel
-service: the network-facing protocol, TLS authentication, session isolation, port
-policy, relay limits, service accounts, and installation hardening are not complete.
+MiniTun is pre-release software. Do not deploy the stage-5 build as a public tunnel
+service: TLS authentication, session isolation, port policy, relay limits, service
+accounts, and installation hardening are not complete.
 
-Stage 4 does provide a functional local security boundary. `minitun` talks only to a
+Stage 5 provides a functional local security boundary and a bounded remote protocol
+parser. `minitun` talks only to a
 strict, bounded Unix-socket protocol. `minitund` requires a trusted daemon-owned socket
 directory, creates the socket as `0660`, bounds clients and request time, contains
 malformed input and handler exceptions, and safely handles stale socket paths.

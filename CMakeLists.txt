@@ -76,6 +76,26 @@ minitun_apply_sanitizers(minitun_common)
 minitun_apply_version_definitions(minitun_common)
 minitun_apply_lto(minitun_common)
 
+add_library(minitun_protocol STATIC
+    src/protocol/codec.cpp
+    src/protocol/frame.cpp
+    src/protocol/state_machine.cpp
+)
+add_library(MiniTun::protocol ALIAS minitun_protocol)
+
+target_include_directories(minitun_protocol
+    PUBLIC
+        "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+)
+target_link_libraries(minitun_protocol
+    PUBLIC
+        MiniTun::common
+    PRIVATE
+        minitun_project_warnings
+)
+minitun_apply_sanitizers(minitun_protocol)
+minitun_apply_lto(minitun_protocol)
+
 add_library(minitun_storage STATIC
     src/storage/credential_store.cpp
     src/storage/database.cpp
@@ -169,7 +189,21 @@ if(MINITUN_BUILD_TESTS)
 endif()
 
 if(MINITUN_BUILD_FUZZERS)
-    message(STATUS "Fuzz targets will be introduced in protocol phase 5")
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR "MINITUN_BUILD_FUZZERS requires Clang with libFuzzer")
+    endif()
+
+    target_compile_options(minitun_protocol PRIVATE -fsanitize=fuzzer-no-link)
+
+    add_executable(minitun_remote_frame_fuzz fuzz/remote_frame_fuzz.cpp)
+    target_link_libraries(minitun_remote_frame_fuzz
+        PRIVATE
+            MiniTun::protocol
+            minitun_project_warnings
+    )
+    target_compile_options(minitun_remote_frame_fuzz PRIVATE -fsanitize=fuzzer)
+    target_link_options(minitun_remote_frame_fuzz PRIVATE -fsanitize=fuzzer)
+    minitun_apply_sanitizers(minitun_remote_frame_fuzz)
 endif()
 
 if(MINITUN_BUILD_PACKAGES)
