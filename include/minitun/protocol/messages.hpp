@@ -98,6 +98,47 @@ struct UnregisterTunnelMessage final {
 
 using UnregisterTunnelOkMessage = UnregisterTunnelMessage;
 
+struct RequestWorkersMessage final {
+    std::uint16_t count{0U};
+
+    friend bool operator==(const RequestWorkersMessage&, const RequestWorkersMessage&) = default;
+};
+
+struct WorkerHelloMessage final {
+    std::string client_id;
+    std::uint64_t session_generation{0U};
+    std::string worker_id;
+
+    friend bool operator==(const WorkerHelloMessage&, const WorkerHelloMessage&) = default;
+};
+
+struct WorkerAcceptedMessage final {
+    std::string worker_id;
+
+    friend bool operator==(const WorkerAcceptedMessage&, const WorkerAcceptedMessage&) = default;
+};
+
+struct StartRelayMessage final {
+    std::string tunnel_id;
+    std::string connection_id;
+
+    friend bool operator==(const StartRelayMessage&, const StartRelayMessage&) = default;
+};
+
+struct LocalConnectOkMessage final {
+    std::string connection_id;
+
+    friend bool operator==(const LocalConnectOkMessage&, const LocalConnectOkMessage&) = default;
+};
+
+struct LocalConnectErrorMessage final {
+    std::string connection_id;
+    common::ErrorCode code{common::ErrorCode::local_connect_failed};
+
+    friend bool operator==(const LocalConnectErrorMessage&,
+                           const LocalConnectErrorMessage&) = default;
+};
+
 [[nodiscard]] common::Result<std::vector<std::uint8_t>> encode_hello(const HelloMessage& message);
 [[nodiscard]] common::Result<HelloMessage> decode_hello(const std::vector<std::uint8_t>& payload);
 
@@ -148,5 +189,35 @@ decode_unregister_tunnel(const std::vector<std::uint8_t>& payload);
 encode_unregister_tunnel_ok(const UnregisterTunnelOkMessage& message);
 [[nodiscard]] common::Result<UnregisterTunnelOkMessage>
 decode_unregister_tunnel_ok(const std::vector<std::uint8_t>& payload);
+
+[[nodiscard]] common::Result<std::vector<std::uint8_t>>
+encode_request_workers(const RequestWorkersMessage& message);
+[[nodiscard]] common::Result<RequestWorkersMessage>
+decode_request_workers(const std::vector<std::uint8_t>& payload);
+
+[[nodiscard]] common::Result<std::vector<std::uint8_t>>
+encode_worker_hello(const WorkerHelloMessage& message);
+[[nodiscard]] common::Result<WorkerHelloMessage>
+decode_worker_hello(const std::vector<std::uint8_t>& payload);
+
+[[nodiscard]] common::Result<std::vector<std::uint8_t>>
+encode_worker_accepted(const WorkerAcceptedMessage& message);
+[[nodiscard]] common::Result<WorkerAcceptedMessage>
+decode_worker_accepted(const std::vector<std::uint8_t>& payload);
+
+[[nodiscard]] common::Result<std::vector<std::uint8_t>>
+encode_start_relay(const StartRelayMessage& message);
+[[nodiscard]] common::Result<StartRelayMessage>
+decode_start_relay(const std::vector<std::uint8_t>& payload);
+
+[[nodiscard]] common::Result<std::vector<std::uint8_t>>
+encode_local_connect_ok(const LocalConnectOkMessage& message);
+[[nodiscard]] common::Result<LocalConnectOkMessage>
+decode_local_connect_ok(const std::vector<std::uint8_t>& payload);
+
+[[nodiscard]] common::Result<std::vector<std::uint8_t>>
+encode_local_connect_error(const LocalConnectErrorMessage& message);
+[[nodiscard]] common::Result<LocalConnectErrorMessage>
+decode_local_connect_error(const std::vector<std::uint8_t>& payload);
 
 } // namespace minitun::protocol

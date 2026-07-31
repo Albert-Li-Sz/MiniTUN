@@ -2,11 +2,13 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
 
 #include <asio/any_io_executor.hpp>
+#include <asio/ip/tcp.hpp>
 
 #include <minitun/common/port_range.hpp>
 #include <minitun/common/result.hpp>
@@ -23,10 +25,14 @@ struct TunnelBinding final {
     friend bool operator==(const TunnelBinding&, const TunnelBinding&) = default;
 };
 
+using PublicConnectionHandler =
+    std::function<void(TunnelBinding binding, asio::ip::tcp::socket public_socket)>;
+
 class TunnelRegistry final {
   public:
     TunnelRegistry(asio::any_io_executor executor, common::PortRange allowed_ports,
-                   std::size_t max_tunnels_per_client);
+                   std::size_t max_tunnels_per_client,
+                   PublicConnectionHandler connection_handler = {});
     ~TunnelRegistry() noexcept;
 
     TunnelRegistry(const TunnelRegistry&) = delete;

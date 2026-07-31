@@ -30,6 +30,7 @@
 #include <minitun/common/secure_string.hpp>
 #include <minitun/common/time.hpp>
 #include <minitun/daemon/reconnect_backoff.hpp>
+#include <minitun/daemon/worker_pool.hpp>
 #include <minitun/protocol/auth.hpp>
 #include <minitun/protocol/messages.hpp>
 #include <minitun/protocol/state_machine.hpp>
@@ -50,7 +51,9 @@ inline constexpr auto kMaximumConnectTimeout = std::chrono::minutes{5};
         options.connect_timeout <= std::chrono::seconds::zero() ||
         options.connect_timeout > kMaximumConnectTimeout ||
         options.handshake_timeout <= std::chrono::seconds::zero() ||
-        options.handshake_timeout > kMaximumConnectTimeout) {
+        options.handshake_timeout > kMaximumConnectTimeout ||
+        options.max_idle_workers_per_server == 0U || options.max_idle_workers_per_server > 128U ||
+        options.max_total_idle_workers == 0U || options.max_total_idle_workers > 4'096U) {
         return common::Result<void>::failure(common::ErrorCode::invalid_argument,
                                              "remote session timeout configuration is invalid");
     }
@@ -79,14 +82,17 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
         ServerSession(asio::io_context& io_context, storage::StateRepository& repository,
                       storage::CredentialStore& credentials, common::Id client_id,
                       storage::ServerRecord server, std::shared_ptr<asio::ssl::context> tls_context,
-                      ServerManagerOptions options)
+                      std::shared_ptr<WorkerBudget> worker_budget, ServerManagerOptions options)
             : repository_(repository), credentials_(credentials), client_id_(std::move(client_id)),
               server_(std::move(server)), remote_endpoint_text_(server_.endpoint.to_string()),
-              tls_context_(std::move(tls_context)), options_(std::move(options)),
-              strand_(asio::make_strand(io_context)), resolver_(strand_), reconnect_timer_(strand_),
-              operation_timer_(strand_) {}
+              tls_context_(std::move(tls_context)), worker_budget_(std::move(worker_budget)),
+              options_(std::move(options)), strand_(asio::make_strand(io_context)),
+              resolver_(strand_), reconnect_timer_(strand_), operation_timer_(strand_) {}
 
-        ~ServerSession() { close_transport(); }
+        ~ServerSession() {
+            stop_worker_pool();
+            close_transport();
+        }
 
         void start() {
             auto self = shared_from_this();
@@ -101,6 +107,7 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                                       self->log_context(common::ErrorCode::internal_error));
                 }
                 self->cancel_timers();
+                self->stop_worker_pool();
                 self->close_transport();
             });
         }
@@ -112,6 +119,7 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                 self->terminal_state_.store(TerminalState::stopped);
                 self->resolver_.cancel();
                 self->cancel_timers();
+                self->stop_worker_pool();
                 self->close_transport();
             });
         }
@@ -141,7 +149,9 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
             while (!stopping_) {
                 terminal_state_.store(TerminalState::running);
                 const AttemptResult result = co_await run_attempt();
+                stop_worker_pool();
                 close_transport();
+                session_generation_ = 0U;
                 mark_tunnels_pending();
                 if (stopping_ || result.kind == AttemptKind::stopped) {
                     terminal_state_.store(TerminalState::stopped);
@@ -275,6 +285,33 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
 
             session_generation_ = auth_ok->session_generation;
             remote_server_id_ = ack->server_id;
+            const std::uint16_t max_idle_workers = static_cast<std::uint16_t>(std::min<std::size_t>(
+                auth_ok->max_idle_workers, options_.max_idle_workers_per_server));
+            const std::uint16_t min_idle_workers =
+                std::min(auth_ok->min_idle_workers, max_idle_workers);
+            auto workers =
+                WorkerPool::create(strand_, tls_context_, worker_budget_,
+                                   {
+                                       .endpoint = server_.endpoint,
+                                       .server_id = server_.id.str(),
+                                       .client_id = client_id_.str(),
+                                       .session_generation = session_generation_,
+                                       .min_idle_workers = min_idle_workers,
+                                       .max_idle_workers = max_idle_workers,
+                                       .connect_timeout = options_.connect_timeout,
+                                       .handshake_timeout = options_.handshake_timeout,
+                                       .idle_timeout = std::chrono::seconds{65},
+                                       .insecure_skip_verify = options_.insecure_skip_verify,
+                                   });
+            if (!workers) {
+                co_return disconnected(workers.error().code(), workers.error().message());
+            }
+            worker_pool_ = std::move(*workers);
+            auto workers_started = worker_pool_->start();
+            if (!workers_started) {
+                co_return disconnected(workers_started.error().code(),
+                                       workers_started.error().message());
+            }
             backoff_.reset();
             const auto latency = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - attempt_started);
@@ -318,6 +355,14 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                         heartbeat_timeout);
                     if (!written) {
                         co_return disconnected(written.error().code(), written.error().message());
+                    }
+                    continue;
+                }
+                if (frame->type == protocol::MessageType::request_workers) {
+                    auto requested = handle_worker_request(*frame);
+                    if (!requested) {
+                        co_return disconnected(requested.error().code(),
+                                               requested.error().message());
                     }
                     continue;
                 }
@@ -493,6 +538,13 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                     }
                     continue;
                 }
+                if (frame->type == protocol::MessageType::request_workers) {
+                    auto requested = handle_worker_request(*frame);
+                    if (!requested) {
+                        co_return common::Result<protocol::Frame>::failure(requested.error());
+                    }
+                    continue;
+                }
                 if (frame->request_id != request_id) {
                     co_return common::Result<protocol::Frame>::failure(
                         common::ErrorCode::protocol_error,
@@ -572,6 +624,27 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                 protocol::close_tls_stream(*stream_);
                 stream_.reset();
             }
+        }
+
+        void stop_worker_pool() noexcept {
+            if (worker_pool_ != nullptr) {
+                worker_pool_->stop();
+                worker_pool_.reset();
+            }
+        }
+
+        [[nodiscard]] common::Result<void> handle_worker_request(const protocol::Frame& frame) {
+            auto requested = protocol::decode_request_workers(frame.payload);
+            if (!requested) {
+                return common::Result<void>::failure(requested.error());
+            }
+            if (worker_pool_ == nullptr) {
+                return common::Result<void>::failure(
+                    common::ErrorCode::protocol_error,
+                    "worker request arrived before authentication");
+            }
+            worker_pool_->request_workers(requested->count);
+            return common::Result<void>::success();
         }
 
         [[nodiscard]] std::uint64_t next_request_id() noexcept {
@@ -702,12 +775,14 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
         storage::ServerRecord server_;
         std::string remote_endpoint_text_;
         std::shared_ptr<asio::ssl::context> tls_context_;
+        std::shared_ptr<WorkerBudget> worker_budget_;
         ServerManagerOptions options_;
         asio::strand<asio::io_context::executor_type> strand_;
         asio::ip::tcp::resolver resolver_;
         asio::steady_timer reconnect_timer_;
         asio::steady_timer operation_timer_;
         std::unique_ptr<protocol::TlsStream> stream_;
+        std::unique_ptr<WorkerPool> worker_pool_;
         ReconnectBackoff backoff_;
         std::string remote_server_id_;
         std::uint64_t session_generation_{0U};
@@ -784,8 +859,9 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
          std::shared_ptr<asio::ssl::context> tls_context)
         : io_context_(io_context), repository_(repository), credentials_(credentials),
           client_id_(std::move(client_id)), options_(std::move(options)),
-          tls_context_(std::move(tls_context)), strand_(asio::make_strand(io_context)),
-          reconcile_timer_(strand_) {}
+          tls_context_(std::move(tls_context)),
+          worker_budget_(std::make_shared<WorkerBudget>(options_.max_total_idle_workers)),
+          strand_(asio::make_strand(io_context)), reconcile_timer_(strand_) {}
 
     void reconcile() {
         if (!running_.load()) {
@@ -827,9 +903,9 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                     sessions_.erase(existing);
                 }
                 if (record.actual_state != storage::ServerActualState::not_authenticated) {
-                    auto session =
-                        std::make_shared<ServerSession>(io_context_, repository_, credentials_,
-                                                        client_id_, record, tls_context_, options_);
+                    auto session = std::make_shared<ServerSession>(
+                        io_context_, repository_, credentials_, client_id_, record, tls_context_,
+                        worker_budget_, options_);
                     sessions_.emplace(id, session);
                     session->start();
                 }
@@ -867,6 +943,7 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
     common::Id client_id_;
     ServerManagerOptions options_;
     std::shared_ptr<asio::ssl::context> tls_context_;
+    std::shared_ptr<WorkerBudget> worker_budget_;
     asio::strand<asio::io_context::executor_type> strand_;
     asio::steady_timer reconcile_timer_;
     std::unordered_map<std::string, std::shared_ptr<ServerSession>> sessions_;

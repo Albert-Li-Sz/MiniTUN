@@ -37,6 +37,15 @@ namespace {
     return common::Result<void>::success();
 }
 
+[[nodiscard]] common::Result<void> validate_connection_id(const std::string_view value) {
+    const auto parsed = common::Id::parse(value, common::IdKind::connection);
+    if (!parsed) {
+        return common::Result<void>::failure(common::ErrorCode::protocol_error,
+                                             "remote message contains an invalid connection ID");
+    }
+    return common::Result<void>::success();
+}
+
 [[nodiscard]] common::Result<std::vector<std::uint8_t>>
 encode_tunnel_id(const std::string_view tunnel_id) {
     auto valid = validate_tunnel_id(tunnel_id);
@@ -455,6 +464,169 @@ encode_unregister_tunnel_ok(const UnregisterTunnelOkMessage& message) {
 common::Result<UnregisterTunnelOkMessage>
 decode_unregister_tunnel_ok(const std::vector<std::uint8_t>& payload) {
     return decode_unregister_tunnel(payload);
+}
+
+common::Result<std::vector<std::uint8_t>>
+encode_request_workers(const RequestWorkersMessage& message) {
+    if (message.count == 0U || message.count > 128U) {
+        return common::Result<std::vector<std::uint8_t>>::failure(
+            common::ErrorCode::invalid_argument, "requested worker count is outside 1..128");
+    }
+    PayloadWriter writer;
+    if (auto written = writer.write_u16(message.count); !written) {
+        return common::Result<std::vector<std::uint8_t>>::failure(written.error());
+    }
+    return std::move(writer).finish();
+}
+
+common::Result<RequestWorkersMessage>
+decode_request_workers(const std::vector<std::uint8_t>& payload) {
+    PayloadReader reader{payload};
+    auto count = reader.read_u16();
+    if (!count || *count == 0U || *count > 128U || !reader.require_end()) {
+        return common::Result<RequestWorkersMessage>::failure(common::ErrorCode::protocol_error,
+                                                              "REQUEST_WORKERS payload is invalid");
+    }
+    return RequestWorkersMessage{*count};
+}
+
+common::Result<std::vector<std::uint8_t>> encode_worker_hello(const WorkerHelloMessage& message) {
+    auto client_valid = validate_client_id(message.client_id);
+    auto worker_valid = validate_connection_id(message.worker_id);
+    if (!client_valid || !worker_valid || message.session_generation == 0U) {
+        return common::Result<std::vector<std::uint8_t>>::failure(
+            common::ErrorCode::protocol_error, "WORKER_HELLO identity is invalid");
+    }
+    PayloadWriter writer;
+    if (auto written = writer.write_string(message.client_id); !written) {
+        return common::Result<std::vector<std::uint8_t>>::failure(written.error());
+    }
+    if (auto written = writer.write_u64(message.session_generation); !written) {
+        return common::Result<std::vector<std::uint8_t>>::failure(written.error());
+    }
+    if (auto written = writer.write_string(message.worker_id); !written) {
+        return common::Result<std::vector<std::uint8_t>>::failure(written.error());
+    }
+    return std::move(writer).finish();
+}
+
+common::Result<WorkerHelloMessage> decode_worker_hello(const std::vector<std::uint8_t>& payload) {
+    PayloadReader reader{payload};
+    auto client_id = reader.read_string(kMaxProtocolIdentifierBytes);
+    auto generation = reader.read_u64();
+    auto worker_id = reader.read_string(kMaxProtocolIdentifierBytes);
+    if (!client_id || !generation || !worker_id || *generation == 0U ||
+        !validate_client_id(*client_id) || !validate_connection_id(*worker_id) ||
+        !reader.require_end()) {
+        return common::Result<WorkerHelloMessage>::failure(common::ErrorCode::protocol_error,
+                                                           "WORKER_HELLO payload is invalid");
+    }
+    return WorkerHelloMessage{std::move(*client_id), *generation, std::move(*worker_id)};
+}
+
+common::Result<std::vector<std::uint8_t>>
+encode_worker_accepted(const WorkerAcceptedMessage& message) {
+    auto valid = validate_connection_id(message.worker_id);
+    if (!valid) {
+        return common::Result<std::vector<std::uint8_t>>::failure(valid.error());
+    }
+    PayloadWriter writer;
+    if (auto written = writer.write_string(message.worker_id); !written) {
+        return common::Result<std::vector<std::uint8_t>>::failure(written.error());
+    }
+    return std::move(writer).finish();
+}
+
+common::Result<WorkerAcceptedMessage>
+decode_worker_accepted(const std::vector<std::uint8_t>& payload) {
+    PayloadReader reader{payload};
+    auto worker_id = reader.read_string(kMaxProtocolIdentifierBytes);
+    if (!worker_id || !validate_connection_id(*worker_id) || !reader.require_end()) {
+        return common::Result<WorkerAcceptedMessage>::failure(common::ErrorCode::protocol_error,
+                                                              "WORKER_ACCEPTED payload is invalid");
+    }
+    return WorkerAcceptedMessage{std::move(*worker_id)};
+}
+
+common::Result<std::vector<std::uint8_t>> encode_start_relay(const StartRelayMessage& message) {
+    if (!validate_tunnel_id(message.tunnel_id) || !validate_connection_id(message.connection_id)) {
+        return common::Result<std::vector<std::uint8_t>>::failure(
+            common::ErrorCode::protocol_error, "START_RELAY identity is invalid");
+    }
+    PayloadWriter writer;
+    if (auto written = writer.write_string(message.tunnel_id); !written) {
+        return common::Result<std::vector<std::uint8_t>>::failure(written.error());
+    }
+    if (auto written = writer.write_string(message.connection_id); !written) {
+        return common::Result<std::vector<std::uint8_t>>::failure(written.error());
+    }
+    return std::move(writer).finish();
+}
+
+common::Result<StartRelayMessage> decode_start_relay(const std::vector<std::uint8_t>& payload) {
+    PayloadReader reader{payload};
+    auto tunnel_id = reader.read_string(kMaxProtocolIdentifierBytes);
+    auto connection_id = reader.read_string(kMaxProtocolIdentifierBytes);
+    if (!tunnel_id || !connection_id || !validate_tunnel_id(*tunnel_id) ||
+        !validate_connection_id(*connection_id) || !reader.require_end()) {
+        return common::Result<StartRelayMessage>::failure(common::ErrorCode::protocol_error,
+                                                          "START_RELAY payload is invalid");
+    }
+    return StartRelayMessage{std::move(*tunnel_id), std::move(*connection_id)};
+}
+
+common::Result<std::vector<std::uint8_t>>
+encode_local_connect_ok(const LocalConnectOkMessage& message) {
+    auto valid = validate_connection_id(message.connection_id);
+    if (!valid) {
+        return common::Result<std::vector<std::uint8_t>>::failure(valid.error());
+    }
+    PayloadWriter writer;
+    if (auto written = writer.write_string(message.connection_id); !written) {
+        return common::Result<std::vector<std::uint8_t>>::failure(written.error());
+    }
+    return std::move(writer).finish();
+}
+
+common::Result<LocalConnectOkMessage>
+decode_local_connect_ok(const std::vector<std::uint8_t>& payload) {
+    PayloadReader reader{payload};
+    auto connection_id = reader.read_string(kMaxProtocolIdentifierBytes);
+    if (!connection_id || !validate_connection_id(*connection_id) || !reader.require_end()) {
+        return common::Result<LocalConnectOkMessage>::failure(
+            common::ErrorCode::protocol_error, "LOCAL_CONNECT_OK payload is invalid");
+    }
+    return LocalConnectOkMessage{std::move(*connection_id)};
+}
+
+common::Result<std::vector<std::uint8_t>>
+encode_local_connect_error(const LocalConnectErrorMessage& message) {
+    if (!validate_connection_id(message.connection_id) || message.code == common::ErrorCode::ok) {
+        return common::Result<std::vector<std::uint8_t>>::failure(
+            common::ErrorCode::protocol_error, "LOCAL_CONNECT_ERROR payload is invalid");
+    }
+    PayloadWriter writer;
+    if (auto written = writer.write_string(message.connection_id); !written) {
+        return common::Result<std::vector<std::uint8_t>>::failure(written.error());
+    }
+    if (auto written = writer.write_string(common::to_string(message.code)); !written) {
+        return common::Result<std::vector<std::uint8_t>>::failure(written.error());
+    }
+    return std::move(writer).finish();
+}
+
+common::Result<LocalConnectErrorMessage>
+decode_local_connect_error(const std::vector<std::uint8_t>& payload) {
+    PayloadReader reader{payload};
+    auto connection_id = reader.read_string(kMaxProtocolIdentifierBytes);
+    auto code_text = reader.read_string(64U);
+    const auto code = code_text ? common::error_code_from_string(*code_text) : std::nullopt;
+    if (!connection_id || !validate_connection_id(*connection_id) || !code.has_value() ||
+        *code == common::ErrorCode::ok || !reader.require_end()) {
+        return common::Result<LocalConnectErrorMessage>::failure(
+            common::ErrorCode::protocol_error, "LOCAL_CONNECT_ERROR payload is invalid");
+    }
+    return LocalConnectErrorMessage{std::move(*connection_id), *code};
 }
 
 } // namespace minitun::protocol

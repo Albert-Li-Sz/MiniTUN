@@ -64,12 +64,11 @@ read_token(const std::string& path) {
 run_protocol(minitun::protocol::TlsStream& stream, const Options& options,
              const minitun::common::SecureString& token) {
     asio::error_code handshake_error;
-    co_await stream.async_handshake(
-        asio::ssl::stream_base::client,
-        asio::redirect_error(asio::use_awaitable, handshake_error));
+    co_await stream.async_handshake(asio::ssl::stream_base::client,
+                                    asio::redirect_error(asio::use_awaitable, handshake_error));
     if (handshake_error) {
-        co_return minitun::common::Result<void>::failure(
-            minitun::common::ErrorCode::tls_error, "test TLS handshake failed");
+        co_return minitun::common::Result<void>::failure(minitun::common::ErrorCode::tls_error,
+                                                         "test TLS handshake failed");
     }
 
     auto generated_client_id = minitun::common::Id::generate(minitun::common::IdKind::client);
@@ -82,8 +81,8 @@ run_protocol(minitun::protocol::TlsStream& stream, const Options& options,
 
     auto hello_payload = minitun::protocol::encode_hello({client_id});
     if (!hello_payload || !state.on_send(minitun::protocol::MessageType::hello)) {
-        co_return minitun::common::Result<void>::failure(
-            minitun::common::ErrorCode::internal_error, "test HELLO encoding failed");
+        co_return minitun::common::Result<void>::failure(minitun::common::ErrorCode::internal_error,
+                                                         "test HELLO encoding failed");
     }
     auto written = co_await minitun::protocol::async_write_frame(
         stream, {minitun::protocol::MessageType::hello, 0U, 1U, std::move(*hello_payload)});
@@ -94,8 +93,8 @@ run_protocol(minitun::protocol::TlsStream& stream, const Options& options,
     auto ack_frame = co_await minitun::protocol::async_read_frame(stream);
     if (!ack_frame || ack_frame->type != minitun::protocol::MessageType::hello_ack ||
         !state.on_receive(ack_frame->type)) {
-        co_return minitun::common::Result<void>::failure(
-            minitun::common::ErrorCode::protocol_error, "test HELLO_ACK was invalid");
+        co_return minitun::common::Result<void>::failure(minitun::common::ErrorCode::protocol_error,
+                                                         "test HELLO_ACK was invalid");
     }
     auto ack = minitun::protocol::decode_hello_ack(ack_frame->payload);
     if (!ack) {
@@ -103,16 +102,15 @@ run_protocol(minitun::protocol::TlsStream& stream, const Options& options,
     }
 
     const std::int64_t timestamp = minitun::common::unix_seconds_now();
-    auto digest = minitun::protocol::compute_authentication_data(
-        token.view(), client_id, timestamp, ack->nonce);
+    auto digest = minitun::protocol::compute_authentication_data(token.view(), client_id, timestamp,
+                                                                 ack->nonce);
     if (!digest) {
         co_return minitun::common::Result<void>::failure(digest.error());
     }
-    auto auth_payload = minitun::protocol::encode_auth(
-        {client_id, timestamp, ack->nonce, *digest});
+    auto auth_payload = minitun::protocol::encode_auth({client_id, timestamp, ack->nonce, *digest});
     if (!auth_payload || !state.on_send(minitun::protocol::MessageType::auth)) {
-        co_return minitun::common::Result<void>::failure(
-            minitun::common::ErrorCode::internal_error, "test AUTH encoding failed");
+        co_return minitun::common::Result<void>::failure(minitun::common::ErrorCode::internal_error,
+                                                         "test AUTH encoding failed");
     }
     written = co_await minitun::protocol::async_write_frame(
         stream, {minitun::protocol::MessageType::auth, 0U, 2U, std::move(*auth_payload)});
@@ -141,10 +139,21 @@ run_protocol(minitun::protocol::TlsStream& stream, const Options& options,
             "test client authentication was rejected");
     }
 
-    for (std::size_t index = 0U; index < options.heartbeat_count; ++index) {
+    std::size_t heartbeats = 0U;
+    while (heartbeats < options.heartbeat_count) {
         auto ping_frame = co_await minitun::protocol::async_read_frame(stream);
-        if (!ping_frame || ping_frame->type != minitun::protocol::MessageType::ping ||
-            !state.on_receive(ping_frame->type)) {
+        if (!ping_frame || !state.on_receive(ping_frame->type)) {
+            co_return minitun::common::Result<void>::failure(
+                minitun::common::ErrorCode::protocol_error, "test heartbeat PING was invalid");
+        }
+        if (ping_frame->type == minitun::protocol::MessageType::request_workers) {
+            if (!minitun::protocol::decode_request_workers(ping_frame->payload)) {
+                co_return minitun::common::Result<void>::failure(
+                    minitun::common::ErrorCode::protocol_error, "test worker request was invalid");
+            }
+            continue;
+        }
+        if (ping_frame->type != minitun::protocol::MessageType::ping) {
             co_return minitun::common::Result<void>::failure(
                 minitun::common::ErrorCode::protocol_error, "test heartbeat PING was invalid");
         }
@@ -163,6 +172,7 @@ run_protocol(minitun::protocol::TlsStream& stream, const Options& options,
         if (!written) {
             co_return written;
         }
+        ++heartbeats;
     }
     co_return minitun::common::Result<void>::success();
 }
@@ -178,8 +188,8 @@ int run(const Options& options) {
 
     asio::io_context io_context;
     minitun::protocol::TlsStream stream{io_context, **context};
-    auto configured = minitun::protocol::configure_client_tls_stream(
-        stream, options.server_name, false);
+    auto configured =
+        minitun::protocol::configure_client_tls_stream(stream, options.server_name, false);
     if (!configured) {
         return EXIT_FAILURE;
     }
@@ -187,8 +197,8 @@ int run(const Options& options) {
     asio::ip::tcp::resolver resolver{io_context};
     asio::error_code connect_error;
     for (int attempt = 0; attempt < 50; ++attempt) {
-        const auto endpoints = resolver.resolve(endpoint->host(), std::to_string(endpoint->port()),
-                                                connect_error);
+        const auto endpoints =
+            resolver.resolve(endpoint->host(), std::to_string(endpoint->port()), connect_error);
         if (!connect_error) {
             asio::connect(stream.lowest_layer(), endpoints, connect_error);
         }
@@ -207,8 +217,7 @@ int run(const Options& options) {
         [&outcome](const std::exception_ptr failure, minitun::common::Result<void> result) {
             if (failure) {
                 outcome = minitun::common::Result<void>::failure(
-                    minitun::common::ErrorCode::internal_error,
-                    "test TLS client coroutine failed");
+                    minitun::common::ErrorCode::internal_error, "test TLS client coroutine failed");
             } else {
                 outcome = std::move(result);
             }

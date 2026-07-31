@@ -24,6 +24,7 @@ add_executable(minitun_unit_tests
     unit/storage_repository_test.cpp
     unit/time_test.cpp
     unit/tunnel_registry_test.cpp
+    unit/worker_pool_test.cpp
 )
 
 target_link_libraries(minitun_unit_tests
@@ -129,5 +130,18 @@ if(UNIX)
         LABELS "integration;tls;tunnel"
         TIMEOUT 60
         PASS_REGULAR_EXPRESSION "tunnel registration integration passed"
+    )
+
+    add_test(NAME integration.worker-pool
+        COMMAND
+            "${CMAKE_CURRENT_SOURCE_DIR}/integration/worker_pool.sh"
+            $<TARGET_FILE:minitun>
+            $<TARGET_FILE:minitund>
+            $<TARGET_FILE:minitun-server>
+    )
+    set_tests_properties(integration.worker-pool PROPERTIES
+        LABELS "integration;tls;worker"
+        TIMEOUT 30
+        PASS_REGULAR_EXPRESSION "Worker Pool integration passed"
     )
 endif()

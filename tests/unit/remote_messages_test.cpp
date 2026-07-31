@@ -121,5 +121,52 @@ TEST(RemoteMessagesTest, RejectsInvalidTunnelRegistrationPayloads) {
     EXPECT_FALSE(decode_register_tunnel(*registration));
 }
 
+TEST(RemoteMessagesTest, RoundTripsWorkerPoolPayloads) {
+    const std::string client_id = generated_id(common::IdKind::client);
+    const std::string worker_id = generated_id(common::IdKind::connection);
+    const std::string tunnel_id = generated_id(common::IdKind::tunnel);
+    const std::string connection_id = generated_id(common::IdKind::connection);
+
+    const RequestWorkersMessage request{2U};
+    const WorkerHelloMessage hello{client_id, 42U, worker_id};
+    const WorkerAcceptedMessage accepted{worker_id};
+    const StartRelayMessage relay{tunnel_id, connection_id};
+    const LocalConnectOkMessage connected{connection_id};
+    const LocalConnectErrorMessage failed{connection_id, common::ErrorCode::local_connect_failed};
+
+    const auto request_payload = encode_request_workers(request);
+    const auto hello_payload = encode_worker_hello(hello);
+    const auto accepted_payload = encode_worker_accepted(accepted);
+    const auto relay_payload = encode_start_relay(relay);
+    const auto connected_payload = encode_local_connect_ok(connected);
+    const auto failed_payload = encode_local_connect_error(failed);
+    ASSERT_TRUE(request_payload);
+    ASSERT_TRUE(hello_payload);
+    ASSERT_TRUE(accepted_payload);
+    ASSERT_TRUE(relay_payload);
+    ASSERT_TRUE(connected_payload);
+    ASSERT_TRUE(failed_payload);
+
+    EXPECT_EQ(*decode_request_workers(*request_payload), request);
+    EXPECT_EQ(*decode_worker_hello(*hello_payload), hello);
+    EXPECT_EQ(*decode_worker_accepted(*accepted_payload), accepted);
+    EXPECT_EQ(*decode_start_relay(*relay_payload), relay);
+    EXPECT_EQ(*decode_local_connect_ok(*connected_payload), connected);
+    EXPECT_EQ(*decode_local_connect_error(*failed_payload), failed);
+}
+
+TEST(RemoteMessagesTest, RejectsInvalidWorkerPoolPayloads) {
+    const std::string client_id = generated_id(common::IdKind::client);
+    const std::string worker_id = generated_id(common::IdKind::connection);
+    const std::string connection_id = generated_id(common::IdKind::connection);
+
+    EXPECT_FALSE(encode_request_workers({0U}));
+    EXPECT_FALSE(encode_request_workers({129U}));
+    EXPECT_FALSE(encode_worker_hello({client_id, 0U, worker_id}));
+    EXPECT_FALSE(encode_worker_accepted({"conn_invalid"}));
+    EXPECT_FALSE(encode_start_relay({"tun_invalid", connection_id}));
+    EXPECT_FALSE(encode_local_connect_error({connection_id, common::ErrorCode::ok}));
+}
+
 } // namespace
 } // namespace minitun::protocol

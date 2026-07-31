@@ -3,7 +3,7 @@
 MiniTun is an independently implemented TCP reverse-tunnelling system for Linux. It
 uses C++20 and is intentionally not compatible with the FRP protocol.
 
-The repository is currently at **development stage 8**. The local control plane is
+The repository is currently at **development stage 9**. The local control plane is
 operational: the stateless `minitun` CLI talks to `minitund` over a protected Unix
 socket, and the daemon persists server and tunnel intent in SQLite. It supports all
 `server`, `tun`, `status`, and `daemon status` commands, structured JSON inspection,
@@ -18,7 +18,10 @@ heartbeat, and exponential reconnect controller per configured server. A failed 
 restarting server does not interrupt the daemon's other online server sessions.
 Active tunnel intent is now reconciled over those sessions into allowlisted public TCP
 listeners. Registration failures remain isolated to one tunnel, and listeners are
-restored after either endpoint restarts and released after tunnel removal.
+restored after either endpoint restarts and released after tunnel removal. Each remote
+server now has an isolated TLS Worker Pool with generation checks, bounded per-session
+and global capacity, automatic replenishment, two-second public-connection waits, and
+idle Worker reclamation.
 
 Authentication material is stored separately in `/var/lib/minitun/credentials.db`,
 whose file mode is enforced as `0600`; Tokens are never stored in `state.db`, returned
@@ -26,9 +29,10 @@ by IPC, or printed by the CLI. `server login` stores a Token and wakes reconcili
 the daemon then authenticates the corresponding remote session without exposing the
 secret.
 
-This is not yet a deployable tunnel service. Public listeners intentionally close
-accepted sockets until worker pools and TCP relay arrive in stages 9 and 10. Service
-installation and packages also belong to later stages.
+This is not yet a deployable tunnel service. Public listeners assign accepted sockets
+to preconnected Workers, but the client intentionally reports `local_connect_failed`
+until the raw TCP relay arrives in stage 10. Service installation and packages also
+belong to later stages.
 
 ## Run the TLS server
 

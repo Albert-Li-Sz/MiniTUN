@@ -1,7 +1,7 @@
 # Security design status
 
-Stage 7 provides a protected local control plane and authenticated TLS control
-sessions, but not yet the TCP relay data plane.
+Stage 9 provides a protected local control plane, authenticated TLS control sessions,
+and generation-scoped TLS Worker Pools, but not yet the raw TCP relay data plane.
 
 Implemented local protections include:
 
@@ -25,11 +25,15 @@ must not place credential files in shared directories.
 Remote control transport requires TLS 1.2 or newer, hostname verification, HMAC-SHA256
 challenge authentication, bounded nonce replay protection, clock-skew validation,
 failure throttling, fresh session generations, and heartbeat deadlines. Each public
-server has an isolated daemon session and reconnect controller. Worker connections and
-public TCP relay are not implemented until later stages.
+server has an isolated daemon session, reconnect controller, and Worker Pool.
 
 Stage 8 adds numeric-only public bind addresses, a required finite `--allow-ports`
 policy, per-client registered-tunnel limits, generation-scoped listener ownership, and
 stable `permission_denied`, `resource_exhausted`, and `remote_port_in_use` failures.
-Local target hosts and ports never cross the control protocol. Accepted public sockets
-are closed until the bounded worker and relay stages are enabled.
+Local target hosts and ports never cross the control protocol.
+
+Stage 9 adds Worker identity validation against the current session generation,
+per-session and global idle limits, bounded public-socket waiting, automatic
+replenishment, and idle expiration. Stale Workers are closed when their generation is
+replaced. Assigned Workers still return `local_connect_failed` until stage 10 enables
+local dialing and raw relay.

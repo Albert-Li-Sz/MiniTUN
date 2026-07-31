@@ -204,8 +204,8 @@ Changing credentials or removing a server replaces only the affected session.
 The daemon loads one stable `client_id` from schema version 2 before starting remote
 work. It supports a platform trust store or explicit `--tls-ca`, hostname verification
 and SNI by default, and fixed `--io-threads` bounded to 1..16. A development-only
-`--insecure-skip-verify` switch emits a prominent warning. Tunnel registration, worker
-pools, and relay remain the next data-plane stages.
+`--insecure-skip-verify` switch emits a prominent warning. Tunnel registration and
+Worker Pools build on these isolated session lifetimes.
 
 ## Stage-8 tunnel reconciliation
 
@@ -220,6 +220,16 @@ to recreate every listener after server or daemon restart.
 The public server owns a `TunnelRegistry` on its Asio strand. A listener key contains
 the authenticated `client_id` and `tunnel_id`, while ownership also records the current
 session generation. Numeric address parsing, `--allow-ports`, per-client counts, and OS
-bind errors are checked before acknowledgment. Stage 8 accepts public TCP connections
-only to prove listener ownership and immediately closes them; worker assignment begins
-in stage 9.
+bind errors are checked before acknowledgment.
+
+## Stage-9 Worker Pools
+
+Every daemon `ServerSession` owns a separate client Worker Pool and shares only a
+bounded global Worker budget. Workers connect and verify TLS independently, carry the
+current `client_id` and `session_generation`, and are replenished after consumption or
+disconnect. Server-side idle capacity is capped per session and globally; stale
+generation cleanup closes the underlying TLS connection immediately. Public sockets
+wait for a matching Worker for at most two seconds, while idle Workers expire after 60
+seconds by default. The stage-9 client intentionally returns `local_connect_failed`
+after `START_RELAY`; stage 10 adds local dialing and raw relay without changing pool
+ownership.

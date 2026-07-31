@@ -157,6 +157,7 @@ add_library(minitun_daemon STATIC
     src/daemon/control_service.cpp
     src/daemon/reconnect_backoff.cpp
     src/daemon/server_manager.cpp
+    src/daemon/worker_pool.cpp
 )
 add_library(MiniTun::daemon ALIAS minitun_daemon)
 
@@ -179,6 +180,7 @@ add_library(minitun_server_core STATIC
     src/server/server.cpp
     src/server/session_registry.cpp
     src/server/tunnel_registry.cpp
+    src/server/worker_pool.cpp
 )
 add_library(MiniTun::server ALIAS minitun_server_core)
 

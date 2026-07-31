@@ -56,8 +56,10 @@ class TunnelRegistry::Impl final {
   private:
     class Listener final : public std::enable_shared_from_this<Listener> {
       public:
-        Listener(asio::any_io_executor executor, TunnelBinding binding)
-            : binding_(std::move(binding)), acceptor_(std::move(executor)) {}
+        Listener(asio::any_io_executor executor, TunnelBinding binding,
+                 PublicConnectionHandler connection_handler)
+            : binding_(std::move(binding)), acceptor_(std::move(executor)),
+              connection_handler_(std::move(connection_handler)) {}
 
         ~Listener() noexcept { stop(); }
 
@@ -105,8 +107,17 @@ class TunnelRegistry::Impl final {
             acceptor_.async_accept(
                 [self](const asio::error_code& error, asio::ip::tcp::socket socket) mutable {
                     if (!error) {
-                        asio::error_code ignored;
-                        socket.close(ignored);
+                        if (self->connection_handler_) {
+                            try {
+                                self->connection_handler_(self->binding_, std::move(socket));
+                            } catch (...) {
+                                asio::error_code ignored;
+                                socket.close(ignored);
+                            }
+                        } else {
+                            asio::error_code ignored;
+                            socket.close(ignored);
+                        }
                     }
                     if (self->acceptor_.is_open()) {
                         self->accept_next();
@@ -116,13 +127,15 @@ class TunnelRegistry::Impl final {
 
         TunnelBinding binding_;
         asio::ip::tcp::acceptor acceptor_;
+        PublicConnectionHandler connection_handler_;
     };
 
   public:
     Impl(asio::any_io_executor executor, common::PortRange allowed_ports,
-         const std::size_t max_tunnels_per_client)
+         const std::size_t max_tunnels_per_client, PublicConnectionHandler connection_handler)
         : executor_(std::move(executor)), allowed_ports_(std::move(allowed_ports)),
-          max_tunnels_per_client_(max_tunnels_per_client) {}
+          max_tunnels_per_client_(max_tunnels_per_client),
+          connection_handler_(std::move(connection_handler)) {}
 
     [[nodiscard]] common::Result<void> register_tunnel(const TunnelBinding& binding) {
         auto valid = validate_binding(binding, allowed_ports_);
@@ -142,7 +155,7 @@ class TunnelRegistry::Impl final {
             return common::Result<void>::failure(common::ErrorCode::resource_exhausted,
                                                  "client tunnel limit has been reached");
         }
-        auto listener = std::make_shared<Listener>(executor_, binding);
+        auto listener = std::make_shared<Listener>(executor_, binding, connection_handler_);
         auto started = listener->start();
         if (!started) {
             return started;
@@ -210,13 +223,16 @@ class TunnelRegistry::Impl final {
     asio::any_io_executor executor_;
     common::PortRange allowed_ports_;
     std::size_t max_tunnels_per_client_;
+    PublicConnectionHandler connection_handler_;
     std::unordered_map<std::string, std::shared_ptr<Listener>> listeners_;
 };
 
 TunnelRegistry::TunnelRegistry(asio::any_io_executor executor, common::PortRange allowed_ports,
-                               const std::size_t max_tunnels_per_client)
+                               const std::size_t max_tunnels_per_client,
+                               PublicConnectionHandler connection_handler)
     : implementation_(std::make_unique<Impl>(std::move(executor), std::move(allowed_ports),
-                                             max_tunnels_per_client)) {}
+                                             max_tunnels_per_client,
+                                             std::move(connection_handler))) {}
 
 TunnelRegistry::~TunnelRegistry() noexcept = default;
 

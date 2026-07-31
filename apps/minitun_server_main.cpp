@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <chrono>
 #include <csignal>
+#include <cstdint>
 #include <cstdlib>
 #include <exception>
 #include <iostream>
@@ -143,11 +144,25 @@ int main(int argc, char** argv) {
                    "Maximum registered tunnels per authenticated client")
         ->check(CLI::Range(1U, 4'096U))
         ->capture_default_str();
+    app.add_option("--min-idle-workers", options.min_idle_workers,
+                   "Minimum idle Workers requested per client session")
+        ->check(CLI::Range(0U, 128U))
+        ->capture_default_str();
+    app.add_option("--max-idle-workers", options.max_idle_workers,
+                   "Maximum idle Workers accepted per client session")
+        ->check(CLI::Range(1U, 128U))
+        ->capture_default_str();
+    app.add_option("--max-total-idle-workers", options.max_total_idle_workers,
+                   "Maximum idle Workers accepted across all clients")
+        ->check(CLI::Range(1U, 4'096U))
+        ->capture_default_str();
 
     int handshake_timeout_seconds = static_cast<int>(options.handshake_timeout.count());
     int heartbeat_interval_seconds = static_cast<int>(options.heartbeat_interval.count());
     int heartbeat_timeout_seconds = static_cast<int>(options.heartbeat_timeout.count());
     int clock_skew_seconds = static_cast<int>(options.allowed_clock_skew.count());
+    int worker_wait_timeout_seconds = static_cast<int>(options.worker_wait_timeout.count());
+    int worker_idle_timeout_seconds = static_cast<int>(options.worker_idle_timeout.count());
     app.add_option("--handshake-timeout", handshake_timeout_seconds,
                    "TLS and authentication timeout in seconds")
         ->check(CLI::Range(1, 300))
@@ -163,6 +178,14 @@ int main(int argc, char** argv) {
     app.add_option("--auth-clock-skew", clock_skew_seconds,
                    "Maximum authentication clock skew in seconds")
         ->check(CLI::Range(0, 300))
+        ->capture_default_str();
+    app.add_option("--worker-wait-timeout", worker_wait_timeout_seconds,
+                   "Maximum wait for an idle Worker in seconds")
+        ->check(CLI::Range(1, 300))
+        ->capture_default_str();
+    app.add_option("--worker-idle-timeout", worker_idle_timeout_seconds,
+                   "Idle Worker lifetime in seconds")
+        ->check(CLI::Range(1, 300))
         ->capture_default_str();
 
     std::size_t io_threads = default_io_threads();
@@ -193,6 +216,8 @@ int main(int argc, char** argv) {
     options.heartbeat_interval = std::chrono::seconds{heartbeat_interval_seconds};
     options.heartbeat_timeout = std::chrono::seconds{heartbeat_timeout_seconds};
     options.allowed_clock_skew = std::chrono::seconds{clock_skew_seconds};
+    options.worker_wait_timeout = std::chrono::seconds{worker_wait_timeout_seconds};
+    options.worker_idle_timeout = std::chrono::seconds{worker_idle_timeout_seconds};
     static_cast<void>(foreground);
 
     return run_server(options, *log_level, io_threads);

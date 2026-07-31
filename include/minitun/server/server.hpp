@@ -25,9 +25,12 @@ struct ServerOptions final {
     std::chrono::seconds heartbeat_interval{5};
     std::chrono::seconds heartbeat_timeout{15};
     std::chrono::seconds allowed_clock_skew{30};
+    std::chrono::seconds worker_wait_timeout{2};
+    std::chrono::seconds worker_idle_timeout{60};
 
     std::uint16_t min_idle_workers{2U};
     std::uint16_t max_idle_workers{32U};
+    std::size_t max_total_idle_workers{128U};
 };
 
 class Server final {

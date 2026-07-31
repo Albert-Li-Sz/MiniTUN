@@ -95,3 +95,22 @@ configuration. The server accepts numeric public bind addresses only, applies it
 OS address conflicts to `remote_port_in_use`. Request IDs correlate every response.
 Registration and removal are idempotent, and all listeners belong to one client
 session generation so stale control sessions cannot retain them.
+
+## Worker pool
+
+After authentication, `minitund` preconnects the minimum number of TLS Workers for
+that server session. A Worker identifies itself with `client_id`, the current
+`session_generation`, and a random Worker ID. The server accepts only the generation
+currently owned by the authenticated control connection:
+
+```text
+client -> WORKER_HELLO(client_id, session_generation, worker_id)
+server -> WORKER_ACCEPTED(worker_id)
+
+server -> REQUEST_WORKERS(count)  # on the control connection when capacity is low
+```
+
+Idle Workers are bounded per session and globally, expire after 60 seconds by default,
+and are removed immediately when their control generation closes. A public connection
+waits at most two seconds for a matching Worker. Assignment sends
+`START_RELAY(tunnel_id, connection_id)`; the local target never crosses the wire.

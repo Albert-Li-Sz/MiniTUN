@@ -1,0 +1,102 @@
+#include <cstdint>
+#include <string>
+
+#include <asio/io_context.hpp>
+#include <asio/ip/tcp.hpp>
+#include <gtest/gtest.h>
+
+#include <minitun/common/error.hpp>
+#include <minitun/common/id.hpp>
+#include <minitun/daemon/worker_pool.hpp>
+#include <minitun/server/worker_pool.hpp>
+
+namespace minitun::server {
+namespace {
+
+[[nodiscard]] std::string generated_id(const common::IdKind kind) {
+    auto id = common::Id::generate(kind);
+    EXPECT_TRUE(id) << id.error();
+    return id ? id->str() : std::string{};
+}
+
+[[nodiscard]] TunnelBinding binding_for(const std::string& client_id,
+                                        const std::uint64_t generation) {
+    return {
+        .client_id = client_id,
+        .session_generation = generation,
+        .tunnel_id = generated_id(common::IdKind::tunnel),
+        .bind_host = "127.0.0.1",
+        .bind_port = 6'000U,
+    };
+}
+
+TEST(WorkerPoolTest, AssignsOnlyMatchingClientGeneration) {
+    asio::io_context io_context;
+    WorkerPool pool{4U, 8U};
+    const std::string client_id = generated_id(common::IdKind::client);
+    const std::string worker_id = generated_id(common::IdKind::connection);
+    bool assigned = false;
+
+    ASSERT_TRUE(pool.add({client_id, 7U, worker_id},
+                         [&assigned](TunnelBinding, asio::ip::tcp::socket) { assigned = true; }));
+    asio::ip::tcp::socket public_socket{io_context};
+    public_socket.open(asio::ip::tcp::v4());
+    EXPECT_FALSE(pool.assign(binding_for(client_id, 8U), public_socket));
+    EXPECT_TRUE(public_socket.is_open());
+    EXPECT_EQ(pool.size(), 1U);
+
+    EXPECT_TRUE(pool.assign(binding_for(client_id, 7U), public_socket));
+    EXPECT_TRUE(assigned);
+    EXPECT_EQ(pool.size(), 0U);
+}
+
+TEST(WorkerPoolTest, EnforcesPerSessionAndGlobalIdleLimits) {
+    WorkerPool pool{1U, 2U};
+    const std::string first_client = generated_id(common::IdKind::client);
+    const std::string second_client = generated_id(common::IdKind::client);
+    const auto handler = [](TunnelBinding, asio::ip::tcp::socket) {};
+
+    ASSERT_TRUE(pool.add({first_client, 1U, generated_id(common::IdKind::connection)}, handler));
+    const auto per_session =
+        pool.add({first_client, 1U, generated_id(common::IdKind::connection)}, handler);
+    ASSERT_FALSE(per_session);
+    EXPECT_EQ(per_session.error().code(), common::ErrorCode::resource_exhausted);
+
+    ASSERT_TRUE(pool.add({second_client, 1U, generated_id(common::IdKind::connection)}, handler));
+    const auto global =
+        pool.add({second_client, 2U, generated_id(common::IdKind::connection)}, handler);
+    ASSERT_FALSE(global);
+    EXPECT_EQ(global.error().code(), common::ErrorCode::resource_exhausted);
+}
+
+TEST(WorkerPoolTest, RemovesWorkersBySessionAndClient) {
+    WorkerPool pool{4U, 8U};
+    const std::string client_id = generated_id(common::IdKind::client);
+    const auto handler = [](TunnelBinding, asio::ip::tcp::socket) {};
+    std::size_t removals = 0U;
+    ASSERT_TRUE(pool.add({client_id, 1U, generated_id(common::IdKind::connection)}, handler,
+                         [&removals] { ++removals; }));
+    ASSERT_TRUE(pool.add({client_id, 2U, generated_id(common::IdKind::connection)}, handler));
+
+    pool.remove_session(client_id, 1U);
+    EXPECT_EQ(removals, 1U);
+    EXPECT_EQ(pool.idle_count(client_id, 1U), 0U);
+    EXPECT_EQ(pool.idle_count(client_id, 2U), 1U);
+    pool.remove_client(client_id);
+    EXPECT_EQ(pool.size(), 0U);
+}
+
+TEST(WorkerBudgetTest, EnforcesAndReleasesGlobalLimit) {
+    daemon::WorkerBudget budget{2U};
+    EXPECT_TRUE(budget.try_acquire());
+    EXPECT_TRUE(budget.try_acquire());
+    EXPECT_FALSE(budget.try_acquire());
+    EXPECT_EQ(budget.in_use(), 2U);
+    budget.release();
+    EXPECT_EQ(budget.in_use(), 1U);
+    EXPECT_TRUE(budget.try_acquire());
+    EXPECT_EQ(budget.maximum(), 2U);
+}
+
+} // namespace
+} // namespace minitun::server
