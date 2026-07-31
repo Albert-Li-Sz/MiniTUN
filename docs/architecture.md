@@ -183,7 +183,9 @@ credential boundary. File permissions and cleansing reduce exposure but do not t
 the credential database into an encrypted vault; filesystem and host trust still
 matter.
 
-The stage-5 remote protocol library provides explicit 24-byte network-order headers,
-a 64 KiB frame limit, incremental decoding, bounded payload fields, and separate
-control/worker connection state machines. Later stages connect it to isolated TLS
-server sessions, reconciliation, worker pools, and TCP relay.
+The remote protocol library provides explicit 24-byte network-order headers, a 64 KiB
+frame limit, incremental decoding, bounded payload fields, and separate control/worker
+connection state machines. The stage-6 public server accepts TLS 1.2-or-newer control
+connections, performs challenge HMAC authentication, assigns a new generation to each
+authenticated session, and enforces heartbeat deadlines. Later stages connect the
+daemon's isolated server sessions, reconciliation, worker pools, and TCP relay.

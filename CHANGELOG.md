@@ -38,5 +38,12 @@ All notable changes to MiniTun will be documented here.
   a strict 64 KiB bound, incremental stream decoding, and complete message types.
 - Bounded binary payload primitives, strict UTF-8 fields, control/worker connection
   state validation, and an ASan/UBSan-capable libFuzzer remote-frame target.
+- TLS 1.2-or-newer server transport with certificate/key validation, explicit framing,
+  bounded handshake and heartbeat deadlines, and fixed Asio I/O threads.
+- HELLO/AUTH message codecs, HMAC-SHA256 challenge authentication, constant-time
+  digest verification, bounded nonce replay cache, per-address failure throttling,
+  isolated session generations, and generic authentication failures.
+- Runtime-generated-certificate integration coverage for trusted and untrusted TLS,
+  correct and incorrect Tokens, heartbeat exchange, and Token-safe server logs.
 - `minitun`, `minitund`, and `minitun-server` stage-0 executables.
 - Unit-test and GitHub Actions CI foundations.

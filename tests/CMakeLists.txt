@@ -11,8 +11,11 @@ add_executable(minitun_unit_tests
     unit/logging_test.cpp
     unit/port_range_test.cpp
     unit/remote_codec_test.cpp
+    unit/remote_auth_test.cpp
     unit/remote_frame_test.cpp
+    unit/remote_messages_test.cpp
     unit/remote_state_machine_test.cpp
+    unit/server_session_registry_test.cpp
     unit/secure_string_test.cpp
     unit/state_recovery_test.cpp
     unit/storage_database_test.cpp
@@ -24,7 +27,7 @@ add_executable(minitun_unit_tests
 target_link_libraries(minitun_unit_tests
     PRIVATE
         MiniTun::daemon
-        MiniTun::protocol
+        MiniTun::server
         MiniTun::storage
         MiniTun::ipc
         MiniTun::sqlite
@@ -34,6 +37,16 @@ target_link_libraries(minitun_unit_tests
 )
 minitun_apply_sanitizers(minitun_unit_tests)
 minitun_apply_lto(minitun_unit_tests)
+
+add_executable(minitun_tls_auth_client helpers/tls_auth_client.cpp)
+target_link_libraries(minitun_tls_auth_client
+    PRIVATE
+        MiniTun::protocol
+        CLI11::CLI11
+        minitun_project_warnings
+)
+minitun_apply_sanitizers(minitun_tls_auth_client)
+minitun_apply_lto(minitun_tls_auth_client)
 
 include(GoogleTest)
 gtest_discover_tests(minitun_unit_tests
@@ -76,5 +89,17 @@ if(UNIX)
         LABELS "integration;ipc"
         TIMEOUT 20
         PASS_REGULAR_EXPRESSION "CLI/daemon IPC integration passed"
+    )
+
+    add_test(NAME integration.tls-auth
+        COMMAND
+            "${CMAKE_CURRENT_SOURCE_DIR}/integration/tls_auth.sh"
+            $<TARGET_FILE:minitun-server>
+            $<TARGET_FILE:minitun_tls_auth_client>
+    )
+    set_tests_properties(integration.tls-auth PROPERTIES
+        LABELS "integration;tls;auth"
+        TIMEOUT 30
+        PASS_REGULAR_EXPRESSION "TLS authentication integration passed"
     )
 endif()

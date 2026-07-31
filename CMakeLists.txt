@@ -77,9 +77,12 @@ minitun_apply_version_definitions(minitun_common)
 minitun_apply_lto(minitun_common)
 
 add_library(minitun_protocol STATIC
+    src/protocol/auth.cpp
     src/protocol/codec.cpp
     src/protocol/frame.cpp
+    src/protocol/messages.cpp
     src/protocol/state_machine.cpp
+    src/protocol/tls.cpp
 )
 add_library(MiniTun::protocol ALIAS minitun_protocol)
 
@@ -90,6 +93,9 @@ target_include_directories(minitun_protocol
 target_link_libraries(minitun_protocol
     PUBLIC
         MiniTun::common
+        MiniTun::asio
+        OpenSSL::SSL
+        OpenSSL::Crypto
     PRIVATE
         minitun_project_warnings
 )
@@ -166,6 +172,26 @@ target_link_libraries(minitun_daemon
 minitun_apply_sanitizers(minitun_daemon)
 minitun_apply_lto(minitun_daemon)
 
+add_library(minitun_server_core STATIC
+    src/server/server.cpp
+    src/server/session_registry.cpp
+)
+add_library(MiniTun::server ALIAS minitun_server_core)
+
+target_include_directories(minitun_server_core
+    PUBLIC
+        "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+)
+target_link_libraries(minitun_server_core
+    PUBLIC
+        MiniTun::protocol
+    PRIVATE
+        Threads::Threads
+        minitun_project_warnings
+)
+minitun_apply_sanitizers(minitun_server_core)
+minitun_apply_lto(minitun_server_core)
+
 function(minitun_add_program target source core_library)
     add_executable("${target}" "${source}")
     target_link_libraries("${target}"
@@ -181,7 +207,7 @@ endfunction()
 
 minitun_add_program(minitun apps/minitun_main.cpp MiniTun::ipc)
 minitun_add_program(minitund apps/minitund_main.cpp MiniTun::daemon)
-minitun_add_program(minitun-server apps/minitun_server_main.cpp MiniTun::common)
+minitun_add_program(minitun-server apps/minitun_server_main.cpp MiniTun::server)
 
 if(MINITUN_BUILD_TESTS)
     enable_testing()

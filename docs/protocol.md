@@ -46,3 +46,32 @@ handshakes. Handshake messages cannot be replayed after authentication, control
 messages cannot appear on workers, worker messages cannot appear on control
 connections, and no framed message is accepted after the raw-relay transition.
 Protocol violations close only the offending connection.
+
+## TLS and authentication
+
+All remote frames are carried inside TLS. The server requires TLS 1.2 or newer,
+disables compression and renegotiation, loads a matching PEM certificate/private-key
+pair, and never offers a plaintext fallback. Clients use SNI and hostname verification
+against either the configured CA bundle or the platform trust store.
+
+The control handshake is:
+
+```text
+client  -> HELLO(client_id)
+server  -> HELLO_ACK(server_id, server_time, 32-byte nonce)
+client  -> AUTH(client_id, timestamp, nonce, authentication_data)
+server  -> AUTH_OK(session_generation, heartbeat and worker limits)
+       or AUTH_ERROR(authentication_failed)
+```
+
+`authentication_data` is HMAC-SHA256 over the protocol version, length-prefixed
+client ID, signed Unix timestamp encoded as 64 network-order bits, and the
+length-prefixed server nonce. The Token is the HMAC key and is never sent. The server
+checks clock skew, consumes every challenge nonce through a bounded replay cache,
+compares HMAC output in constant time, and throttles failures by peer address. Failure
+responses do not reveal whether the ID, timestamp, nonce, or digest was wrong.
+
+Every successful authentication replaces the client's previous random 64-bit
+`session_generation`; generation zero is invalid. The server then sends numbered
+`PING` messages and requires matching `PONG` responses before the bounded heartbeat
+deadline.
