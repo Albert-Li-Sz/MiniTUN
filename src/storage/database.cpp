@@ -210,6 +210,20 @@ constexpr std::string_view kCreateTunnelReconcileIndex =
 constexpr std::string_view kCreateTunnelNameIndex =
     "CREATE INDEX idx_tunnels_name ON tunnels(name) WHERE name IS NOT NULL";
 
+constexpr std::string_view kCreateDaemonIdentity = R"sql(
+CREATE TABLE daemon_identity (
+    singleton INTEGER NOT NULL PRIMARY KEY
+        CHECK(typeof(singleton) = 'integer' AND singleton = 1),
+    client_id TEXT NOT NULL UNIQUE
+        CHECK(
+            typeof(client_id) = 'text'
+            AND length(CAST(client_id AS BLOB)) = 39
+            AND substr(client_id, 1, 7) = 'client_'
+            AND substr(client_id, 8) NOT GLOB '*[^0-9a-f]*'
+        )
+)
+)sql";
+
 [[nodiscard]] common::Error migration_error(const common::Error& error) {
     return common::Error{common::ErrorCode::database_error, error.message()};
 }
@@ -364,6 +378,7 @@ constexpr std::string_view kCreateTunnelNameIndex =
         {"table", "schema_version", kCreateSchemaVersion},
         {"table", "servers", kCreateServers},
         {"table", "tunnels", kCreateTunnels},
+        {"table", "daemon_identity", kCreateDaemonIdentity},
         {"index", "idx_servers_reconcile", kCreateServerReconcileIndex},
         {"index", "idx_tunnels_reconcile", kCreateTunnelReconcileIndex},
         {"index", "idx_tunnels_name", kCreateTunnelNameIndex},
@@ -380,7 +395,9 @@ constexpr std::string_view kCreateTunnelNameIndex =
         "SELECT COUNT(*) FROM sqlite_master "
         "WHERE name NOT GLOB 'sqlite_*' AND ("
         "  type IN ('view', 'trigger') OR "
-        "  (type = 'table' AND name NOT IN ('schema_version', 'servers', 'tunnels')) OR "
+        "  (type = 'table' AND name NOT IN ("
+        "    'schema_version', 'servers', 'tunnels', 'daemon_identity'"
+        "  )) OR "
         "  (type = 'index' AND sql IS NOT NULL AND name NOT IN ("
         "    'idx_servers_reconcile', 'idx_tunnels_reconcile', 'idx_tunnels_name'"
         "  ))"
@@ -414,6 +431,13 @@ constexpr std::string_view kCreateTunnelNameIndex =
         "validate tunnels schema");
     if (!tunnels) {
         return migration_error(tunnels.error());
+    }
+
+    auto identity = internal::Statement::prepare(
+        database, "SELECT singleton, client_id FROM daemon_identity LIMIT 0",
+        "validate daemon identity schema");
+    if (!identity) {
+        return migration_error(identity.error());
     }
 
     auto foreign_keys = internal::Statement::prepare(database, "PRAGMA foreign_key_list(tunnels)",
@@ -510,6 +534,31 @@ constexpr std::string_view kCreateTunnelNameIndex =
 
     auto insert = internal::Statement::prepare(
         database, "INSERT INTO schema_version(version, applied_at) VALUES(1, ?1)",
+        "record schema migration");
+    if (!insert) {
+        return migration_error(insert.error());
+    }
+    if (auto result = insert->bind_int64(1, common::unix_milliseconds_now()); !result) {
+        return migration_error(result.error());
+    }
+    auto step = insert->step();
+    if (!step || *step != internal::StepResult::done) {
+        return !step ? migration_error(step.error())
+                     : common::Error{common::ErrorCode::database_error,
+                                     "schema migration did not complete"};
+    }
+    return common::Result<void>::success();
+}
+
+[[nodiscard]] common::Result<void> apply_version_two(sqlite3* database) {
+    auto created =
+        internal::execute(database, kCreateDaemonIdentity, "create daemon identity table");
+    if (!created) {
+        return migration_error(created.error());
+    }
+
+    auto insert = internal::Statement::prepare(
+        database, "INSERT INTO schema_version(version, applied_at) VALUES(2, ?1)",
         "record schema migration");
     if (!insert) {
         return migration_error(insert.error());
@@ -793,6 +842,12 @@ common::Result<void> Database::migrate() {
             return fail(applied.error());
         }
         version = 1;
+    }
+    if (version == 1) {
+        if (auto applied = apply_version_two(handle_); !applied) {
+            return fail(applied.error());
+        }
+        version = 2;
     }
     if (version != kCurrentSchemaVersion) {
         return fail(common::Error{

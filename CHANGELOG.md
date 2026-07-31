@@ -45,5 +45,13 @@ All notable changes to MiniTun will be documented here.
   isolated session generations, and generic authentication failures.
 - Runtime-generated-certificate integration coverage for trusted and untrusted TLS,
   correct and incorrect Tokens, heartbeat exchange, and Token-safe server logs.
+- Schema-version-2 migration with a transactionally generated, restart-stable daemon
+  client identity.
+- Daemon-side multi-server manager with isolated TLS control sessions, authentication,
+  heartbeat state, session generations, and jittered per-server reconnect backoff.
+- `minitund` CA selection, fixed I/O thread count, structured log-level selection, and
+  an explicitly warned development-only TLS verification bypass.
+- Dual-server integration coverage for failure isolation, server restart recovery,
+  daemon restart recovery, and stable identity reuse.
 - `minitun`, `minitund`, and `minitun-server` stage-0 executables.
 - Unit-test and GitHub Actions CI foundations.

@@ -35,7 +35,7 @@ MINITUN_BUILD_PACKAGES
 Sanitizer builds have their own presets. TSan is intentionally kept separate from
 ASan/UBSan.
 
-## Stage-4 local control development
+## Local control and multi-server development
 
 The IPC wire format is a four-byte network-order payload length followed by UTF-8 JSON.
 Both directions are limited to 1 MiB. The public protocol layer performs strict schema
@@ -53,7 +53,9 @@ runtime_dir="$(mktemp -d "$runtime_root/minitun.XXXXXX")"
 build/dev/minitund \
   --socket "$runtime_dir/minitun.sock" \
   --database "$runtime_dir/state.db" \
-  --credentials "$runtime_dir/credentials.db"
+  --credentials "$runtime_dir/credentials.db" \
+  --tls-ca /path/to/server-ca.crt \
+  --io-threads 4
 # In another terminal:
 build/dev/minitun --socket "$runtime_dir/minitun.sock" daemon status
 build/dev/minitun --socket "$runtime_dir/minitun.sock" \
@@ -75,6 +77,10 @@ deadlines, concurrent requests, single-request connections, pool shutdown, permi
 trusted path ancestry, serialized startup, and cleanup. The CLI/daemon integration test
 also exercises CRUD, JSON, restart recovery, PTY no-echo input, Token leak scanning,
 tombstone filtering, and every documented exit-code class.
+
+`integration.multi-server-sessions` generates a temporary CA/certificate, starts two
+independent public servers, verifies simultaneous online state and failure isolation,
+then restarts one server and the daemon to prove automatic recovery.
 
 ## Persistence development
 

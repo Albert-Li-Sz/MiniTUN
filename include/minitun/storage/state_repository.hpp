@@ -3,6 +3,7 @@
 #include <memory>
 #include <string_view>
 
+#include <minitun/common/id.hpp>
 #include <minitun/common/result.hpp>
 #include <minitun/storage/database.hpp>
 #include <minitun/storage/models.hpp>
@@ -31,6 +32,9 @@ class StateRepository final {
 
     [[nodiscard]] common::Result<Transaction> begin_transaction();
     [[nodiscard]] common::Result<int> schema_version() const;
+
+    /// Returns the stable daemon identity, creating it transactionally once.
+    [[nodiscard]] common::Result<common::Id> client_id();
 
     /// Atomically converts stale process-local actual states into restart-safe
     /// states, resets transient metrics, and returns the validated snapshot.

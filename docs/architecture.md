@@ -23,9 +23,9 @@ tests. The CLI and public server do not link SQLite.
 `TunnelRepository`. Only the daemon opens or writes the state database. Stage-4 CLI
 commands ask the daemon to perform every query and mutation over IPC.
 
-### SQLite schema version 1
+### SQLite schema version 2
 
-The default path is `/var/lib/minitun/state.db`. Version 1 contains:
+The default path is `/var/lib/minitun/state.db`. Version 2 contains:
 
 - `schema_version`: `version` as the primary key and `applied_at` as a non-negative
   Unix-millisecond timestamp. The migration history must be non-empty, contiguous, and
@@ -37,6 +37,9 @@ The default path is `/var/lib/minitun/state.db`. Version 1 contains:
 - `tunnels`: `id`, nullable non-unique `name`, `server_id`, TCP protocol, split local
   and remote host/port pairs, desired and actual states, nullable last-error code and
   message, and creation/update timestamps.
+- `daemon_identity`: one constrained row containing the stable `client_` identity used
+  by all remote server sessions. It is created transactionally on first daemon start
+  and retained across restarts.
 
 IDs, text byte lengths, state values, TCP ports, counters, latency, and timestamps have
 database constraints and are validated again when repository records cross the C++
@@ -185,7 +188,21 @@ matter.
 
 The remote protocol library provides explicit 24-byte network-order headers, a 64 KiB
 frame limit, incremental decoding, bounded payload fields, and separate control/worker
-connection state machines. The stage-6 public server accepts TLS 1.2-or-newer control
+connection state machines. The public server accepts TLS 1.2-or-newer control
 connections, performs challenge HMAC authentication, assigns a new generation to each
-authenticated session, and enforces heartbeat deadlines. Later stages connect the
-daemon's isolated server sessions, reconciliation, worker pools, and TCP relay.
+authenticated session, and enforces heartbeat deadlines.
+
+## Stage-7 multi-server sessions
+
+`ServerManager` periodically reconciles enabled, credentialed server records and owns
+one independent `ServerSession` per server ID. Each session has its own strand,
+resolver, TLS stream, operation timers, heartbeat state, session generation, and
+jittered exponential reconnect controller. Authentication failure parks only that
+server in `not_authenticated`; network and heartbeat failure enter bounded backoff.
+Changing credentials or removing a server replaces only the affected session.
+
+The daemon loads one stable `client_id` from schema version 2 before starting remote
+work. It supports a platform trust store or explicit `--tls-ca`, hostname verification
+and SNI by default, and fixed `--io-threads` bounded to 1..16. A development-only
+`--insecure-skip-verify` switch emits a prominent warning. Tunnel registration, worker
+pools, and relay remain the next data-plane stages.

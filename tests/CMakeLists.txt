@@ -15,6 +15,7 @@ add_executable(minitun_unit_tests
     unit/remote_frame_test.cpp
     unit/remote_messages_test.cpp
     unit/remote_state_machine_test.cpp
+    unit/reconnect_backoff_test.cpp
     unit/server_session_registry_test.cpp
     unit/secure_string_test.cpp
     unit/state_recovery_test.cpp
@@ -101,5 +102,18 @@ if(UNIX)
         LABELS "integration;tls;auth"
         TIMEOUT 30
         PASS_REGULAR_EXPRESSION "TLS authentication integration passed"
+    )
+
+    add_test(NAME integration.multi-server-sessions
+        COMMAND
+            "${CMAKE_CURRENT_SOURCE_DIR}/integration/multi_server_sessions.sh"
+            $<TARGET_FILE:minitun>
+            $<TARGET_FILE:minitund>
+            $<TARGET_FILE:minitun-server>
+    )
+    set_tests_properties(integration.multi-server-sessions PROPERTIES
+        LABELS "integration;tls;multi-server"
+        TIMEOUT 45
+        PASS_REGULAR_EXPRESSION "multi-server session integration passed"
     )
 endif()

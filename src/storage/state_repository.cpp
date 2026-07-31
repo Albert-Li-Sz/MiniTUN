@@ -7,6 +7,7 @@
 #include <utility>
 
 #include <minitun/common/error.hpp>
+#include <minitun/common/id.hpp>
 #include <minitun/common/time.hpp>
 
 #include "sqlite_internal.hpp"
@@ -49,6 +50,79 @@ common::Result<Transaction> StateRepository::begin_transaction() {
 }
 
 common::Result<int> StateRepository::schema_version() const { return database_->schema_version(); }
+
+common::Result<common::Id> StateRepository::client_id() {
+    auto transaction = database_->begin_transaction();
+    if (!transaction) {
+        return std::move(transaction).error();
+    }
+    const auto fail = [&transaction](common::Error error) -> common::Result<common::Id> {
+        transaction->mark_failed(error);
+        auto rolled_back = transaction->commit();
+        if (!rolled_back) {
+            return rolled_back.error();
+        }
+        return error;
+    };
+
+    auto select = internal::Statement::prepare(
+        database_->handle_, "SELECT client_id FROM daemon_identity WHERE singleton = 1",
+        "read daemon identity");
+    if (!select) {
+        return fail(select.error());
+    }
+    auto step = select->step();
+    if (!step) {
+        return fail(step.error());
+    }
+    if (*step == internal::StepResult::row) {
+        auto value = internal::required_text(select->handle(), 0, "daemon client ID");
+        if (!value) {
+            return fail(value.error());
+        }
+        auto parsed = common::Id::parse(*value, common::IdKind::client);
+        if (!parsed) {
+            return fail(common::Error{common::ErrorCode::database_error,
+                                      "persisted daemon client ID is invalid"});
+        }
+        step = select->step();
+        if (!step || *step != internal::StepResult::done) {
+            return fail(!step ? step.error()
+                              : common::Error{common::ErrorCode::database_error,
+                                              "daemon identity query returned extra rows"});
+        }
+        auto committed = transaction->commit();
+        if (!committed) {
+            return committed.error();
+        }
+        return parsed;
+    }
+
+    auto generated = common::Id::generate(common::IdKind::client);
+    if (!generated) {
+        return fail(generated.error());
+    }
+    auto insert = internal::Statement::prepare(
+        database_->handle_, "INSERT INTO daemon_identity(singleton, client_id) VALUES(1, ?1)",
+        "persist daemon identity");
+    if (!insert) {
+        return fail(insert.error());
+    }
+    if (auto bound = insert->bind_text(1, generated->str()); !bound) {
+        return fail(bound.error());
+    }
+    step = insert->step();
+    if (!step || *step != internal::StepResult::done) {
+        return fail(!step ? step.error()
+                          : common::Error{common::ErrorCode::database_error,
+                                          "daemon identity insert returned a row"});
+    }
+    auto committed = transaction->commit();
+    if (!committed) {
+        return committed.error();
+    }
+    return generated;
+}
 
 common::Result<RecoverySnapshot> StateRepository::recover() {
     auto transaction = database_->begin_transaction();

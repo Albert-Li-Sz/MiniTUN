@@ -1,11 +1,12 @@
 # Security policy
 
-MiniTun is pre-release software. Do not deploy the stage-6 build as a public tunnel
-service: daemon-side session isolation, port policy, relay limits, service accounts,
-and installation hardening are not complete.
+MiniTun is pre-release software. Do not deploy the stage-7 build as a public tunnel
+service: port policy, relay limits, service accounts, and installation hardening are
+not complete.
 
-Stage 6 provides a functional local security boundary, a bounded remote protocol
-parser, and a TLS server with certificate/key validation. Authentication uses a
+Stage 7 provides a functional local security boundary, a bounded remote protocol
+parser, an isolated multi-server TLS client, and a TLS server with certificate/key
+validation. Authentication uses a
 server challenge, client timestamp, and HMAC-SHA256; nonce reuse, excessive clock
 skew, invalid credentials, and repeated failures are rejected without distinguishing
 which credential component failed. `minitun` talks only to a

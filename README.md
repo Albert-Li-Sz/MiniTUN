@@ -3,7 +3,7 @@
 MiniTun is an independently implemented TCP reverse-tunnelling system for Linux. It
 uses C++20 and is intentionally not compatible with the FRP protocol.
 
-The repository is currently at **development stage 6**. The local control plane is
+The repository is currently at **development stage 7**. The local control plane is
 operational: the stateless `minitun` CLI talks to `minitund` over a protected Unix
 socket, and the daemon persists server and tunnel intent in SQLite. It supports all
 `server`, `tun`, `status`, and `daemon status` commands, structured JSON inspection,
@@ -12,18 +12,19 @@ input. The remote protocol library now provides bounded network-byte-order frame
 incremental decoding, binary payload fields, strict message types, control/worker
 state validation, and a libFuzzer harness. `minitun-server` now exposes a real TLS
 control listener with challenge-response authentication, session generations,
-heartbeat timeouts, replay protection, and authentication rate limiting.
+heartbeat timeouts, replay protection, and authentication rate limiting. `minitund`
+now persists a stable client identity and runs one strand-isolated TLS control session,
+heartbeat, and exponential reconnect controller per configured server. A failed or
+restarting server does not interrupt the daemon's other online server sessions.
 
 Authentication material is stored separately in `/var/lib/minitun/credentials.db`,
 whose file mode is enforced as `0600`; Tokens are never stored in `state.db`, returned
-by IPC, or printed by the CLI. `server login` currently stores a Token and changes the
-local server state to `disconnected`. The stage-6 server can authenticate protocol
-clients, while the daemon-side multi-server connection manager is introduced in
-stage 7.
+by IPC, or printed by the CLI. `server login` stores a Token and wakes reconciliation;
+the daemon then authenticates the corresponding remote session without exposing the
+secret.
 
-This is not yet a deployable tunnel service. Multi-server daemon sessions, tunnel
-registration, worker pools, TCP relay, service installation, and packages belong to
-later stages.
+This is not yet a deployable tunnel service. Tunnel registration, worker pools, TCP
+relay, service installation, and packages belong to later stages.
 
 ## Run the TLS server
 
@@ -70,7 +71,8 @@ runtime_dir="$(mktemp -d "$runtime_root/minitun.XXXXXX")"
 build/dev/minitund \
   --socket "$runtime_dir/minitun.sock" \
   --database "$runtime_dir/state.db" \
-  --credentials "$runtime_dir/credentials.db"
+  --credentials "$runtime_dir/credentials.db" \
+  --tls-ca /path/to/server-ca.crt
 ```
 
 In another terminal:

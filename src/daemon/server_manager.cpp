@@ -1,0 +1,668 @@
+#include <minitun/daemon/server_manager.hpp>
+
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <exception>
+#include <memory>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
+
+#include <asio/co_spawn.hpp>
+#include <asio/connect.hpp>
+#include <asio/dispatch.hpp>
+#include <asio/error.hpp>
+#include <asio/ip/tcp.hpp>
+#include <asio/redirect_error.hpp>
+#include <asio/ssl/stream_base.hpp>
+#include <asio/steady_timer.hpp>
+#include <asio/strand.hpp>
+#include <asio/use_awaitable.hpp>
+
+#include <minitun/common/error.hpp>
+#include <minitun/common/logging.hpp>
+#include <minitun/common/secure_string.hpp>
+#include <minitun/common/time.hpp>
+#include <minitun/daemon/reconnect_backoff.hpp>
+#include <minitun/protocol/auth.hpp>
+#include <minitun/protocol/messages.hpp>
+#include <minitun/protocol/state_machine.hpp>
+#include <minitun/protocol/tls.hpp>
+#include <minitun/storage/credential_store.hpp>
+#include <minitun/storage/models.hpp>
+#include <minitun/storage/state_repository.hpp>
+
+namespace minitun::daemon {
+namespace {
+
+inline constexpr auto kMaximumReconcileInterval = std::chrono::seconds{10};
+inline constexpr auto kMaximumConnectTimeout = std::chrono::minutes{5};
+
+[[nodiscard]] common::Result<void> validate_options(const ServerManagerOptions& options) {
+    if (options.reconcile_interval < std::chrono::milliseconds{50} ||
+        options.reconcile_interval > kMaximumReconcileInterval ||
+        options.connect_timeout <= std::chrono::seconds::zero() ||
+        options.connect_timeout > kMaximumConnectTimeout ||
+        options.handshake_timeout <= std::chrono::seconds::zero() ||
+        options.handshake_timeout > kMaximumConnectTimeout) {
+        return common::Result<void>::failure(common::ErrorCode::invalid_argument,
+                                             "remote session timeout configuration is invalid");
+    }
+    return common::Result<void>::success();
+}
+
+[[nodiscard]] std::string credential_key(const storage::ServerRecord& server) {
+    if (server.credential_ref.has_value()) {
+        return *server.credential_ref;
+    }
+    return {};
+}
+
+} // namespace
+
+class ServerManager::Impl final : public std::enable_shared_from_this<ServerManager::Impl> {
+  private:
+    class ServerSession final : public std::enable_shared_from_this<ServerSession> {
+      public:
+        enum class TerminalState : std::uint8_t {
+            running,
+            authentication_failed,
+            stopped,
+        };
+
+        ServerSession(asio::io_context& io_context, storage::StateRepository& repository,
+                      storage::CredentialStore& credentials, common::Id client_id,
+                      storage::ServerRecord server, std::shared_ptr<asio::ssl::context> tls_context,
+                      ServerManagerOptions options)
+            : repository_(repository), credentials_(credentials), client_id_(std::move(client_id)),
+              server_(std::move(server)), remote_endpoint_text_(server_.endpoint.to_string()),
+              tls_context_(std::move(tls_context)), options_(std::move(options)),
+              strand_(asio::make_strand(io_context)), resolver_(strand_), reconnect_timer_(strand_),
+              operation_timer_(strand_) {}
+
+        ~ServerSession() { close_transport(); }
+
+        void start() {
+            auto self = shared_from_this();
+            asio::co_spawn(strand_, run(), [self](const std::exception_ptr failure) {
+                if (failure) {
+                    self->terminal_state_.store(TerminalState::stopped);
+                    self->persist_state(storage::ServerActualState::error,
+                                        common::Error{common::ErrorCode::internal_error,
+                                                      "remote session failed unexpectedly"},
+                                        self->backoff_.attempt());
+                    common::log_error("remote server session ended with an exception",
+                                      self->log_context(common::ErrorCode::internal_error));
+                }
+                self->cancel_timers();
+                self->close_transport();
+            });
+        }
+
+        void stop() {
+            auto self = shared_from_this();
+            asio::dispatch(strand_, [self] {
+                self->stopping_ = true;
+                self->terminal_state_.store(TerminalState::stopped);
+                self->resolver_.cancel();
+                self->cancel_timers();
+                self->close_transport();
+            });
+        }
+
+        [[nodiscard]] bool matches(const storage::ServerRecord& server) const {
+            return server_.endpoint == server.endpoint &&
+                   server_.credential_ref == server.credential_ref;
+        }
+
+        [[nodiscard]] TerminalState terminal_state() const noexcept {
+            return terminal_state_.load();
+        }
+
+      private:
+        enum class AttemptKind : std::uint8_t {
+            disconnected,
+            authentication_failed,
+            stopped,
+        };
+
+        struct AttemptResult final {
+            AttemptKind kind{AttemptKind::disconnected};
+            common::Error error{common::ErrorCode::connection_failed, "remote server disconnected"};
+        };
+
+        [[nodiscard]] asio::awaitable<void> run() {
+            while (!stopping_) {
+                terminal_state_.store(TerminalState::running);
+                const AttemptResult result = co_await run_attempt();
+                close_transport();
+                if (stopping_ || result.kind == AttemptKind::stopped) {
+                    terminal_state_.store(TerminalState::stopped);
+                    co_return;
+                }
+                if (result.kind == AttemptKind::authentication_failed) {
+                    terminal_state_.store(TerminalState::authentication_failed);
+                    persist_state(storage::ServerActualState::not_authenticated, result.error,
+                                  backoff_.attempt());
+                    co_return;
+                }
+
+                const auto delay = backoff_.next_delay();
+                persist_state(storage::ServerActualState::backoff, result.error,
+                              backoff_.attempt());
+                common::log_warn("remote server connection entered backoff",
+                                 log_context(result.error.code()));
+                reconnect_timer_.expires_after(delay);
+                asio::error_code timer_error;
+                co_await reconnect_timer_.async_wait(
+                    asio::redirect_error(asio::use_awaitable, timer_error));
+                if (timer_error || stopping_) {
+                    terminal_state_.store(TerminalState::stopped);
+                    co_return;
+                }
+            }
+        }
+
+        [[nodiscard]] asio::awaitable<AttemptResult> run_attempt() {
+            const auto attempt_started = std::chrono::steady_clock::now();
+            protocol::StateMachine state{protocol::PeerRole::client,
+                                         protocol::ConnectionKind::control};
+            stream_ = std::make_unique<protocol::TlsStream>(strand_, *tls_context_);
+            persist_state(storage::ServerActualState::connecting, std::nullopt, backoff_.attempt());
+
+            arm_operation_timeout(options_.connect_timeout);
+            asio::error_code error;
+            auto endpoints = co_await resolver_.async_resolve(
+                server_.endpoint.host(), std::to_string(server_.endpoint.port()),
+                asio::redirect_error(asio::use_awaitable, error));
+            if (!error) {
+                co_await asio::async_connect(stream_->lowest_layer(), endpoints,
+                                             asio::redirect_error(asio::use_awaitable, error));
+            }
+            cancel_operation_timeout();
+            if (error) {
+                co_return disconnected(common::ErrorCode::connection_failed,
+                                       "remote TCP connection failed");
+            }
+
+            auto configured = protocol::configure_client_tls_stream(
+                *stream_, server_.endpoint.host(), options_.insecure_skip_verify);
+            if (!configured) {
+                co_return disconnected(configured.error().code(), configured.error().message());
+            }
+            persist_state(storage::ServerActualState::tls_handshake, std::nullopt,
+                          backoff_.attempt());
+            arm_operation_timeout(options_.handshake_timeout);
+            co_await stream_->async_handshake(asio::ssl::stream_base::client,
+                                              asio::redirect_error(asio::use_awaitable, error));
+            cancel_operation_timeout();
+            if (error) {
+                co_return disconnected(common::ErrorCode::tls_error,
+                                       "TLS peer verification or handshake failed");
+            }
+
+            persist_state(storage::ServerActualState::authenticating, std::nullopt,
+                          backoff_.attempt());
+            auto token = credentials_.get(credential_key(server_));
+            if (!token) {
+                co_return authentication_failed(common::ErrorCode::not_authenticated,
+                                                "server credential is unavailable");
+            }
+
+            auto hello_payload = protocol::encode_hello({client_id_.str()});
+            if (!hello_payload) {
+                co_return disconnected(common::ErrorCode::internal_error, "failed to encode HELLO");
+            }
+            if (auto written = co_await write_frame(
+                    state, {protocol::MessageType::hello, 0U, 1U, std::move(*hello_payload)},
+                    options_.handshake_timeout);
+                !written) {
+                co_return disconnected(written.error().code(), written.error().message());
+            }
+
+            auto ack_frame = co_await read_frame(state, options_.handshake_timeout);
+            if (!ack_frame || ack_frame->type != protocol::MessageType::hello_ack) {
+                co_return disconnected(common::ErrorCode::protocol_error,
+                                       "remote HELLO_ACK is invalid");
+            }
+            auto ack = protocol::decode_hello_ack(ack_frame->payload);
+            if (!ack) {
+                co_return disconnected(ack.error().code(), ack.error().message());
+            }
+
+            const std::int64_t timestamp = common::unix_seconds_now();
+            auto digest = protocol::compute_authentication_data(token->view(), client_id_.str(),
+                                                                timestamp, ack->nonce);
+            if (!digest) {
+                co_return disconnected(digest.error().code(), digest.error().message());
+            }
+            auto auth_payload =
+                protocol::encode_auth({client_id_.str(), timestamp, ack->nonce, *digest});
+            if (!auth_payload) {
+                co_return disconnected(common::ErrorCode::internal_error, "failed to encode AUTH");
+            }
+            if (auto written = co_await write_frame(
+                    state, {protocol::MessageType::auth, 0U, 2U, std::move(*auth_payload)},
+                    options_.handshake_timeout);
+                !written) {
+                co_return disconnected(written.error().code(), written.error().message());
+            }
+
+            auto auth_frame = co_await read_frame(state, options_.handshake_timeout);
+            if (!auth_frame) {
+                co_return disconnected(auth_frame.error().code(), auth_frame.error().message());
+            }
+            if (auth_frame->type == protocol::MessageType::auth_error) {
+                static_cast<void>(protocol::decode_auth_error(auth_frame->payload));
+                co_return authentication_failed(common::ErrorCode::authentication_failed,
+                                                "remote authentication failed");
+            }
+            if (auth_frame->type != protocol::MessageType::auth_ok) {
+                co_return disconnected(common::ErrorCode::protocol_error,
+                                       "remote authentication response is invalid");
+            }
+            auto auth_ok = protocol::decode_auth_ok(auth_frame->payload);
+            if (!auth_ok) {
+                co_return disconnected(auth_ok.error().code(), auth_ok.error().message());
+            }
+
+            session_generation_ = auth_ok->session_generation;
+            remote_server_id_ = ack->server_id;
+            backoff_.reset();
+            const auto latency = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - attempt_started);
+            persist_state(storage::ServerActualState::online, std::nullopt, 0U, latency.count(),
+                          remote_server_id_);
+            common::log_info("remote server session is online", log_context());
+
+            const auto heartbeat_interval =
+                std::chrono::milliseconds{auth_ok->heartbeat_interval_milliseconds};
+            const auto heartbeat_timeout =
+                std::clamp(heartbeat_interval * 3, std::chrono::milliseconds{3'000},
+                           std::chrono::milliseconds{180'000});
+            co_return co_await heartbeat_loop(state, heartbeat_timeout);
+        }
+
+        [[nodiscard]] asio::awaitable<AttemptResult>
+        heartbeat_loop(protocol::StateMachine& state,
+                       const std::chrono::milliseconds heartbeat_timeout) {
+            for (;;) {
+                auto frame = co_await read_frame(state, heartbeat_timeout);
+                if (!frame) {
+                    co_return disconnected(frame.error().code(), frame.error().message());
+                }
+                if (frame->type == protocol::MessageType::ping) {
+                    auto ping = protocol::decode_heartbeat(frame->payload);
+                    if (!ping) {
+                        co_return disconnected(ping.error().code(), ping.error().message());
+                    }
+                    auto payload = protocol::encode_heartbeat(*ping);
+                    if (!payload) {
+                        co_return disconnected(payload.error().code(), payload.error().message());
+                    }
+                    auto written = co_await write_frame(
+                        state,
+                        {protocol::MessageType::pong, 0U, frame->request_id, std::move(*payload)},
+                        heartbeat_timeout);
+                    if (!written) {
+                        co_return disconnected(written.error().code(), written.error().message());
+                    }
+                    continue;
+                }
+                if (frame->type == protocol::MessageType::goaway ||
+                    frame->type == protocol::MessageType::error) {
+                    co_return disconnected(common::ErrorCode::connection_failed,
+                                           "remote server closed the control session");
+                }
+                co_return disconnected(common::ErrorCode::protocol_error,
+                                       "remote server sent an unexpected control message");
+            }
+        }
+
+        [[nodiscard]] asio::awaitable<common::Result<protocol::Frame>>
+        read_frame(protocol::StateMachine& state, const std::chrono::milliseconds timeout) {
+            if (stream_ == nullptr) {
+                co_return common::Result<protocol::Frame>::failure(
+                    common::ErrorCode::connection_failed, "remote stream is unavailable");
+            }
+            arm_operation_timeout(timeout);
+            auto frame = co_await protocol::async_read_frame(*stream_);
+            cancel_operation_timeout();
+            if (!frame) {
+                co_return frame;
+            }
+            auto transition = state.on_receive(frame->type);
+            if (!transition) {
+                co_return common::Result<protocol::Frame>::failure(transition.error());
+            }
+            co_return frame;
+        }
+
+        [[nodiscard]] asio::awaitable<common::Result<void>>
+        write_frame(protocol::StateMachine& state, protocol::Frame frame,
+                    const std::chrono::milliseconds timeout) {
+            if (stream_ == nullptr) {
+                co_return common::Result<void>::failure(common::ErrorCode::connection_failed,
+                                                        "remote stream is unavailable");
+            }
+            auto transition = state.on_send(frame.type);
+            if (!transition) {
+                co_return transition;
+            }
+            arm_operation_timeout(timeout);
+            auto written = co_await protocol::async_write_frame(*stream_, frame);
+            cancel_operation_timeout();
+            co_return written;
+        }
+
+        template <typename Rep, typename Period>
+        void arm_operation_timeout(const std::chrono::duration<Rep, Period> timeout) {
+            operation_timer_.expires_after(timeout);
+            auto weak = weak_from_this();
+            operation_timer_.async_wait([weak](const asio::error_code& error) {
+                if (!error) {
+                    if (auto self = weak.lock()) {
+                        self->resolver_.cancel();
+                        self->close_transport();
+                    }
+                }
+            });
+        }
+
+        void cancel_operation_timeout() noexcept {
+            try {
+                static_cast<void>(operation_timer_.cancel());
+            } catch (...) {
+            }
+        }
+
+        void cancel_timers() noexcept {
+            try {
+                static_cast<void>(reconnect_timer_.cancel());
+                static_cast<void>(operation_timer_.cancel());
+            } catch (...) {
+            }
+        }
+
+        void close_transport() noexcept {
+            if (stream_ != nullptr) {
+                protocol::close_tls_stream(*stream_);
+                stream_.reset();
+            }
+        }
+
+        void
+        persist_state(const storage::ServerActualState state,
+                      const std::optional<common::Error> error,
+                      const std::uint32_t reconnect_attempt,
+                      const std::optional<std::int64_t> latency_ms = std::nullopt,
+                      const std::optional<std::string> remote_server_id = std::nullopt) noexcept {
+            try {
+                auto transaction = repository_.begin_transaction();
+                if (!transaction) {
+                    return;
+                }
+                auto current = repository_.servers().get_by_id(server_.id);
+                if (!current) {
+                    static_cast<void>(transaction->rollback());
+                    return;
+                }
+                if (current->desired_state != storage::ServerDesiredState::enabled) {
+                    static_cast<void>(transaction->rollback());
+                    return;
+                }
+                current->actual_state = state;
+                current->reconnect_attempt = reconnect_attempt;
+                current->latency_ms = latency_ms;
+                if (remote_server_id.has_value()) {
+                    current->remote_server_id = remote_server_id;
+                }
+                if (error.has_value()) {
+                    current->last_error_code = error->code();
+                    current->last_error_message = error->message();
+                } else {
+                    current->last_error_code.reset();
+                    current->last_error_message.reset();
+                }
+                current->updated_at_unix_ms =
+                    std::max(current->updated_at_unix_ms, common::unix_milliseconds_now());
+                auto updated = repository_.servers().update(*current, *transaction);
+                if (!updated) {
+                    static_cast<void>(transaction->rollback());
+                    return;
+                }
+                static_cast<void>(transaction->commit());
+            } catch (...) {
+            }
+        }
+
+        [[nodiscard]] AttemptResult disconnected(const common::ErrorCode code,
+                                                 std::string message) const {
+            return {AttemptKind::disconnected, common::Error{code, std::move(message)}};
+        }
+
+        [[nodiscard]] AttemptResult authentication_failed(const common::ErrorCode code,
+                                                          std::string message) const {
+            return {AttemptKind::authentication_failed, common::Error{code, std::move(message)}};
+        }
+
+        [[nodiscard]] common::LogContext
+        log_context(const std::optional<common::ErrorCode> error = std::nullopt) const noexcept {
+            return {
+                .component = "daemon.server-session",
+                .server_id = server_.id.str(),
+                .remote_endpoint = remote_endpoint_text_,
+                .error_code = error,
+            };
+        }
+
+        storage::StateRepository& repository_;
+        storage::CredentialStore& credentials_;
+        common::Id client_id_;
+        storage::ServerRecord server_;
+        std::string remote_endpoint_text_;
+        std::shared_ptr<asio::ssl::context> tls_context_;
+        ServerManagerOptions options_;
+        asio::strand<asio::io_context::executor_type> strand_;
+        asio::ip::tcp::resolver resolver_;
+        asio::steady_timer reconnect_timer_;
+        asio::steady_timer operation_timer_;
+        std::unique_ptr<protocol::TlsStream> stream_;
+        ReconnectBackoff backoff_;
+        std::string remote_server_id_;
+        std::uint64_t session_generation_{0U};
+        std::atomic<TerminalState> terminal_state_{TerminalState::running};
+        bool stopping_{false};
+    };
+
+  public:
+    [[nodiscard]] static common::Result<std::shared_ptr<Impl>>
+    create(asio::io_context& io_context, storage::StateRepository& repository,
+           storage::CredentialStore& credentials, common::Id client_id,
+           ServerManagerOptions options) {
+        auto valid = validate_options(options);
+        if (!valid) {
+            return common::Result<std::shared_ptr<Impl>>::failure(valid.error());
+        }
+        if (client_id.kind() != common::IdKind::client) {
+            return common::Result<std::shared_ptr<Impl>>::failure(
+                common::ErrorCode::invalid_argument, "server manager requires a client ID");
+        }
+        auto tls_context =
+            protocol::make_client_tls_context({.ca_certificate_path = options.ca_certificate_path});
+        if (!tls_context) {
+            return common::Result<std::shared_ptr<Impl>>::failure(tls_context.error());
+        }
+        return std::shared_ptr<Impl>{new Impl(io_context, repository, credentials,
+                                              std::move(client_id), std::move(options),
+                                              std::move(*tls_context))};
+    }
+
+    ~Impl() { stop(); }
+
+    [[nodiscard]] common::Result<void> start() {
+        if (running_.exchange(true)) {
+            return common::Result<void>::failure(common::ErrorCode::already_exists,
+                                                 "server manager is already running");
+        }
+        reconcile();
+        return common::Result<void>::success();
+    }
+
+    void stop() noexcept {
+        if (!running_.exchange(false)) {
+            return;
+        }
+        try {
+            static_cast<void>(reconcile_timer_.cancel());
+        } catch (...) {
+        }
+        for (auto& [id, session] : sessions_) {
+            static_cast<void>(id);
+            session->stop();
+        }
+        sessions_.clear();
+        session_count_.store(0U);
+    }
+
+    void notify_changed() {
+        auto self = shared_from_this();
+        asio::dispatch(strand_, [self] {
+            if (self->running_.load()) {
+                self->reconcile();
+            }
+        });
+    }
+
+    [[nodiscard]] std::size_t session_count() const noexcept { return session_count_.load(); }
+
+  private:
+    Impl(asio::io_context& io_context, storage::StateRepository& repository,
+         storage::CredentialStore& credentials, common::Id client_id, ServerManagerOptions options,
+         std::shared_ptr<asio::ssl::context> tls_context)
+        : io_context_(io_context), repository_(repository), credentials_(credentials),
+          client_id_(std::move(client_id)), options_(std::move(options)),
+          tls_context_(std::move(tls_context)), strand_(asio::make_strand(io_context)),
+          reconcile_timer_(strand_) {}
+
+    void reconcile() {
+        if (!running_.load()) {
+            return;
+        }
+        auto records = repository_.servers().list();
+        if (!records) {
+            common::log_error(
+                "failed to load servers for reconciliation",
+                {.component = "daemon.server-manager", .error_code = records.error().code()});
+            schedule_reconcile();
+            return;
+        }
+
+        std::unordered_set<std::string> retained;
+        for (const auto& record : *records) {
+            const std::string id = record.id.str();
+            if (record.desired_state != storage::ServerDesiredState::enabled ||
+                !record.credential_ref.has_value()) {
+                const auto existing = sessions_.find(id);
+                if (existing != sessions_.end()) {
+                    existing->second->stop();
+                    sessions_.erase(existing);
+                }
+                continue;
+            }
+
+            retained.insert(id);
+            const auto existing = sessions_.find(id);
+            const bool restart_authentication =
+                existing != sessions_.end() &&
+                existing->second->terminal_state() ==
+                    ServerSession::TerminalState::authentication_failed &&
+                record.actual_state == storage::ServerActualState::disconnected;
+            if (existing == sessions_.end() || !existing->second->matches(record) ||
+                restart_authentication) {
+                if (existing != sessions_.end()) {
+                    existing->second->stop();
+                    sessions_.erase(existing);
+                }
+                if (record.actual_state != storage::ServerActualState::not_authenticated) {
+                    auto session =
+                        std::make_shared<ServerSession>(io_context_, repository_, credentials_,
+                                                        client_id_, record, tls_context_, options_);
+                    sessions_.emplace(id, session);
+                    session->start();
+                }
+            }
+        }
+
+        for (auto iterator = sessions_.begin(); iterator != sessions_.end();) {
+            if (!retained.contains(iterator->first)) {
+                iterator->second->stop();
+                iterator = sessions_.erase(iterator);
+            } else {
+                ++iterator;
+            }
+        }
+        session_count_.store(sessions_.size());
+        schedule_reconcile();
+    }
+
+    void schedule_reconcile() {
+        if (!running_.load()) {
+            return;
+        }
+        reconcile_timer_.expires_after(options_.reconcile_interval);
+        auto self = shared_from_this();
+        reconcile_timer_.async_wait([self](const asio::error_code& error) {
+            if (!error && self->running_.load()) {
+                self->reconcile();
+            }
+        });
+    }
+
+    asio::io_context& io_context_;
+    storage::StateRepository& repository_;
+    storage::CredentialStore& credentials_;
+    common::Id client_id_;
+    ServerManagerOptions options_;
+    std::shared_ptr<asio::ssl::context> tls_context_;
+    asio::strand<asio::io_context::executor_type> strand_;
+    asio::steady_timer reconcile_timer_;
+    std::unordered_map<std::string, std::shared_ptr<ServerSession>> sessions_;
+    std::atomic<std::size_t> session_count_{0U};
+    std::atomic<bool> running_{false};
+};
+
+common::Result<std::unique_ptr<ServerManager>>
+ServerManager::create(asio::io_context& io_context, storage::StateRepository& repository,
+                      storage::CredentialStore& credentials, common::Id client_id,
+                      ServerManagerOptions options) {
+    auto implementation =
+        Impl::create(io_context, repository, credentials, std::move(client_id), std::move(options));
+    if (!implementation) {
+        return common::Result<std::unique_ptr<ServerManager>>::failure(implementation.error());
+    }
+    return std::unique_ptr<ServerManager>{new ServerManager{std::move(*implementation)}};
+}
+
+ServerManager::ServerManager(std::shared_ptr<Impl> implementation) noexcept
+    : implementation_(std::move(implementation)) {}
+
+ServerManager::~ServerManager() noexcept { stop(); }
+
+common::Result<void> ServerManager::start() { return implementation_->start(); }
+
+void ServerManager::stop() noexcept { implementation_->stop(); }
+
+void ServerManager::notify_changed() { implementation_->notify_changed(); }
+
+std::size_t ServerManager::session_count() const noexcept {
+    return implementation_->session_count();
+}
+
+} // namespace minitun::daemon

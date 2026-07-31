@@ -88,7 +88,7 @@ if [[ "$status_output" != *running* ]] || [[ "$status_output" != *"IPC version"*
     exit 1
 fi
 
-"$minitun_bin" --socket "$socket_path" server add example.com:2333 --name primary \
+"$minitun_bin" --socket "$socket_path" server add 127.0.0.1:1 --name primary \
     >"$runtime_dir/server-add.out" 2>"$runtime_dir/server-add.err"
 if ! grep -q 'Status.*not_authenticated' "$runtime_dir/server-add.out" ||
     [[ -s "$runtime_dir/server-add.err" ]]; then
@@ -107,7 +107,7 @@ with open(sys.argv[1], encoding="utf-8") as stream:
 assert len(servers) == 1
 server = servers[0]
 assert server["name"] == "primary"
-assert server["endpoint"] == "example.com:2333"
+assert server["endpoint"] == "127.0.0.1:1"
 assert server["actual_state"] == "not_authenticated"
 assert server["credential_configured"] is False
 assert "credential_ref" not in server
@@ -225,7 +225,7 @@ import sys
 with open(sys.argv[1], encoding="utf-8") as stream:
     server = json.load(stream)
 assert server["id"] == sys.argv[2]
-assert server["actual_state"] == "disconnected"
+assert server["actual_state"] in {"disconnected", "connecting", "backoff"}
 assert server["credential_configured"] is True
 assert "credential_ref" not in server
 PY
@@ -325,7 +325,7 @@ with open(sys.argv[1], encoding="utf-8") as stream:
     server = json.load(stream)
 with open(sys.argv[2], encoding="utf-8") as stream:
     tunnel = json.load(stream)
-assert server["actual_state"] == "disconnected"
+assert server["actual_state"] in {"disconnected", "connecting", "backoff"}
 assert server["credential_configured"] is True
 assert tunnel["actual_state"] == "pending"
 assert tunnel["desired_state"] == "active"

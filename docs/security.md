@@ -1,6 +1,7 @@
 # Security design status
 
-Stage 4 provides a protected local control plane, not end-to-end tunnel security.
+Stage 7 provides a protected local control plane and authenticated TLS control
+sessions, but not yet the TCP relay data plane.
 
 Implemented local protections include:
 
@@ -21,6 +22,8 @@ account, a compromised process with equivalent access, backups, or storage snaps
 may still expose credentials. Deployments must protect the host and filesystem and
 must not place credential files in shared directories.
 
-The remote transport is not implemented yet. There is no TLS connection, remote
-authentication, replay prevention, heartbeat, port authorization, or public TCP relay
-in the stage-4 build. Those controls begin with the binary protocol and TLS stages.
+Remote control transport requires TLS 1.2 or newer, hostname verification, HMAC-SHA256
+challenge authentication, bounded nonce replay protection, clock-skew validation,
+failure throttling, fresh session generations, and heartbeat deadlines. Each public
+server has an isolated daemon session and reconnect controller. Port authorization,
+worker connections, and public TCP relay are not implemented until later stages.

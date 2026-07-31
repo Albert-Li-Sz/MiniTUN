@@ -155,6 +155,8 @@ minitun_apply_lto(minitun_ipc)
 
 add_library(minitun_daemon STATIC
     src/daemon/control_service.cpp
+    src/daemon/reconnect_backoff.cpp
+    src/daemon/server_manager.cpp
 )
 add_library(MiniTun::daemon ALIAS minitun_daemon)
 
@@ -165,6 +167,7 @@ target_include_directories(minitun_daemon
 target_link_libraries(minitun_daemon
     PUBLIC
         MiniTun::ipc
+        MiniTun::protocol
         MiniTun::storage
     PRIVATE
         minitun_project_warnings
