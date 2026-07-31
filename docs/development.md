@@ -35,7 +35,36 @@ MINITUN_BUILD_PACKAGES
 Sanitizer builds have their own presets. TSan is intentionally kept separate from
 ASan/UBSan.
 
-## Stage-2 persistence development
+## Stage-3 IPC development
+
+The IPC wire format is a four-byte network-order payload length followed by UTF-8 JSON.
+Both directions are limited to 1 MiB. The public protocol layer performs strict schema
+validation before a request reaches a method handler, and the Unix-domain-socket layer
+handles concurrent single-request sessions without exposing SQLite to the CLI. Handler
+execution is bounded to four worker threads and remains covered by each session's
+absolute deadline. Pool shutdown rejects new submissions before joining accepted work.
+
+Exercise a real daemon-status round trip in a private directory:
+
+```bash
+runtime_dir="$(mktemp -d)"
+build/dev/minitund --socket "$runtime_dir/minitun.sock"
+# In another terminal:
+build/dev/minitun --socket "$runtime_dir/minitun.sock" daemon status
+```
+
+Run only IPC-focused tests with:
+
+```bash
+ctest --test-dir build/dev --output-on-failure -R '(Ipc|Frame|Dispatcher|cli-daemon)'
+```
+
+The IPC tests use isolated, physically resolved temporary socket paths. Decoder tests
+cover partial and coalesced frames; transport tests cover malformed-client isolation,
+deadlines, concurrent requests, single-request connections, pool shutdown, permissions,
+trusted path ancestry, serialized startup, and cleanup.
+
+## Persistence development
 
 The storage implementation uses the system SQLite3 library in both dependency modes.
 Its default production path is `/var/lib/minitun/state.db`, but unit tests create
@@ -52,8 +81,8 @@ schemas, migration rollback, connection policy, transaction commit/rollback/isol
 repository validation and constraints, monotonic timestamps, tombstone behavior,
 restart-state recovery, and reopen persistence.
 
-`minitund` currently links `MiniTun::storage` but remains a stage-2 placeholder. It
-does not yet accept `--database`, open the default database, or run recovery from
-`main()`. Those user-facing and lifecycle integrations belong to the IPC and daemon
-runtime stages. Until then, exercise persistence through the repository unit tests
-rather than treating the executables as a working tunnel service.
+`minitund` links `MiniTun::storage` and now runs the stage-3 IPC service, but it does not
+yet accept `--database`, open the default database, or run recovery from `main()`.
+Those lifecycle integrations belong to later daemon-runtime stages. Until then,
+exercise persistence through repository unit tests rather than treating the
+executables as a working tunnel service.

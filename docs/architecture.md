@@ -109,6 +109,48 @@ is idempotent and returns the fully validated server/tunnel snapshot only after 
 updates succeed.
 
 The recovery API is ready for daemon startup, but the current `minitund` entry point
-does not call it. Stage 3 will add local IPC; later stages add the CLI workflow,
-credential backend, remote protocol, isolated server sessions, TLS, reconciliation,
-worker pools, and TCP relay.
+does not call it.
+
+## Stage-3 local IPC
+
+`MiniTun::ipc` is independent of SQLite. The CLI links the common and IPC libraries;
+only the daemon links storage. Each wire message has this bounded form:
+
+```text
+uint32 network-order JSON byte length | UTF-8 JSON payload
+```
+
+Requests and responses use protocol version 1 and a canonical `req_` identifier. The
+request schema requires exactly `version`, `request_id`, `method`, and object-valued
+`params`. A response carries either an object-valued `result` or a stable common error
+code and non-sensitive message. Unknown top-level fields, malformed UTF-8, unsupported
+versions, invalid IDs, non-object parameters, and messages over 1 MiB are rejected
+before dispatch.
+
+The dispatcher has a thread-safe method registry. Handler failures become protocol
+error responses, while uncaught handler exceptions are contained and converted to a
+generic `internal_error` without exposing exception text. `daemon.status` is the first
+registered method and is used for the basic CLI-to-daemon integration; the remaining
+server and tunnel methods belong to stage 4.
+
+`LocalServer` accepts multiple Unix-domain-socket sessions, bounds their total number,
+and serves one request per connection. Each session incrementally decodes input and owns
+its own failure boundary, so a malformed client cannot terminate the accept loop or
+another session. Handlers run on a bounded four-thread dispatcher pool; an absolute
+per-request deadline remains armed from the first read through the response write, so a
+slow handler cannot block socket I/O or keep its session alive indefinitely. Pool
+shutdown first closes submissions and then joins accepted work. `LocalClient`
+separately bounds its connect and request phases.
+
+The server creates the socket with mode `0660`; its owner must be the daemon's effective
+user, while an authorized group may be configured. It requires a real daemon-owned
+parent, rejects symbolic links throughout the directory chain, and permits a writable
+ancestor only when sticky-directory semantics protect entries. A daemon-owned `0600`
+sidecar lock serializes stale replacement and remains held through socket cleanup.
+Startup refuses symlink and non-socket collisions, probes before replacing an owned
+stale socket, and only removes the same socket inode it created. The production path is
+`/run/minitun/minitun.sock`; packaging will later create its protected
+`minitun:minitun` runtime directory and run the service as that account.
+
+Later stages add the full CLI workflow, credential backend, remote protocol, isolated
+server sessions, TLS, reconciliation, worker pools, and TCP relay.

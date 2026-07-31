@@ -2,6 +2,10 @@ add_executable(minitun_unit_tests
     unit/common_test.cpp
     unit/endpoint_test.cpp
     unit/id_test.cpp
+    unit/ipc_dispatcher_test.cpp
+    unit/ipc_frame_test.cpp
+    unit/ipc_protocol_test.cpp
+    unit/ipc_transport_test.cpp
     unit/logging_test.cpp
     unit/port_range_test.cpp
     unit/secure_string_test.cpp
@@ -15,6 +19,7 @@ add_executable(minitun_unit_tests
 target_link_libraries(minitun_unit_tests
     PRIVATE
         MiniTun::storage
+        MiniTun::ipc
         MiniTun::sqlite
         GTest::gtest_main
         nlohmann_json::nlohmann_json
@@ -52,3 +57,17 @@ set_tests_properties(smoke.server-help PROPERTIES
     LABELS "smoke"
     PASS_REGULAR_EXPRESSION "MiniTun public server"
 )
+
+if(UNIX)
+    add_test(NAME integration.cli-daemon-ipc
+        COMMAND
+            "${CMAKE_CURRENT_SOURCE_DIR}/integration/cli_daemon_ipc.sh"
+            $<TARGET_FILE:minitun>
+            $<TARGET_FILE:minitund>
+    )
+    set_tests_properties(integration.cli-daemon-ipc PROPERTIES
+        LABELS "integration;ipc"
+        TIMEOUT 20
+        PASS_REGULAR_EXPRESSION "CLI/daemon IPC integration passed"
+    )
+endif()

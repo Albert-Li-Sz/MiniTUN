@@ -101,6 +101,31 @@ target_link_libraries(minitun_storage
 minitun_apply_sanitizers(minitun_storage)
 minitun_apply_lto(minitun_storage)
 
+add_library(minitun_ipc STATIC
+    src/ipc/dispatcher.cpp
+    src/ipc/frame.cpp
+    src/ipc/local_client.cpp
+    src/ipc/local_server.cpp
+    src/ipc/protocol.cpp
+)
+add_library(MiniTun::ipc ALIAS minitun_ipc)
+
+target_include_directories(minitun_ipc
+    PUBLIC
+        "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+)
+target_link_libraries(minitun_ipc
+    PUBLIC
+        MiniTun::common
+        MiniTun::asio
+        nlohmann_json::nlohmann_json
+    PRIVATE
+        Threads::Threads
+        minitun_project_warnings
+)
+minitun_apply_sanitizers(minitun_ipc)
+minitun_apply_lto(minitun_ipc)
+
 function(minitun_add_program target source core_library)
     add_executable("${target}" "${source}")
     target_link_libraries("${target}"
@@ -114,9 +139,11 @@ function(minitun_add_program target source core_library)
     minitun_apply_lto("${target}")
 endfunction()
 
-minitun_add_program(minitun apps/minitun_main.cpp MiniTun::common)
+minitun_add_program(minitun apps/minitun_main.cpp MiniTun::ipc)
 minitun_add_program(minitund apps/minitund_main.cpp MiniTun::storage)
 minitun_add_program(minitun-server apps/minitun_server_main.cpp MiniTun::common)
+
+target_link_libraries(minitund PRIVATE MiniTun::ipc)
 
 if(MINITUN_BUILD_TESTS)
     enable_testing()
