@@ -1,6 +1,6 @@
 # Remote protocol
 
-The remote protocol is intentionally not implemented in stage 0.
+The remote protocol is intentionally not implemented through stage 1.
 
 The planned protocol is a TLS-protected, versioned binary protocol with explicit
 network-byte-order field encoding. It will use bounded control frames and one TCP

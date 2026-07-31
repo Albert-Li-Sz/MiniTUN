@@ -12,5 +12,7 @@ control connection, authentication state, heartbeat, reconnection controller, wo
 pool, session generation, and tunnel registry. A failure in one session must not affect
 another session.
 
-Only the common process skeletons exist in stage 0. Runtime components will be added and
-tested in the ordered phases described by the project requirements.
+The stage-1 common layer provides the shared error/result model, structured logging,
+validated endpoints and port ranges, typed random IDs, time helpers, and move-only
+secret storage. Runtime components will be added and tested in the ordered phases
+described by the project requirements.

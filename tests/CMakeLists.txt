@@ -1,11 +1,18 @@
 add_executable(minitun_unit_tests
     unit/common_test.cpp
+    unit/endpoint_test.cpp
+    unit/id_test.cpp
+    unit/logging_test.cpp
+    unit/port_range_test.cpp
+    unit/secure_string_test.cpp
+    unit/time_test.cpp
 )
 
 target_link_libraries(minitun_unit_tests
     PRIVATE
         MiniTun::common
         GTest::gtest_main
+        nlohmann_json::nlohmann_json
         minitun_project_warnings
 )
 minitun_apply_sanitizers(minitun_unit_tests)

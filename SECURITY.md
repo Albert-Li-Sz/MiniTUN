@@ -1,6 +1,6 @@
 # Security policy
 
-MiniTun is pre-release software. Do not deploy the stage-0 baseline as a tunnel
+MiniTun is pre-release software. Do not deploy the current stage-1 baseline as a tunnel
 service; the TLS, authentication, credential-storage, IPC-permission, and resource-limit
 phases have not yet been implemented.
 

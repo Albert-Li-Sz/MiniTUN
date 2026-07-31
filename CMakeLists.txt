@@ -49,8 +49,13 @@ function(minitun_apply_lto target)
 endfunction()
 
 add_library(minitun_common STATIC
+    src/common/endpoint.cpp
     src/common/error.cpp
+    src/common/id.cpp
     src/common/logging.cpp
+    src/common/port_range.cpp
+    src/common/secure_string.cpp
+    src/common/time.cpp
     src/common/version.cpp
 )
 add_library(MiniTun::common ALIAS minitun_common)

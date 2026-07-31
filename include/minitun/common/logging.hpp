@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -8,6 +9,12 @@
 #include <minitun/common/result.hpp>
 
 namespace minitun::common {
+
+inline constexpr std::size_t kMaxLoggerNameBytes = 128;
+inline constexpr std::size_t kMaxLogComponentBytes = 128;
+inline constexpr std::size_t kMaxLogIdentifierBytes = 128;
+inline constexpr std::size_t kMaxLogEndpointBytes = 260;
+inline constexpr std::size_t kMaxLogMessageBytes = 4096;
 
 enum class LogLevel {
     trace,
@@ -43,15 +50,18 @@ struct LogContext final {
 /// Installs a thread-safe stdout logger suitable for journald collection.
 ///
 /// Each event is one JSON object. Calling this function again atomically
-/// replaces the process logger and its default component.
+/// replaces the process logger and its default component. Oversized logger
+/// names or default components are rejected.
 [[nodiscard]] Result<void> initialize_logging(const LoggingConfig& config = {});
 
 void shutdown_logging() noexcept;
 void set_log_level(LogLevel level) noexcept;
 [[nodiscard]] bool should_log(LogLevel level) noexcept;
 
-/// Emits a structured event. Logging failures are contained and never escape
-/// into network or shutdown paths.
+/// Emits a structured event. Oversized event fields are truncated to the
+/// public byte limits above, and malformed UTF-8 is replaced before JSON
+/// encoding. Logging failures are contained and never escape into network or
+/// shutdown paths.
 void log(LogLevel level, std::string_view message, const LogContext& context = {}) noexcept;
 
 inline void log_trace(std::string_view message, const LogContext& context = {}) noexcept {

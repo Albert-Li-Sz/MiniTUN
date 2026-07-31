@@ -42,6 +42,85 @@ spdlog::level::level_enum to_spdlog_level(const LogLevel level) noexcept {
     return spdlog::level::off;
 }
 
+[[nodiscard]] bool is_utf8_continuation(const unsigned char value) noexcept {
+    return (value & 0xc0U) == 0x80U;
+}
+
+[[nodiscard]] std::size_t valid_utf8_sequence_length(const std::string_view value,
+                                                     const std::size_t offset) noexcept {
+    const auto byte = [&value, offset](const std::size_t relative_offset) {
+        return static_cast<unsigned char>(value[offset + relative_offset]);
+    };
+
+    const unsigned char first = byte(0);
+    if (first <= 0x7fU) {
+        return 1U;
+    }
+
+    if (first >= 0xc2U && first <= 0xdfU) {
+        return offset + 1U < value.size() && is_utf8_continuation(byte(1)) ? 2U : 0U;
+    }
+
+    if (first >= 0xe0U && first <= 0xefU) {
+        if (offset + 2U >= value.size() || !is_utf8_continuation(byte(2))) {
+            return 0U;
+        }
+
+        const unsigned char second = byte(1);
+        const bool second_is_valid =
+            (first == 0xe0U && second >= 0xa0U && second <= 0xbfU) ||
+            (first == 0xedU && second >= 0x80U && second <= 0x9fU) ||
+            (((first >= 0xe1U && first <= 0xecU) || (first >= 0xeeU && first <= 0xefU)) &&
+             is_utf8_continuation(second));
+        return second_is_valid ? 3U : 0U;
+    }
+
+    if (first >= 0xf0U && first <= 0xf4U) {
+        if (offset + 3U >= value.size() || !is_utf8_continuation(byte(2)) ||
+            !is_utf8_continuation(byte(3))) {
+            return 0U;
+        }
+
+        const unsigned char second = byte(1);
+        const bool second_is_valid =
+            (first == 0xf0U && second >= 0x90U && second <= 0xbfU) ||
+            (first == 0xf4U && second >= 0x80U && second <= 0x8fU) ||
+            (first >= 0xf1U && first <= 0xf3U && is_utf8_continuation(second));
+        return second_is_valid ? 4U : 0U;
+    }
+
+    return 0U;
+}
+
+[[nodiscard]] std::string bounded_valid_utf8(const std::string_view value,
+                                             const std::size_t max_bytes) {
+    constexpr std::string_view replacement_character{"\xef\xbf\xbd"};
+
+    std::string result;
+    result.reserve(std::min(value.size(), max_bytes));
+
+    std::size_t offset = 0U;
+    while (offset < value.size() && result.size() < max_bytes) {
+        const std::size_t sequence_length = valid_utf8_sequence_length(value, offset);
+        if (sequence_length == 0U) {
+            if (replacement_character.size() > max_bytes - result.size()) {
+                break;
+            }
+            result.append(replacement_character);
+            ++offset;
+            continue;
+        }
+        if (sequence_length > max_bytes - result.size()) {
+            break;
+        }
+
+        result.append(value.substr(offset, sequence_length));
+        offset += sequence_length;
+    }
+
+    return result;
+}
+
 void append_json_string(std::string& output, const std::string_view value) {
     constexpr std::array<char, 16> hex{
         '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f',
@@ -99,22 +178,29 @@ void append_json_field(std::string& output, const std::string_view key,
 
 std::string make_payload(const std::string_view fallback_component, const std::string_view message,
                          const LogContext& context) {
-    std::string payload;
-    payload.reserve(fallback_component.size() + message.size() + context.component.size() +
-                    context.server_id.size() + context.tunnel_id.size() +
-                    context.connection_id.size() + context.remote_endpoint.size() + 160U);
+    const std::string component = bounded_valid_utf8(
+        context.component.empty() ? fallback_component : context.component, kMaxLogComponentBytes);
+    const std::string server_id = bounded_valid_utf8(context.server_id, kMaxLogIdentifierBytes);
+    const std::string tunnel_id = bounded_valid_utf8(context.tunnel_id, kMaxLogIdentifierBytes);
+    const std::string connection_id =
+        bounded_valid_utf8(context.connection_id, kMaxLogIdentifierBytes);
+    const std::string remote_endpoint =
+        bounded_valid_utf8(context.remote_endpoint, kMaxLogEndpointBytes);
+    const std::string bounded_message = bounded_valid_utf8(message, kMaxLogMessageBytes);
 
-    const std::string_view component =
-        context.component.empty() ? fallback_component : context.component;
+    std::string payload;
+    payload.reserve(component.size() + bounded_message.size() + server_id.size() +
+                    tunnel_id.size() + connection_id.size() + remote_endpoint.size() + 160U);
+
     append_json_field(payload, "component", component);
-    append_json_field(payload, "server_id", context.server_id);
-    append_json_field(payload, "tunnel_id", context.tunnel_id);
-    append_json_field(payload, "connection_id", context.connection_id);
-    append_json_field(payload, "remote_endpoint", context.remote_endpoint);
+    append_json_field(payload, "server_id", server_id);
+    append_json_field(payload, "tunnel_id", tunnel_id);
+    append_json_field(payload, "connection_id", connection_id);
+    append_json_field(payload, "remote_endpoint", remote_endpoint);
     append_json_field(payload, "error_code",
                       context.error_code.has_value() ? to_string(*context.error_code)
                                                      : std::string_view{});
-    append_json_field(payload, "message", message, false);
+    append_json_field(payload, "message", bounded_message, false);
     return payload;
 }
 
@@ -175,6 +261,13 @@ Result<void> initialize_logging(const LoggingConfig& config) {
     }
     if (config.component.empty()) {
         return Error{ErrorCode::invalid_argument, "default log component must not be empty"};
+    }
+    if (config.logger_name.size() > kMaxLoggerNameBytes) {
+        return Error{ErrorCode::invalid_argument, "logger name exceeds the maximum length"};
+    }
+    if (config.component.size() > kMaxLogComponentBytes) {
+        return Error{ErrorCode::invalid_argument,
+                     "default log component exceeds the maximum length"};
     }
 
     try {

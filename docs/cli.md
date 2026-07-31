@@ -1,6 +1,6 @@
 # Command-line interface
 
-Stage 0 provides:
+The current baseline provides:
 
 ```text
 minitun --help
