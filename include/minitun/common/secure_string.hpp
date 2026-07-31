@@ -6,6 +6,8 @@
 
 namespace minitun::common {
 
+void secure_erase_memory(void* data, std::size_t size) noexcept;
+
 /// Move-only storage for short-lived secrets.
 ///
 /// The value is held in an exclusively owned, fixed-size buffer. This type

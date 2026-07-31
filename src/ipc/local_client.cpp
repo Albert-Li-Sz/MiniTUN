@@ -14,6 +14,8 @@
 #include <asio/steady_timer.hpp>
 #include <asio/write.hpp>
 
+#include <minitun/common/secure_string.hpp>
+
 #include "local_internal.hpp"
 
 namespace minitun::ipc {
@@ -28,6 +30,8 @@ class ClientOperation final : public std::enable_shared_from_this<ClientOperatio
         : options_(options), expected_request_id_(std::move(expected_request_id)),
           socket_(io_context_), deadline_(io_context_), decoder_(options.max_message_size),
           outbound_(std::move(outbound)) {}
+
+    ~ClientOperation() noexcept { scrub_outbound(); }
 
     [[nodiscard]] common::Result<Response> run() {
         try {
@@ -111,6 +115,7 @@ class ClientOperation final : public std::enable_shared_from_this<ClientOperatio
             if (is_complete()) {
                 return;
             }
+            scrub_outbound();
             if (error) {
                 complete(detail::socket_error(error, "IPC request write"));
                 return;
@@ -213,6 +218,11 @@ class ClientOperation final : public std::enable_shared_from_this<ClientOperatio
 
     [[nodiscard]] bool is_complete() const noexcept { return phase_ == Phase::complete; }
 
+    void scrub_outbound() noexcept {
+        common::secure_erase_memory(outbound_.data(), outbound_.size());
+        outbound_.clear();
+    }
+
     enum class Phase {
         idle,
         connecting,
@@ -260,6 +270,7 @@ common::Result<Response> LocalClient::request(const Request& request) const {
         return std::move(payload).error();
     }
     auto frame = encode_frame(*payload, options_.max_message_size);
+    common::secure_erase_memory(payload->data(), payload->size());
     if (!frame) {
         return std::move(frame).error();
     }

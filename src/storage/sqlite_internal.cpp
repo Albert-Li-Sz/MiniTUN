@@ -189,6 +189,15 @@ common::Result<void> Statement::bind_text(const int index, const std::string_vie
                                          static_cast<int>(value.size()), SQLITE_TRANSIENT));
 }
 
+common::Result<void> Statement::bind_blob(const int index, const std::string_view value) {
+    if (value.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+        return common::Error{common::ErrorCode::resource_exhausted,
+                             "SQLite blob value exceeds the platform length limit"};
+    }
+    return bind_result(sqlite3_bind_blob(statement_, index, value.data(),
+                                         static_cast<int>(value.size()), SQLITE_TRANSIENT));
+}
+
 common::Result<void> Statement::bind_int64(const int index, const std::int64_t value) {
     return bind_result(sqlite3_bind_int64(statement_, index, value));
 }

@@ -35,34 +35,46 @@ MINITUN_BUILD_PACKAGES
 Sanitizer builds have their own presets. TSan is intentionally kept separate from
 ASan/UBSan.
 
-## Stage-3 IPC development
+## Stage-4 local control development
 
 The IPC wire format is a four-byte network-order payload length followed by UTF-8 JSON.
 Both directions are limited to 1 MiB. The public protocol layer performs strict schema
 validation before a request reaches a method handler, and the Unix-domain-socket layer
 handles concurrent single-request sessions without exposing SQLite to the CLI. Handler
 execution is bounded to four worker threads and remains covered by each session's
-absolute deadline. Pool shutdown rejects new submissions before joining accepted work.
+absolute deadline. Stage 4 adds the daemon control service, separate credential store,
+all resource commands, JSON output, stable exit codes, and Token input handling.
 
 Exercise a real daemon-status round trip in a private directory:
 
 ```bash
-runtime_dir="$(mktemp -d)"
-build/dev/minitund --socket "$runtime_dir/minitun.sock"
+runtime_root="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
+runtime_dir="$(mktemp -d "$runtime_root/minitun.XXXXXX")"
+build/dev/minitund \
+  --socket "$runtime_dir/minitun.sock" \
+  --database "$runtime_dir/state.db" \
+  --credentials "$runtime_dir/credentials.db"
 # In another terminal:
 build/dev/minitun --socket "$runtime_dir/minitun.sock" daemon status
+build/dev/minitun --socket "$runtime_dir/minitun.sock" \
+  server add example.com:2333 --name primary
+build/dev/minitun --socket "$runtime_dir/minitun.sock" \
+  tun add primary 22 6000 --name ssh
 ```
 
 Run only IPC-focused tests with:
 
 ```bash
-ctest --test-dir build/dev --output-on-failure -R '(Ipc|Frame|Dispatcher|cli-daemon)'
+ctest --test-dir build/dev --output-on-failure \
+  -R '(Ipc|Frame|Dispatcher|Credential|DaemonControl|cli-daemon)'
 ```
 
 The IPC tests use isolated, physically resolved temporary socket paths. Decoder tests
 cover partial and coalesced frames; transport tests cover malformed-client isolation,
 deadlines, concurrent requests, single-request connections, pool shutdown, permissions,
-trusted path ancestry, serialized startup, and cleanup.
+trusted path ancestry, serialized startup, and cleanup. The CLI/daemon integration test
+also exercises CRUD, JSON, restart recovery, PTY no-echo input, Token leak scanning,
+tombstone filtering, and every documented exit-code class.
 
 ## Persistence development
 
@@ -73,16 +85,16 @@ isolated temporary database files and do not touch that location.
 Run only the storage and recovery tests after a persistence change with:
 
 ```bash
-ctest --test-dir build/dev --output-on-failure -R '(Storage|Recovery)'
+ctest --test-dir build/dev --output-on-failure -R '(Storage|Recovery|Credential)'
 ```
 
 The tests cover fresh and repeated migration, refusal of future, drifted, or malformed
 schemas, migration rollback, connection policy, transaction commit/rollback/isolation,
 repository validation and constraints, monotonic timestamps, tombstone behavior,
-restart-state recovery, and reopen persistence.
+restart-state recovery, credential permissions and CRUD, and concurrent daemon
+mutations.
 
-`minitund` links `MiniTun::storage` and now runs the stage-3 IPC service, but it does not
-yet accept `--database`, open the default database, or run recovery from `main()`.
-Those lifecycle integrations belong to later daemon-runtime stages. Until then,
-exercise persistence through repository unit tests rather than treating the
-executables as a working tunnel service.
+`minitund` accepts `--database` and `--credentials`, opens both stores, runs state
+recovery, checks credential references, and only then starts IPC. Tests must pass paths
+inside private temporary directories; the program does not create production parent
+directories.

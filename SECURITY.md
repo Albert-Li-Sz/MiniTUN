@@ -1,43 +1,25 @@
 # Security policy
 
-MiniTun is pre-release software. Do not deploy the current stage-3 build as a tunnel
-service. The network-facing runtime, TLS authentication, credential backend, service
-account creation, and installation-time filesystem ownership have not yet been
-implemented.
+MiniTun is pre-release software. Do not deploy the stage-4 build as a public tunnel
+service: the network-facing protocol, TLS authentication, session isolation, port
+policy, relay limits, service accounts, and installation hardening are not complete.
 
-Stage 3 adds a local Unix-domain socket with a strict `0660` mode, a 1 MiB message
-limit, bounded connection count, strict UTF-8 JSON schemas, one request per connection,
-request deadlines, and exception containment. Startup refuses symbolic links in the
-directory chain and symlink or non-socket entries at the configured path; shutdown
-removes the path only while it still identifies the socket created by that server
-instance. Malformed clients are disconnected without terminating the daemon or other
-sessions.
+Stage 4 does provide a functional local security boundary. `minitun` talks only to a
+strict, bounded Unix-socket protocol. `minitund` requires a trusted daemon-owned socket
+directory, creates the socket as `0660`, bounds clients and request time, contains
+malformed input and handler exceptions, and safely handles stale socket paths.
 
-The intended production path is `/run/minitun/minitun.sock`, owned by
-`minitun:minitun`. Until packaging creates the protected runtime directory and service
-account, development runs must use a private directory and an explicit `--socket`
-path. The daemon must run as the intended socket owner. The parent must be a real
-directory owned by the daemon and must not be writable by group or other users;
-ancestors must be owned by root or the daemon, and writable ancestors require sticky
-directory protection. A daemon-owned `0600` sidecar lock serializes socket replacement
-and remains locked for the server lifetime. Socket mode is not a substitute for
-protecting its directory namespace.
+Only `minitund` opens SQLite. Server and tunnel changes are validated and transactional.
+Authentication Tokens are stored in a separate daemon-owned regular file with mode
+`0600`, never in `state.db`. The CLI disables terminal echo by default and requires an
+explicit `--token-stdin` for pipelines. Token values are omitted from responses,
+errors, and logs, and transient Token-bearing buffers are proactively cleansed.
 
-The stage-2 SQLite schema contains an optional `credential_ref`. It is an opaque
-identifier for a future protected credential backend, not a storage location for a
-token, password, private key, certificate, or other secret. The schema cannot determine
-whether a caller supplied secret material, so callers must never persist credential
-material in this field. The current stage does not provide a supported way to log in or
-store a credential. The IPC implementation does not log request bodies, and future
-credential methods must never return tokens in an IPC response.
-
-The storage layer uses bound parameters, validates records at repository boundaries,
-enforces schema constraints and foreign keys, and performs migrations and restart-state
-normalization in transactions. It refuses unsupported, malformed, or unversioned
-non-empty databases instead of deleting or rebuilding them. These protections do not
-replace the database-file permission checks and protected credential storage planned
-for later security and installation stages.
+The credential database is not encrypted. Filesystem permissions and memory cleansing
+reduce accidental exposure but do not protect against root, the daemon account, host
+compromise, privileged memory inspection, or insecure backups. Use only test Tokens
+until the remote authentication and packaging stages are complete.
 
 Please report vulnerabilities privately through the GitHub repository's security
-advisory feature. Do not include tokens, private keys, or other live credentials in an
-issue, log, test fixture, or proof of concept.
+advisory feature. Never include live Tokens, private keys, or certificates in an issue,
+log, test fixture, or proof of concept.

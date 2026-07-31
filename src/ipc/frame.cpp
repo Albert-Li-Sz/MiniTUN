@@ -5,6 +5,8 @@
 #include <new>
 #include <utility>
 
+#include <minitun/common/secure_string.hpp>
+
 namespace minitun::ipc {
 namespace {
 
@@ -66,6 +68,10 @@ common::Result<std::vector<std::uint8_t>> encode_frame(const std::string_view pa
 FrameDecoder::FrameDecoder(const std::size_t max_frame_size)
     : max_frame_size_(effective_limit(max_frame_size)) {}
 
+FrameDecoder::~FrameDecoder() noexcept {
+    common::secure_erase_memory(payload_.data(), payload_.size());
+}
+
 common::Result<std::vector<std::string>>
 FrameDecoder::feed(const std::span<const std::uint8_t> bytes) {
     if (failed_) {
@@ -116,7 +122,8 @@ FrameDecoder::feed(const std::span<const std::uint8_t> bytes) {
             offset += count;
 
             if (payload_.size() == expected) {
-                frames.emplace_back(std::move(payload_));
+                frames.emplace_back(payload_);
+                common::secure_erase_memory(payload_.data(), payload_.size());
                 payload_.clear();
                 expected_payload_size_ = 0;
                 reading_payload_ = false;
@@ -142,6 +149,7 @@ common::Result<void> FrameDecoder::finish() const {
 }
 
 void FrameDecoder::reset() noexcept {
+    common::secure_erase_memory(payload_.data(), payload_.size());
     expected_payload_size_ = 0;
     header_size_ = 0;
     payload_.clear();
@@ -155,6 +163,7 @@ std::size_t FrameDecoder::buffered_size() const noexcept { return header_size_ +
 std::size_t FrameDecoder::max_frame_size() const noexcept { return max_frame_size_; }
 
 void FrameDecoder::fail(const common::ErrorCode code) noexcept {
+    common::secure_erase_memory(payload_.data(), payload_.size());
     expected_payload_size_ = 0;
     header_size_ = 0;
     payload_.clear();

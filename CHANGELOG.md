@@ -26,5 +26,13 @@ All notable changes to MiniTun will be documented here.
   limits, exact `0660` permissions, trusted-path validation, serialized startup,
   and safe stale-socket cleanup.
 - Real `minitun daemon status` communication with the local `minitund` process.
+- Complete stage-4 `server`, `tun`, and aggregate `status` CLI commands with JSON list
+  and inspect output plus stable `0/2/3/4/5/10` exit codes.
+- Daemon control service backed by consistent SQLite transactions, restart recovery,
+  tombstone filtering, and concurrent local request handling.
+- Separate SQLite credential store with a `0600` file, transactional put/get/remove,
+  schema checks, secure deletion, and opaque references from `state.db`.
+- Non-echoing interactive Token input, explicit `--token-stdin`, and cleansing of
+  Token-bearing CLI and IPC buffers.
 - `minitun`, `minitund`, and `minitun-server` stage-0 executables.
 - Unit-test and GitHub Actions CI foundations.

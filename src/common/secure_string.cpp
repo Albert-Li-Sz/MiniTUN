@@ -7,6 +7,12 @@
 
 namespace minitun::common {
 
+void secure_erase_memory(void* const data, const std::size_t size) noexcept {
+    if (data != nullptr && size != 0U) {
+        OPENSSL_cleanse(data, size);
+    }
+}
+
 SecureString::SecureString(const std::string_view value) : size_(value.size()) {
     if (value.empty()) {
         return;
@@ -47,7 +53,7 @@ bool SecureString::empty() const noexcept { return size_ == 0U; }
 
 void SecureString::clear() noexcept {
     if (buffer_ != nullptr) {
-        OPENSSL_cleanse(buffer_.get(), size_);
+        secure_erase_memory(buffer_.get(), size_);
         buffer_.reset();
     }
     size_ = 0U;

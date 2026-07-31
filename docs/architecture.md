@@ -20,9 +20,8 @@ storage. Stage 2 adds `MiniTun::storage`, which is linked to `minitund` and the 
 tests. The CLI and public server do not link SQLite.
 
 `StateRepository` owns one migrated `Database` and exposes `ServerRepository` and
-`TunnelRepository`. The production ownership model allows only the daemon to write the
-state database; later IPC-based CLI commands will ask the daemon to perform changes
-instead of opening SQLite directly.
+`TunnelRepository`. Only the daemon opens or writes the state database. Stage-4 CLI
+commands ask the daemon to perform every query and mutation over IPC.
 
 ### SQLite schema version 1
 
@@ -108,8 +107,9 @@ propagates the `removed`/`removing` tombstone state to every child tunnel. The o
 is idempotent and returns the fully validated server/tunnel snapshot only after all
 updates succeed.
 
-The recovery API is ready for daemon startup, but the current `minitund` entry point
-does not call it.
+`minitund` calls recovery before accepting IPC. It then verifies every live
+`credential_ref` against the separate credential store. A missing secret clears the
+reference and restores `not_authenticated`; removed-server credentials are deleted.
 
 ## Stage-3 local IPC
 
@@ -129,9 +129,8 @@ before dispatch.
 
 The dispatcher has a thread-safe method registry. Handler failures become protocol
 error responses, while uncaught handler exceptions are contained and converted to a
-generic `internal_error` without exposing exception text. `daemon.status` is the first
-registered method and is used for the basic CLI-to-daemon integration; the remaining
-server and tunnel methods belong to stage 4.
+generic `internal_error` without exposing exception text. Stage 4 registers all local
+control methods through one `ControlService`.
 
 `LocalServer` accepts multiple Unix-domain-socket sessions, bounds their total number,
 and serves one request per connection. Each session incrementally decodes input and owns
@@ -152,5 +151,37 @@ stale socket, and only removes the same socket inode it created. The production 
 `/run/minitun/minitun.sock`; packaging will later create its protected
 `minitun:minitun` runtime directory and run the service as that account.
 
-Later stages add the full CLI workflow, credential backend, remote protocol, isolated
-server sessions, TLS, reconciliation, worker pools, and TCP relay.
+## Stage-4 local control plane
+
+`MiniTun::daemon` owns the IPC control handlers and depends on both storage and IPC.
+The CLI continues to link only common/IPC code and therefore cannot bypass daemon
+authorization or database lifecycle rules. The registered methods are:
+
+```text
+daemon.status
+status
+server.add  server.login  server.list  server.inspect  server.remove
+tun.add     tun.list      tun.inspect  tun.remove
+```
+
+Control handlers strictly reject missing, mistyped, out-of-range, and unknown
+parameters. Compound reads and tunnel creation use a shared state transaction, so
+concurrent CLI requests see a consistent server/tunnel relationship. Removal uses the
+repository tombstone APIs; public list/inspect results filter those tombstones. A
+tunnel is persisted as `active/pending` even when its server is disconnected.
+
+The credential backend is a separate SQLite database at
+`/var/lib/minitun/credentials.db`. It stores opaque key/blob pairs behind the
+`CredentialStore` interface, enforces a daemon-owned regular file with mode `0600`,
+uses bound parameters and transactional updates, enables SQLite secure deletion, and
+refuses unsupported or unversioned non-empty schemas. The state database stores only
+the opaque key. Tokens do not appear in responses, errors, or logs.
+
+Token-bearing IPC buffers are proactively cleansed after serialization, transport,
+parsing, and dispatch. `SecureString` remains the move-only representation used at the
+credential boundary. File permissions and cleansing reduce exposure but do not turn
+the credential database into an encrypted vault; filesystem and host trust still
+matter.
+
+Later stages add the remote protocol, isolated server sessions, TLS authentication,
+reconciliation, worker pools, and TCP relay.

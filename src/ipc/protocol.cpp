@@ -7,8 +7,39 @@
 #include <utility>
 #include <vector>
 
+#include <minitun/common/secure_string.hpp>
+
 namespace minitun::ipc {
 namespace {
+
+template <typename JsonType> void secure_erase_json(JsonType& value) noexcept {
+    try {
+        if (value.is_string()) {
+            auto& text = value.template get_ref<std::string&>();
+            common::secure_erase_memory(text.data(), text.size());
+            text.clear();
+            return;
+        }
+        if (value.is_array() || value.is_object()) {
+            for (auto& child : value) {
+                secure_erase_json(child);
+            }
+        }
+    } catch (...) {
+    }
+}
+
+template <typename JsonType> class JsonScrubber final {
+  public:
+    explicit JsonScrubber(JsonType& value) noexcept : value_(value) {}
+    ~JsonScrubber() noexcept { secure_erase_json(value_); }
+
+    JsonScrubber(const JsonScrubber&) = delete;
+    JsonScrubber& operator=(const JsonScrubber&) = delete;
+
+  private:
+    JsonType& value_;
+};
 
 [[nodiscard]] std::size_t effective_limit(const std::size_t requested_limit) noexcept {
     return std::min(requested_limit, kDefaultMaxFrameSize);
@@ -423,6 +454,7 @@ common::Result<Request> parse_request(const std::string_view payload,
             return common::Result<Request>::failure(parsed.error());
         }
         Json document = std::move(parsed).value();
+        const JsonScrubber scrubber{document};
         if (!document.is_object()) {
             return common::Result<Request>::failure(common::ErrorCode::invalid_argument,
                                                     "IPC request must be a JSON object");
@@ -510,15 +542,11 @@ common::Result<std::string> serialize_request(const Request& request,
         }
 
         nlohmann::ordered_json document = nlohmann::ordered_json::object();
+        const JsonScrubber scrubber{document};
         document["version"] = request.version;
         document["request_id"] = request.request_id.str();
         document["method"] = request.method;
         document["params"] = request.params;
-        const Json validated_document = document;
-        auto valid_document = validate_json_tree(validated_document);
-        if (!valid_document) {
-            return common::Result<std::string>::failure(valid_document.error());
-        }
         return dump_document(document, max_message_size);
     } catch (const std::bad_alloc&) {
         return allocation_error<std::string>();

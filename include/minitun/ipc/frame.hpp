@@ -35,6 +35,7 @@ encode_frame(std::string_view payload, std::size_t max_frame_size = kDefaultMaxF
 class FrameDecoder final {
   public:
     explicit FrameDecoder(std::size_t max_frame_size = kDefaultMaxFrameSize);
+    ~FrameDecoder() noexcept;
 
     [[nodiscard]] common::Result<std::vector<std::string>>
     feed(std::span<const std::uint8_t> bytes);

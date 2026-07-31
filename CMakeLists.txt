@@ -77,6 +77,7 @@ minitun_apply_version_definitions(minitun_common)
 minitun_apply_lto(minitun_common)
 
 add_library(minitun_storage STATIC
+    src/storage/credential_store.cpp
     src/storage/database.cpp
     src/storage/models.cpp
     src/storage/server_repository.cpp
@@ -126,6 +127,25 @@ target_link_libraries(minitun_ipc
 minitun_apply_sanitizers(minitun_ipc)
 minitun_apply_lto(minitun_ipc)
 
+add_library(minitun_daemon STATIC
+    src/daemon/control_service.cpp
+)
+add_library(MiniTun::daemon ALIAS minitun_daemon)
+
+target_include_directories(minitun_daemon
+    PUBLIC
+        "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+)
+target_link_libraries(minitun_daemon
+    PUBLIC
+        MiniTun::ipc
+        MiniTun::storage
+    PRIVATE
+        minitun_project_warnings
+)
+minitun_apply_sanitizers(minitun_daemon)
+minitun_apply_lto(minitun_daemon)
+
 function(minitun_add_program target source core_library)
     add_executable("${target}" "${source}")
     target_link_libraries("${target}"
@@ -140,10 +160,8 @@ function(minitun_add_program target source core_library)
 endfunction()
 
 minitun_add_program(minitun apps/minitun_main.cpp MiniTun::ipc)
-minitun_add_program(minitund apps/minitund_main.cpp MiniTun::storage)
+minitun_add_program(minitund apps/minitund_main.cpp MiniTun::daemon)
 minitun_add_program(minitun-server apps/minitun_server_main.cpp MiniTun::common)
-
-target_link_libraries(minitund PRIVATE MiniTun::ipc)
 
 if(MINITUN_BUILD_TESTS)
     enable_testing()

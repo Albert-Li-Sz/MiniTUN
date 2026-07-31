@@ -33,6 +33,7 @@ class Statement final {
 
     [[nodiscard]] common::Result<void> bind_null(int index);
     [[nodiscard]] common::Result<void> bind_text(int index, std::string_view value);
+    [[nodiscard]] common::Result<void> bind_blob(int index, std::string_view value);
     [[nodiscard]] common::Result<void> bind_int64(int index, std::int64_t value);
     [[nodiscard]] common::Result<StepResult> step();
 

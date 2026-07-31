@@ -1,5 +1,7 @@
 add_executable(minitun_unit_tests
     unit/common_test.cpp
+    unit/credential_store_test.cpp
+    unit/daemon_control_service_test.cpp
     unit/endpoint_test.cpp
     unit/id_test.cpp
     unit/ipc_dispatcher_test.cpp
@@ -18,6 +20,7 @@ add_executable(minitun_unit_tests
 
 target_link_libraries(minitun_unit_tests
     PRIVATE
+        MiniTun::daemon
         MiniTun::storage
         MiniTun::ipc
         MiniTun::sqlite

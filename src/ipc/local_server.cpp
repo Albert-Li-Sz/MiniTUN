@@ -41,6 +41,7 @@
 #include <unistd.h>
 
 #include <minitun/common/logging.hpp>
+#include <minitun/common/secure_string.hpp>
 #include <minitun/ipc/dispatcher.hpp>
 #include <minitun/ipc/frame.hpp>
 #include <minitun/ipc/protocol.hpp>
@@ -49,6 +50,64 @@
 
 namespace minitun::ipc {
 namespace {
+
+void secure_erase_json(Json& value) noexcept {
+    try {
+        if (value.is_string()) {
+            auto& text = value.get_ref<std::string&>();
+            common::secure_erase_memory(text.data(), text.size());
+            text.clear();
+            return;
+        }
+        if (value.is_array() || value.is_object()) {
+            for (auto& child : value) {
+                secure_erase_json(child);
+            }
+        }
+    } catch (...) {
+    }
+}
+
+class ScrubbedRequest final {
+  public:
+    explicit ScrubbedRequest(const Request& request) : request_(request) {}
+    ~ScrubbedRequest() noexcept { secure_erase_json(request_.params); }
+
+    ScrubbedRequest(const ScrubbedRequest&) = delete;
+    ScrubbedRequest& operator=(const ScrubbedRequest&) = delete;
+
+    [[nodiscard]] const Request& get() const noexcept { return request_; }
+
+  private:
+    Request request_;
+};
+
+class RequestScrubber final {
+  public:
+    explicit RequestScrubber(Request& request) noexcept : request_(request) {}
+    ~RequestScrubber() noexcept { secure_erase_json(request_.params); }
+
+    RequestScrubber(const RequestScrubber&) = delete;
+    RequestScrubber& operator=(const RequestScrubber&) = delete;
+
+  private:
+    Request& request_;
+};
+
+class StringScrubber final {
+  public:
+    explicit StringScrubber(std::string& value) noexcept : value_(value) {}
+    ~StringScrubber() noexcept {
+        common::secure_erase_memory(value_.data(), value_.size());
+        value_.clear();
+    }
+
+    StringScrubber(const StringScrubber&) = delete;
+    StringScrubber& operator=(const StringScrubber&) = delete;
+
+  private:
+    std::string& value_;
+};
 
 using LocalSocket = asio::local::stream_protocol::socket;
 using LocalAcceptor = asio::local::stream_protocol::acceptor;
@@ -579,6 +638,7 @@ class Session final : public std::enable_shared_from_this<Session> {
 
             auto decoded =
                 decoder_.feed(std::span<const std::uint8_t>{read_buffer_.data(), bytes_read});
+            common::secure_erase_memory(read_buffer_.data(), bytes_read);
             if (!decoded) {
                 close();
                 return;
@@ -589,16 +649,20 @@ class Session final : public std::enable_shared_from_this<Session> {
             }
 
             if (decoded->size() != 1U || decoder_.buffered_size() != 0U) {
+                for (auto& payload : *decoded) {
+                    common::secure_erase_memory(payload.data(), payload.size());
+                }
                 close();
                 return;
             }
-            process_request(std::move(decoded->front()));
+            process_request(decoded->front());
         } catch (...) {
             close();
         }
     }
 
-    void process_request(std::string payload) {
+    void process_request(std::string& payload) {
+        const StringScrubber payload_scrubber{payload};
         if (closed_) {
             return;
         }
@@ -611,13 +675,15 @@ class Session final : public std::enable_shared_from_this<Session> {
             close();
             return;
         }
+        const RequestScrubber parsed_request_scrubber{*request};
+        auto dispatched_request = std::make_shared<ScrubbedRequest>(*request);
 
         const bool submitted = dispatcher_pool_->submit(
-            [self = shared_from_this(), request = std::move(*request)]() mutable noexcept {
+            [self = shared_from_this(), request = std::move(dispatched_request)]() noexcept {
                 if (self->cancelled_.load(std::memory_order_acquire)) {
                     return;
                 }
-                const auto response = self->dispatcher_->dispatch(request);
+                const auto response = self->dispatcher_->dispatch(request->get());
                 if (self->cancelled_.load(std::memory_order_acquire)) {
                     return;
                 }

@@ -1,26 +1,29 @@
 # MiniTun
 
-MiniTun is an independently implemented TCP reverse-tunnelling system for Linux.
-It is written in C++20 and is intentionally not compatible with the FRP protocol.
+MiniTun is an independently implemented TCP reverse-tunnelling system for Linux. It
+uses C++20 and is intentionally not compatible with the FRP protocol.
 
-The repository is currently at **development stage 3**. In addition to the common and
-SQLite layers, it contains a bounded local IPC protocol and Unix-domain-socket
-transport. Requests use a four-byte network-order length prefix followed by strict
-UTF-8 JSON. The daemon accepts concurrent local clients, dispatches registered methods,
-contains malformed input and handler exceptions to the affected request or connection,
-and creates its socket with mode `0660` in a daemon-owned runtime directory.
+The repository is currently at **development stage 4**. The local control plane is
+operational: the stateless `minitun` CLI talks to `minitund` over a protected Unix
+socket, and the daemon persists server and tunnel intent in SQLite. It supports all
+`server`, `tun`, `status`, and `daemon status` commands, structured JSON inspection,
+restart recovery, concurrent CLI requests, stable exit codes, and non-echoing Token
+input.
 
-`minitun daemon status` now performs a real IPC round trip to `minitund`. This is still
-not a deployable tunnel service: the full CLI, credential-material storage, remote
-sessions, TLS, TCP relay, service installation, and packaging remain for later stages.
-The daemon does not yet open or recover the database from its entry point. SQLite
-stores only an opaque `credential_ref`; tokens, private keys, and other credential
-material must never be placed in that field.
+Authentication material is stored separately in `/var/lib/minitun/credentials.db`,
+whose file mode is enforced as `0600`; Tokens are never stored in `state.db`, returned
+by IPC, or printed by the CLI. `server login` currently stores a Token and changes the
+local server state to `disconnected`. It does not contact or authenticate with the
+public server yet.
 
-## Build the current baseline
+This is not a deployable tunnel service. The remote binary protocol, TLS and remote
+authentication, multi-server sessions, tunnel registration, worker pools, TCP relay,
+service installation, and packages belong to later stages.
 
-Ninja, CMake 3.22 or newer, a C++20 compiler, OpenSSL 3, and SQLite3 are required.
-The developer preset downloads pinned releases of the remaining build dependencies.
+## Build
+
+Ninja, CMake 3.22 or newer, a C++20 compiler, OpenSSL 3, and SQLite3 are required. The
+developer preset downloads pinned releases of the remaining dependencies.
 
 ```bash
 cmake --preset dev
@@ -36,26 +39,44 @@ cmake --build --preset release
 ctest --preset release
 ```
 
-## Available commands
+## Try the local control plane
+
+Use a physically resolved, private directory during development:
 
 ```bash
-build/dev/minitun --help
-build/dev/minitun version
-runtime_dir="$(mktemp -d)"
-build/dev/minitund --socket "$runtime_dir/minitun.sock"
-# In another terminal:
-build/dev/minitun --socket "$runtime_dir/minitun.sock" daemon status
-build/dev/minitund --version
-build/dev/minitun-server --version
+runtime_root="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
+runtime_dir="$(mktemp -d "$runtime_root/minitun.XXXXXX")"
+
+build/dev/minitund \
+  --socket "$runtime_dir/minitun.sock" \
+  --database "$runtime_dir/state.db" \
+  --credentials "$runtime_dir/credentials.db"
 ```
 
-The production IPC path is `/run/minitun/minitun.sock`. The deployment account is
-`minitun:minitun`; until the installation stage creates that account and runtime
-directory, use a private temporary directory and override `--socket` as shown above.
-The daemon must run as the intended socket owner.
+In another terminal:
 
-See [development notes](docs/development.md) and the
-[architecture overview](docs/architecture.md) for the current scope.
+```bash
+build/dev/minitun --socket "$runtime_dir/minitun.sock" \
+  server add tunnel.example.com:2333 --name primary
+
+printf '%s\n' "$MINITUN_TOKEN" |
+  build/dev/minitun --socket "$runtime_dir/minitun.sock" \
+    server login primary --token-stdin
+
+build/dev/minitun --socket "$runtime_dir/minitun.sock" \
+  tun add primary 22 6000 --name ssh
+build/dev/minitun --socket "$runtime_dir/minitun.sock" server list
+build/dev/minitun --socket "$runtime_dir/minitun.sock" tun list --json
+build/dev/minitun --socket "$runtime_dir/minitun.sock" status
+```
+
+The production paths are `/run/minitun/minitun.sock`,
+`/var/lib/minitun/state.db`, and `/var/lib/minitun/credentials.db`. Packaging will
+create the `minitun:minitun` account and protected runtime/state directories in a later
+stage; the program deliberately does not create those top-level directories.
+
+See [CLI reference](docs/cli.md), [development notes](docs/development.md), and the
+[architecture overview](docs/architecture.md).
 
 ## License
 
