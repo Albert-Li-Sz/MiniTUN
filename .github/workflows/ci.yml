@@ -52,7 +52,7 @@ jobs:
 
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install system dependencies
         run: |
@@ -114,7 +114,7 @@ jobs:
 
       - name: Upload tested build
         if: success()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: minitun-${{ matrix.os }}-${{ matrix.cxx }}-${{ matrix.build_type }}
           if-no-files-found: error
@@ -127,7 +127,7 @@ jobs:
 
       - name: Upload failure diagnostics
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ci-failure-${{ matrix.os }}-${{ matrix.cxx }}-${{ matrix.build_type }}
           if-no-files-found: warn
