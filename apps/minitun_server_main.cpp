@@ -163,6 +163,7 @@ int main(int argc, char** argv) {
     int clock_skew_seconds = static_cast<int>(options.allowed_clock_skew.count());
     int worker_wait_timeout_seconds = static_cast<int>(options.worker_wait_timeout.count());
     int worker_idle_timeout_seconds = static_cast<int>(options.worker_idle_timeout.count());
+    int relay_idle_timeout_seconds = static_cast<int>(options.relay_inactivity_timeout.count());
     app.add_option("--handshake-timeout", handshake_timeout_seconds,
                    "TLS and authentication timeout in seconds")
         ->check(CLI::Range(1, 300))
@@ -186,6 +187,10 @@ int main(int argc, char** argv) {
     app.add_option("--worker-idle-timeout", worker_idle_timeout_seconds,
                    "Idle Worker lifetime in seconds")
         ->check(CLI::Range(1, 300))
+        ->capture_default_str();
+    app.add_option("--relay-idle-timeout", relay_idle_timeout_seconds,
+                   "Relay inactivity timeout in seconds")
+        ->check(CLI::Range(1, 86'400))
         ->capture_default_str();
 
     std::size_t io_threads = default_io_threads();
@@ -218,6 +223,7 @@ int main(int argc, char** argv) {
     options.allowed_clock_skew = std::chrono::seconds{clock_skew_seconds};
     options.worker_wait_timeout = std::chrono::seconds{worker_wait_timeout_seconds};
     options.worker_idle_timeout = std::chrono::seconds{worker_idle_timeout_seconds};
+    options.relay_inactivity_timeout = std::chrono::seconds{relay_idle_timeout_seconds};
     static_cast<void>(foreground);
 
     return run_server(options, *log_level, io_threads);

@@ -81,6 +81,7 @@ add_library(minitun_protocol STATIC
     src/protocol/codec.cpp
     src/protocol/frame.cpp
     src/protocol/messages.cpp
+    src/protocol/relay.cpp
     src/protocol/state_machine.cpp
     src/protocol/tls.cpp
 )

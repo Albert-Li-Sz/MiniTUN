@@ -4,8 +4,10 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
+#include <string_view>
 
 #include <asio/any_io_executor.hpp>
 #include <asio/ssl/context.hpp>
@@ -14,6 +16,9 @@
 #include <minitun/common/result.hpp>
 
 namespace minitun::daemon {
+
+using LocalEndpointResolver =
+    std::function<common::Result<common::Endpoint>(std::string_view tunnel_id)>;
 
 class WorkerBudget final {
   public:
@@ -40,6 +45,7 @@ struct WorkerPoolOptions final {
     std::chrono::seconds connect_timeout{10};
     std::chrono::seconds handshake_timeout{10};
     std::chrono::seconds idle_timeout{65};
+    std::chrono::seconds relay_inactivity_timeout{300};
     bool insecure_skip_verify{false};
 };
 
@@ -47,7 +53,8 @@ class WorkerPool final {
   public:
     [[nodiscard]] static common::Result<std::unique_ptr<WorkerPool>>
     create(asio::any_io_executor executor, std::shared_ptr<asio::ssl::context> tls_context,
-           std::shared_ptr<WorkerBudget> budget, WorkerPoolOptions options);
+           std::shared_ptr<WorkerBudget> budget, WorkerPoolOptions options,
+           LocalEndpointResolver local_endpoint_resolver);
 
     ~WorkerPool() noexcept;
 

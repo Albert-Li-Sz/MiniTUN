@@ -27,6 +27,7 @@ struct ServerOptions final {
     std::chrono::seconds allowed_clock_skew{30};
     std::chrono::seconds worker_wait_timeout{2};
     std::chrono::seconds worker_idle_timeout{60};
+    std::chrono::seconds relay_inactivity_timeout{300};
 
     std::uint16_t min_idle_workers{2U};
     std::uint16_t max_idle_workers{32U};

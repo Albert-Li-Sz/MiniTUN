@@ -44,6 +44,7 @@ namespace {
 
 inline constexpr auto kMaximumReconcileInterval = std::chrono::seconds{10};
 inline constexpr auto kMaximumConnectTimeout = std::chrono::minutes{5};
+inline constexpr auto kMaximumRelayTimeout = std::chrono::hours{24};
 
 [[nodiscard]] common::Result<void> validate_options(const ServerManagerOptions& options) {
     if (options.reconcile_interval < std::chrono::milliseconds{50} ||
@@ -52,6 +53,8 @@ inline constexpr auto kMaximumConnectTimeout = std::chrono::minutes{5};
         options.connect_timeout > kMaximumConnectTimeout ||
         options.handshake_timeout <= std::chrono::seconds::zero() ||
         options.handshake_timeout > kMaximumConnectTimeout ||
+        options.relay_inactivity_timeout <= std::chrono::seconds::zero() ||
+        options.relay_inactivity_timeout > kMaximumRelayTimeout ||
         options.max_idle_workers_per_server == 0U || options.max_idle_workers_per_server > 128U ||
         options.max_total_idle_workers == 0U || options.max_total_idle_workers > 4'096U) {
         return common::Result<void>::failure(common::ErrorCode::invalid_argument,
@@ -289,20 +292,29 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                 auth_ok->max_idle_workers, options_.max_idle_workers_per_server));
             const std::uint16_t min_idle_workers =
                 std::min(auth_ok->min_idle_workers, max_idle_workers);
-            auto workers =
-                WorkerPool::create(strand_, tls_context_, worker_budget_,
-                                   {
-                                       .endpoint = server_.endpoint,
-                                       .server_id = server_.id.str(),
-                                       .client_id = client_id_.str(),
-                                       .session_generation = session_generation_,
-                                       .min_idle_workers = min_idle_workers,
-                                       .max_idle_workers = max_idle_workers,
-                                       .connect_timeout = options_.connect_timeout,
-                                       .handshake_timeout = options_.handshake_timeout,
-                                       .idle_timeout = std::chrono::seconds{65},
-                                       .insecure_skip_verify = options_.insecure_skip_verify,
-                                   });
+            auto workers = WorkerPool::create(
+                strand_, tls_context_, worker_budget_,
+                {
+                    .endpoint = server_.endpoint,
+                    .server_id = server_.id.str(),
+                    .client_id = client_id_.str(),
+                    .session_generation = session_generation_,
+                    .min_idle_workers = min_idle_workers,
+                    .max_idle_workers = max_idle_workers,
+                    .connect_timeout = options_.connect_timeout,
+                    .handshake_timeout = options_.handshake_timeout,
+                    .idle_timeout = std::chrono::seconds{65},
+                    .relay_inactivity_timeout = options_.relay_inactivity_timeout,
+                    .insecure_skip_verify = options_.insecure_skip_verify,
+                },
+                [weak = weak_from_this()](const std::string_view tunnel_id) {
+                    if (auto self = weak.lock()) {
+                        return self->resolve_local_endpoint(tunnel_id);
+                    }
+                    return common::Result<common::Endpoint>::failure(
+                        common::ErrorCode::connection_failed,
+                        "server session ended before local tunnel lookup");
+                });
             if (!workers) {
                 co_return disconnected(workers.error().code(), workers.error().message());
             }
@@ -645,6 +657,25 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
             }
             worker_pool_->request_workers(requested->count);
             return common::Result<void>::success();
+        }
+
+        [[nodiscard]] common::Result<common::Endpoint>
+        resolve_local_endpoint(const std::string_view tunnel_id) const {
+            auto parsed = common::Id::parse(tunnel_id, common::IdKind::tunnel);
+            if (!parsed) {
+                return common::Result<common::Endpoint>::failure(
+                    common::ErrorCode::protocol_error, "Worker referenced an invalid tunnel ID");
+            }
+            auto tunnel = repository_.tunnels().get_by_id(*parsed);
+            if (!tunnel) {
+                return common::Result<common::Endpoint>::failure(tunnel.error());
+            }
+            if (tunnel->server_id != server_.id ||
+                tunnel->desired_state != storage::TunnelDesiredState::active) {
+                return common::Result<common::Endpoint>::failure(
+                    common::ErrorCode::not_found, "Worker referenced an inactive local tunnel");
+            }
+            return tunnel->local_endpoint;
         }
 
         [[nodiscard]] std::uint64_t next_request_id() noexcept {

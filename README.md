@@ -3,7 +3,7 @@
 MiniTun is an independently implemented TCP reverse-tunnelling system for Linux. It
 uses C++20 and is intentionally not compatible with the FRP protocol.
 
-The repository is currently at **development stage 9**. The local control plane is
+The repository is currently at **development stage 10**. The local control plane is
 operational: the stateless `minitun` CLI talks to `minitund` over a protected Unix
 socket, and the daemon persists server and tunnel intent in SQLite. It supports all
 `server`, `tun`, `status`, and `daemon status` commands, structured JSON inspection,
@@ -22,6 +22,10 @@ restored after either endpoint restarts and released after tunnel removal. Each 
 server now has an isolated TLS Worker Pool with generation checks, bounded per-session
 and global capacity, automatic replenishment, two-second public-connection waits, and
 idle Worker reclamation.
+Assigned Workers now resolve the locally persisted target, establish it asynchronously,
+and switch to a raw TLS byte stream. The relay uses fixed 16 KiB buffers in each
+direction, read/write backpressure, TCP half-close propagation, cancellation,
+inactivity deadlines, and byte statistics.
 
 Authentication material is stored separately in `/var/lib/minitun/credentials.db`,
 whose file mode is enforced as `0600`; Tokens are never stored in `state.db`, returned
@@ -29,10 +33,8 @@ by IPC, or printed by the CLI. `server login` stores a Token and wakes reconcili
 the daemon then authenticates the corresponding remote session without exposing the
 secret.
 
-This is not yet a deployable tunnel service. Public listeners assign accepted sockets
-to preconnected Workers, but the client intentionally reports `local_connect_failed`
-until the raw TCP relay arrives in stage 10. Service installation and packages also
-belong to later stages.
+The TCP data path is operational. Remaining work focuses on graceful global shutdown,
+security validation, Linux installation, packages, and release automation.
 
 ## Run the TLS server
 

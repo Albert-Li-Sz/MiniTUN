@@ -230,6 +230,14 @@ current `client_id` and `session_generation`, and are replenished after consumpt
 disconnect. Server-side idle capacity is capped per session and globally; stale
 generation cleanup closes the underlying TLS connection immediately. Public sockets
 wait for a matching Worker for at most two seconds, while idle Workers expire after 60
-seconds by default. The stage-9 client intentionally returns `local_connect_failed`
-after `START_RELAY`; stage 10 adds local dialing and raw relay without changing pool
-ownership.
+seconds by default.
+
+## Stage-10 TCP relay
+
+An assigned client Worker looks up the active tunnel in local SQLite and asynchronously
+connects only that persisted endpoint. `LOCAL_CONNECT_OK` commits both peers to raw TLS
+application bytes. A shared relay operation uses one fixed 16 KiB array per direction,
+never queues an unbounded write, and records directional bytes and duration. EOF is
+propagated as a send-side shutdown without discarding reverse traffic. Connection
+reset, broken pipe, EOF, and cancellation are treated as ordinary disconnects;
+unexpected I/O failures and bounded inactivity timeouts cancel both sockets.

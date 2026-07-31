@@ -4,6 +4,7 @@
 #include <asio/signal_set.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <csignal>
 #include <cstdlib>
 #include <exception>
@@ -321,6 +322,12 @@ int main(int argc, char** argv) {
     app.add_flag("--insecure-skip-verify", insecure_skip_verify,
                  "Development only: disable remote TLS certificate verification");
 
+    int relay_idle_timeout_seconds = 300;
+    app.add_option("--relay-idle-timeout", relay_idle_timeout_seconds,
+                   "Relay inactivity timeout in seconds")
+        ->check(CLI::Range(1, 86'400))
+        ->capture_default_str();
+
     std::size_t io_threads = default_io_threads();
     app.add_option("--io-threads", io_threads, "Fixed Asio I/O thread count")
         ->check(CLI::Range(1U, 16U))
@@ -351,10 +358,12 @@ int main(int argc, char** argv) {
     }
 
     static_cast<void>(foreground);
-    return run_daemon(socket_path, database_path, credentials_path,
-                      minitun::daemon::ServerManagerOptions{
-                          .ca_certificate_path = std::move(tls_ca_path),
-                          .insecure_skip_verify = insecure_skip_verify,
-                      },
-                      *log_level, io_threads);
+    return run_daemon(
+        socket_path, database_path, credentials_path,
+        minitun::daemon::ServerManagerOptions{
+            .ca_certificate_path = std::move(tls_ca_path),
+            .insecure_skip_verify = insecure_skip_verify,
+            .relay_inactivity_timeout = std::chrono::seconds{relay_idle_timeout_seconds},
+        },
+        *log_level, io_threads);
 }

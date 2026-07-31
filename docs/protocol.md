@@ -114,3 +114,14 @@ Idle Workers are bounded per session and globally, expire after 60 seconds by de
 and are removed immediately when their control generation closes. A public connection
 waits at most two seconds for a matching Worker. Assignment sends
 `START_RELAY(tunnel_id, connection_id)`; the local target never crosses the wire.
+
+## Raw TCP relay
+
+The daemon resolves `tunnel_id` only against its own active SQLite record, connects the
+persisted local endpoint, and replies with `LOCAL_CONNECT_OK(connection_id)` or the
+generic `LOCAL_CONNECT_ERROR(connection_id, local_connect_failed)`. After the success
+frame, both peers permanently leave framed mode. Each direction reads into one fixed
+16 KiB buffer and completes that write before reading more, providing bounded memory
+and natural backpressure. EOF in one direction performs `shutdown_send` on the other
+socket while the reverse direction continues. Inactivity deadlines cancel both sides,
+and each completed relay reports duration and directional byte counts internally.

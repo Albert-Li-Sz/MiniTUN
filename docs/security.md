@@ -1,7 +1,7 @@
 # Security design status
 
-Stage 9 provides a protected local control plane, authenticated TLS control sessions,
-and generation-scoped TLS Worker Pools, but not yet the raw TCP relay data plane.
+Stage 10 provides a protected local control plane, authenticated TLS control sessions,
+generation-scoped TLS Worker Pools, and a bounded raw TCP relay data plane.
 
 Implemented local protections include:
 
@@ -35,5 +35,9 @@ Local target hosts and ports never cross the control protocol.
 Stage 9 adds Worker identity validation against the current session generation,
 per-session and global idle limits, bounded public-socket waiting, automatic
 replenishment, and idle expiration. Stale Workers are closed when their generation is
-replaced. Assigned Workers still return `local_connect_failed` until stage 10 enables
-local dialing and raw relay.
+replaced.
+
+Stage 10 resolves only the locally persisted tunnel target after assignment. Remote
+messages cannot select an arbitrary local host or port. Local connection failures are
+generic, relay buffers are fixed at 16 KiB per direction, and inactivity deadlines
+bound otherwise silent connections.

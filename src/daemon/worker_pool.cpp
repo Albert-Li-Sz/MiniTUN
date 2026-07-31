@@ -11,6 +11,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 #include <asio/co_spawn.hpp>
@@ -26,6 +27,7 @@
 #include <minitun/common/id.hpp>
 #include <minitun/common/logging.hpp>
 #include <minitun/protocol/messages.hpp>
+#include <minitun/protocol/relay.hpp>
 #include <minitun/protocol/state_machine.hpp>
 #include <minitun/protocol/tls.hpp>
 
@@ -33,6 +35,7 @@ namespace minitun::daemon {
 namespace {
 
 inline constexpr std::chrono::seconds kMaximumWorkerTimeout{300};
+inline constexpr std::chrono::hours kMaximumRelayTimeout{24};
 
 [[nodiscard]] common::Result<void> validate_options(const WorkerPoolOptions& options) {
     if (!common::Id::parse(options.server_id, common::IdKind::server) ||
@@ -50,7 +53,9 @@ inline constexpr std::chrono::seconds kMaximumWorkerTimeout{300};
         options.handshake_timeout <= std::chrono::seconds::zero() ||
         options.handshake_timeout > kMaximumWorkerTimeout ||
         options.idle_timeout <= std::chrono::seconds::zero() ||
-        options.idle_timeout > kMaximumWorkerTimeout) {
+        options.idle_timeout > kMaximumWorkerTimeout ||
+        options.relay_inactivity_timeout <= std::chrono::seconds::zero() ||
+        options.relay_inactivity_timeout > kMaximumRelayTimeout) {
         return common::Result<void>::failure(common::ErrorCode::invalid_argument,
                                              "worker pool timeout is invalid");
     }
@@ -172,14 +177,57 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
             if (!relay) {
                 co_return;
             }
+            pool->worker_consumed(worker_id_);
 
+            auto local_endpoint = pool->local_endpoint_resolver_(relay->tunnel_id);
+            if (!local_endpoint) {
+                co_await send_local_error(relay->connection_id, relay_frame->request_id,
+                                          pool->options_.handshake_timeout);
+                co_return;
+            }
+
+            local_socket_ = std::make_unique<asio::ip::tcp::socket>(stream_.get_executor());
+            arm_timeout(pool->options_.connect_timeout);
+            auto local_endpoints = co_await resolver_.async_resolve(
+                local_endpoint->host(), std::to_string(local_endpoint->port()),
+                asio::redirect_error(asio::use_awaitable, error));
+            if (!error) {
+                co_await asio::async_connect(*local_socket_, local_endpoints,
+                                             asio::redirect_error(asio::use_awaitable, error));
+            }
+            cancel_timeout();
+            if (error) {
+                co_await send_local_error(relay->connection_id, relay_frame->request_id,
+                                          pool->options_.handshake_timeout);
+                co_return;
+            }
+
+            auto connected_payload = protocol::encode_local_connect_ok({relay->connection_id});
+            if (!connected_payload ||
+                !co_await write_frame({protocol::MessageType::local_connect_ok, 0U,
+                                       relay_frame->request_id, std::move(*connected_payload)},
+                                      pool->options_.handshake_timeout)) {
+                co_return;
+            }
+
+            auto relayed = co_await protocol::relay_tls_and_tcp(
+                stream_, *local_socket_,
+                {.inactivity_timeout = pool->options_.relay_inactivity_timeout});
+            if (!relayed && relayed.error().code() != common::ErrorCode::connection_timeout) {
+                common::log_warn("worker relay ended with a transport error",
+                                 log_context(relayed.error().code()));
+            }
+        }
+
+        [[nodiscard]] asio::awaitable<void> send_local_error(const std::string& connection_id,
+                                                             const std::uint64_t request_id,
+                                                             const std::chrono::seconds timeout) {
             auto failed_payload = protocol::encode_local_connect_error(
-                {relay->connection_id, common::ErrorCode::local_connect_failed});
+                {connection_id, common::ErrorCode::local_connect_failed});
             if (failed_payload) {
-                static_cast<void>(
-                    co_await write_frame({protocol::MessageType::local_connect_error, 0U,
-                                          relay_frame->request_id, std::move(*failed_payload)},
-                                         pool->options_.handshake_timeout));
+                static_cast<void>(co_await write_frame({protocol::MessageType::local_connect_error,
+                                                        0U, request_id, std::move(*failed_payload)},
+                                                       timeout));
             }
         }
 
@@ -233,6 +281,12 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
         void close() noexcept {
             resolver_.cancel();
             cancel_timeout();
+            if (local_socket_ != nullptr) {
+                asio::error_code ignored;
+                local_socket_->cancel(ignored);
+                local_socket_->close(ignored);
+                local_socket_.reset();
+            }
             protocol::close_tls_stream(stream_);
         }
 
@@ -253,6 +307,7 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
         std::string remote_endpoint_;
         asio::ip::tcp::resolver resolver_;
         protocol::TlsStream stream_;
+        std::unique_ptr<asio::ip::tcp::socket> local_socket_;
         asio::steady_timer operation_timer_;
         protocol::StateMachine state_;
     };
@@ -260,17 +315,19 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
   public:
     [[nodiscard]] static common::Result<std::shared_ptr<Impl>>
     create(asio::any_io_executor executor, std::shared_ptr<asio::ssl::context> tls_context,
-           std::shared_ptr<WorkerBudget> budget, WorkerPoolOptions options) {
+           std::shared_ptr<WorkerBudget> budget, WorkerPoolOptions options,
+           LocalEndpointResolver local_endpoint_resolver) {
         auto valid = validate_options(options);
         if (!valid) {
             return common::Result<std::shared_ptr<Impl>>::failure(valid.error());
         }
-        if (!tls_context || !budget) {
+        if (!tls_context || !budget || !local_endpoint_resolver) {
             return common::Result<std::shared_ptr<Impl>>::failure(
                 common::ErrorCode::invalid_argument, "worker pool dependency is unavailable");
         }
         return std::shared_ptr<Impl>{new Impl(std::move(executor), std::move(tls_context),
-                                              std::move(budget), std::move(options))};
+                                              std::move(budget), std::move(options),
+                                              std::move(local_endpoint_resolver))};
     }
 
     ~Impl() noexcept { stop(); }
@@ -308,10 +365,14 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
             } catch (...) {
             }
             auto sessions = std::move(self->sessions_);
+            const std::size_t budget_slots = self->available_workers_.size();
+            self->available_workers_.clear();
             self->size_.store(0U);
             for (auto& [worker_id, session] : sessions) {
                 static_cast<void>(worker_id);
                 session->stop();
+            }
+            for (std::size_t index = 0U; index < budget_slots; ++index) {
                 self->budget_->release();
             }
         });
@@ -321,12 +382,15 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
 
   private:
     Impl(asio::any_io_executor executor, std::shared_ptr<asio::ssl::context> tls_context,
-         std::shared_ptr<WorkerBudget> budget, WorkerPoolOptions options)
+         std::shared_ptr<WorkerBudget> budget, WorkerPoolOptions options,
+         LocalEndpointResolver local_endpoint_resolver)
         : executor_(std::move(executor)), tls_context_(std::move(tls_context)),
-          budget_(std::move(budget)), options_(std::move(options)), replenish_timer_(executor_) {}
+          budget_(std::move(budget)), options_(std::move(options)),
+          local_endpoint_resolver_(std::move(local_endpoint_resolver)),
+          replenish_timer_(executor_) {}
 
     void ensure_minimum() {
-        const std::size_t current = sessions_.size();
+        const std::size_t current = available_workers_.size();
         const std::size_t minimum = options_.min_idle_workers;
         if (current < minimum) {
             spawn_workers(minimum - current);
@@ -338,8 +402,8 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
             return;
         }
         const std::size_t available =
-            options_.max_idle_workers > sessions_.size()
-                ? static_cast<std::size_t>(options_.max_idle_workers) - sessions_.size()
+            options_.max_idle_workers > available_workers_.size()
+                ? static_cast<std::size_t>(options_.max_idle_workers) - available_workers_.size()
                 : 0U;
         const std::size_t count = std::min(requested, available);
         for (std::size_t index = 0U; index < count; ++index) {
@@ -354,19 +418,33 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
             const std::string key = worker_id->str();
             auto session = std::make_shared<WorkerSession>(shared_from_this(), key);
             sessions_.emplace(key, session);
-            size_.store(sessions_.size());
+            available_workers_.insert(key);
+            size_.store(available_workers_.size());
             session->start();
         }
     }
 
-    void worker_finished(const std::string_view worker_id) {
-        const auto removed = sessions_.erase(std::string{worker_id});
+    void worker_consumed(const std::string_view worker_id) {
+        const auto removed = available_workers_.erase(std::string{worker_id});
         if (removed == 0U) {
             return;
         }
         budget_->release();
-        size_.store(sessions_.size());
-        if (!running_.load() || sessions_.size() >= options_.min_idle_workers) {
+        size_.store(available_workers_.size());
+        ensure_minimum();
+    }
+
+    void worker_finished(const std::string_view worker_id) {
+        const std::string key{worker_id};
+        const auto removed = sessions_.erase(key);
+        if (removed == 0U) {
+            return;
+        }
+        if (available_workers_.erase(key) > 0U) {
+            budget_->release();
+        }
+        size_.store(available_workers_.size());
+        if (!running_.load() || available_workers_.size() >= options_.min_idle_workers) {
             return;
         }
         replenish_timer_.expires_after(std::chrono::seconds{1});
@@ -384,17 +462,21 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
     std::shared_ptr<asio::ssl::context> tls_context_;
     std::shared_ptr<WorkerBudget> budget_;
     WorkerPoolOptions options_;
+    LocalEndpointResolver local_endpoint_resolver_;
     asio::steady_timer replenish_timer_;
     std::unordered_map<std::string, std::shared_ptr<WorkerSession>> sessions_;
+    std::unordered_set<std::string> available_workers_;
     std::atomic<std::size_t> size_{0U};
     std::atomic<bool> running_{false};
 };
 
 common::Result<std::unique_ptr<WorkerPool>>
 WorkerPool::create(asio::any_io_executor executor, std::shared_ptr<asio::ssl::context> tls_context,
-                   std::shared_ptr<WorkerBudget> budget, WorkerPoolOptions options) {
-    auto implementation = Impl::create(std::move(executor), std::move(tls_context),
-                                       std::move(budget), std::move(options));
+                   std::shared_ptr<WorkerBudget> budget, WorkerPoolOptions options,
+                   LocalEndpointResolver local_endpoint_resolver) {
+    auto implementation =
+        Impl::create(std::move(executor), std::move(tls_context), std::move(budget),
+                     std::move(options), std::move(local_endpoint_resolver));
     if (!implementation) {
         return common::Result<std::unique_ptr<WorkerPool>>::failure(implementation.error());
     }

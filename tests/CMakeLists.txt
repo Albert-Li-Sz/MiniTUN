@@ -14,6 +14,7 @@ add_executable(minitun_unit_tests
     unit/remote_auth_test.cpp
     unit/remote_frame_test.cpp
     unit/remote_messages_test.cpp
+    unit/relay_test.cpp
     unit/remote_state_machine_test.cpp
     unit/reconnect_backoff_test.cpp
     unit/server_session_registry_test.cpp
@@ -143,5 +144,18 @@ if(UNIX)
         LABELS "integration;tls;worker"
         TIMEOUT 30
         PASS_REGULAR_EXPRESSION "Worker Pool integration passed"
+    )
+
+    add_test(NAME integration.tcp-relay
+        COMMAND
+            "${CMAKE_CURRENT_SOURCE_DIR}/integration/tcp_relay.sh"
+            $<TARGET_FILE:minitun>
+            $<TARGET_FILE:minitund>
+            $<TARGET_FILE:minitun-server>
+    )
+    set_tests_properties(integration.tcp-relay PROPERTIES
+        LABELS "integration;e2e;tls;relay"
+        TIMEOUT 90
+        PASS_REGULAR_EXPRESSION "TCP relay integration passed"
     )
 endif()

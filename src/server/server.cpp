@@ -42,6 +42,7 @@
 #include <minitun/common/time.hpp>
 #include <minitun/protocol/auth.hpp>
 #include <minitun/protocol/messages.hpp>
+#include <minitun/protocol/relay.hpp>
 #include <minitun/protocol/state_machine.hpp>
 #include <minitun/protocol/tls.hpp>
 #include <minitun/server/session_registry.hpp>
@@ -54,6 +55,7 @@ namespace {
 inline constexpr std::size_t kMaxTokenFileBytes = 64U * 1024U;
 inline constexpr std::size_t kMaxServerConnections = 100'000U;
 inline constexpr std::chrono::seconds kMaxConfiguredTimeout{300};
+inline constexpr std::chrono::hours kMaximumRelayTimeout{24};
 
 class FileDescriptor final {
   public:
@@ -157,7 +159,9 @@ class FileDescriptor final {
         options.worker_wait_timeout <= std::chrono::seconds::zero() ||
         options.worker_wait_timeout > kMaxConfiguredTimeout ||
         options.worker_idle_timeout <= std::chrono::seconds::zero() ||
-        options.worker_idle_timeout > kMaxConfiguredTimeout) {
+        options.worker_idle_timeout > kMaxConfiguredTimeout ||
+        options.relay_inactivity_timeout <= std::chrono::seconds::zero() ||
+        options.relay_inactivity_timeout > kMaximumRelayTimeout) {
         return common::Result<void>::failure(common::ErrorCode::invalid_argument,
                                              "server timeout configuration is invalid");
     }
@@ -558,6 +562,13 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
             auto connected = protocol::decode_local_connect_ok(local_result->payload);
             if (!connected || connected->connection_id != connection_id_text) {
                 co_return;
+            }
+            auto relayed = co_await protocol::relay_tls_and_tcp(
+                stream_, worker_assignment_->public_socket,
+                {.inactivity_timeout = server_->options_.relay_inactivity_timeout});
+            if (!relayed && relayed.error().code() != common::ErrorCode::connection_timeout) {
+                common::log_warn("public relay ended with a transport error",
+                                 log_context(relayed.error().code()));
             }
         }
 
