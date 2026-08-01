@@ -26,7 +26,7 @@ All notable changes to MiniTun will be documented here.
   limits, exact `0660` permissions, trusted-path validation, serialized startup,
   and safe stale-socket cleanup.
 - Real `minitun daemon status` communication with the local `minitund` process.
-- Complete stage-4 `server`, `tun`, and aggregate `status` CLI commands with JSON list
+- Complete `server`, `tun`, and aggregate `status` CLI commands with JSON list
   and inspect output plus stable `0/2/3/4/5/10` exit codes.
 - Daemon control service backed by consistent SQLite transactions, restart recovery,
   tombstone filtering, and concurrent local request handling.
@@ -61,6 +61,12 @@ All notable changes to MiniTun will be documented here.
   `pending`, and `removing` transitions and restores listeners after reconnect.
 - Registration integration coverage for policy rejection, port conflicts and recovery,
   listener release, and daemon/server restart restoration.
+- Isolated, generation-scoped Worker Pools with bounded per-server and global idle
+  capacity, automatic replenishment, public-connection wait deadlines, and idle expiry.
+- A bidirectional TCP relay with fixed 16 KiB buffers, read/write backpressure,
+  half-close propagation, inactivity deadlines, cancellation, and byte statistics.
+- Graceful signal handling with best-effort `GOAWAY`, deadline-bounded relay draining,
+  per-client and global connection quotas, and restart/recovery integration coverage.
 - Component-aware Linux installation with hardened systemd units, systemd-sysusers
   definitions, man pages, public headers, and staged layout verification.
 - Separate `minitun-client` and `minitun-server` DEB/RPM packages with service-account
@@ -69,7 +75,9 @@ All notable changes to MiniTun will be documented here.
 - GitHub Actions compiler, sanitizer, bounded-fuzz, DEB/RPM, and tag-release workflows
   with reusable tested packaging, versioned artifacts, SHA-256 manifests, minimal token
   permissions, concurrency cancellation, and grouped Dependabot updates.
-- `minitun`, `minitund`, and `minitun-server` stage-0 executables.
+- A stage-16 final acceptance record covering tests, sanitizers, E2E behavior, packages,
+  documentation, and release readiness.
+- `minitun`, `minitund`, and `minitun-server` executables.
 - Unit-test and GitHub Actions CI foundations.
 
 ### Fixed

@@ -71,8 +71,8 @@ Both directions are limited to 1 MiB. The public protocol layer performs strict 
 validation before a request reaches a method handler, and the Unix-domain-socket layer
 handles concurrent single-request sessions without exposing SQLite to the CLI. Handler
 execution is bounded to four worker threads and remains covered by each session's
-absolute deadline. Stage 4 adds the daemon control service, separate credential store,
-all resource commands, JSON output, stable exit codes, and Token input handling.
+absolute deadline. The daemon control service provides a separate credential store,
+all resource commands, JSON output, stable exit codes, and protected Token input.
 
 Exercise a real daemon-status round trip in a private directory:
 

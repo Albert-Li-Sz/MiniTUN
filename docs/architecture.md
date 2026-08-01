@@ -1,13 +1,13 @@
 # Architecture
 
-The target system consists of three Linux programs:
+The system consists of three Linux programs:
 
 - `minitun`: a stateless, short-lived CLI that communicates only with the local daemon.
 - `minitund`: the client daemon that owns persistence, credentials, server sessions,
   tunnel state, and local relay connections.
 - `minitun-server`: the public TLS endpoint and remote TCP listener manager.
 
-Each configured public server will have an isolated `ServerSession`, including its own
+Each configured public server has an isolated `ServerSession`, including its own
 control connection, authentication state, heartbeat, reconnection controller, worker
 pool, session generation, and tunnel registry. A failure in one session must not affect
 another session.
@@ -151,8 +151,8 @@ ancestor only when sticky-directory semantics protect entries. A daemon-owned `0
 sidecar lock serializes stale replacement and remains held through socket cleanup.
 Startup refuses symlink and non-socket collisions, probes before replacing an owned
 stale socket, and only removes the same socket inode it created. The production path is
-`/run/minitun/minitun.sock`; packaging will later create its protected
-`minitun:minitun` runtime directory and run the service as that account.
+`/run/minitun/minitun.sock`. The installed systemd unit creates its protected
+`minitun:minitun` runtime directory and runs the service as that account.
 
 ## Stage-4 local control plane
 

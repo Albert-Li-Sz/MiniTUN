@@ -52,8 +52,9 @@ printf '%s\n' "$MINITUN_TOKEN" |
 ```
 
 A Token is not accepted as a positional argument or regular option, keeping it out of
-shell history, process arguments, and `/proc`. Stage 4 stores the credential locally
-and reports the server as `disconnected`; remote authentication begins in stage 6.
+shell history, process arguments, and `/proc`. The daemon stores the credential locally,
+wakes the corresponding reconciliation session, and uses it for remote authentication
+without returning the secret to the CLI.
 
 ## Tunnel semantics
 

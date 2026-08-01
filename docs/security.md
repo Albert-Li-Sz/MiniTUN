@@ -1,6 +1,6 @@
 # Security design status
 
-Stage 12 provides a protected local control plane, authenticated TLS control sessions,
+MiniTun provides a protected local control plane, authenticated TLS control sessions,
 generation-scoped TLS Worker Pools, a bounded raw TCP relay data plane, and tracked
 graceful shutdown.
 
@@ -30,28 +30,28 @@ challenge authentication, bounded nonce replay protection, clock-skew validation
 failure throttling, fresh session generations, and heartbeat deadlines. Each public
 server has an isolated daemon session, reconnect controller, and Worker Pool.
 
-Stage 8 adds numeric-only public bind addresses, a required finite `--allow-ports`
+Public listeners use numeric-only bind addresses, a required finite `--allow-ports`
 policy, per-client registered-tunnel limits, generation-scoped listener ownership, and
 stable `permission_denied`, `resource_exhausted`, and `remote_port_in_use` failures.
 Local target hosts and ports never cross the control protocol.
 
-Stage 9 adds Worker identity validation against the current session generation,
+Worker identity is validated against the current session generation, with
 per-session and global idle limits, bounded public-socket waiting, automatic
 replenishment, and idle expiration. Stale Workers are closed when their generation is
 replaced.
 
-Stage 10 resolves only the locally persisted tunnel target after assignment. Remote
+An assigned Worker resolves only the locally persisted tunnel target. Remote
 messages cannot select an arbitrary local host or port. Local connection failures are
 generic, relay buffers are fixed at 16 KiB per direction, and inactivity deadlines
 bound otherwise silent connections.
 
-Stage 11 adds per-client and global public-relay quotas, a daemon-wide Worker/relay
+MiniTun enforces per-client and global public-relay quotas, a daemon-wide Worker/relay
 connection budget, strand-serialized session ownership, bounded pending-connection
 lifetimes, best-effort `GOAWAY`, and deadline-enforced relay draining. Capacity uses
 move-only leases so rejection, timeout, cancellation, half-close, and ordinary teardown
 cannot leak or double-release a quota slot.
 
-Stage 12 validates the complete suite under AddressSanitizer, UndefinedBehaviorSanitizer,
+The complete suite is validated under AddressSanitizer, UndefinedBehaviorSanitizer,
 and ThreadSanitizer. TLS stream objects remain alive until all cancelled asynchronous
 operations have completed, including during `GOAWAY` shutdown. Dedicated libFuzzer
 targets exercise remote frames, IPC frames, IPC JSON, endpoints, and port ranges.

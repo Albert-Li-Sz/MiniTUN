@@ -3,8 +3,9 @@
 MiniTun is an independently implemented TCP reverse-tunnelling system for Linux. It
 uses C++20 and is intentionally not compatible with the FRP protocol.
 
-The repository is currently at **development stage 15**. The local control plane is
-operational: the stateless `minitun` CLI talks to `minitund` over a protected Unix
+The repository has completed **development stages 0 through 16** and the version 0.1.0
+final acceptance. Its local control plane is operational: the stateless `minitun` CLI
+talks to `minitund` over a protected Unix
 socket, and the daemon persists server and tunnel intent in SQLite. It supports all
 `server`, `tun`, `status`, and `daemon status` commands, structured JSON inspection,
 restart recovery, concurrent CLI requests, stable exit codes, and non-echoing Token
@@ -40,8 +41,9 @@ paths. Component-aware CMake installation and CPack now provide separate
 `minitun-client` and `minitun-server` DEB/RPM packages with hardened systemd services,
 systemd-sysusers definitions, man pages, safe upgrade/removal behavior, and container
 installation smoke tests. GitHub Actions now runs the compiler matrix, sanitizers,
-bounded fuzz smoke tests, clean-container package installation, and tested tag releases.
-Remaining work is the final acceptance pass.
+bounded fuzz smoke tests, and clean-container package installation. Tested tag-release
+automation is also provided. The final acceptance results and package checksums are
+recorded in [docs/acceptance.md](docs/acceptance.md).
 
 ## Run the TLS server
 
@@ -118,7 +120,8 @@ directories itself.
 
 See [installation](docs/installation.md), [CLI reference](docs/cli.md),
 [development notes](docs/development.md), [CI and release automation](docs/ci.md), and
-the [architecture overview](docs/architecture.md).
+the [architecture overview](docs/architecture.md). Release operators should also review
+the [final acceptance record](docs/acceptance.md) before creating a version tag.
 
 ## License
 
