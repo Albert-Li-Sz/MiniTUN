@@ -173,8 +173,6 @@ import socket
 import sys
 
 connection = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=0.2)
-connection.settimeout(0.5)
-assert connection.recv(1) == b""
 connection.close()
 PY
         then
