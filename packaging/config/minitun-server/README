@@ -6,5 +6,6 @@ MiniTun 不会安装证书、私钥或认证 Token。
   server.key  匹配的 PEM 私钥，模式 0600，所有者为 minitun-server
   token       认证 Token，模式 0600，所有者为 minitun-server
 
-软件包提供的 unit 监听 0.0.0.0:2333，并允许隧道端口 6000-6999。需要其他值时，
-请使用 systemctl edit minitun-server 创建 override，不要直接修改发行方 unit。
+软件包提供的 unit 监听 0.0.0.0:2333，不额外限制隧道端口，应用层默认允许全部有效
+TCP 端口 1-65535。如需设置端口白名单或修改监听地址，请使用
+systemctl edit minitun-server 创建 override，不要直接修改发行方 unit。

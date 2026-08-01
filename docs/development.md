@@ -104,8 +104,7 @@ build/dev/minitun-server \
   --listen 127.0.0.1:2333 \
   --tls-cert "$MINITUN_DEMO_DIR/server.crt" \
   --tls-key "$MINITUN_DEMO_DIR/server.key" \
-  --token-file "$MINITUN_DEMO_DIR/token" \
-  --allow-ports 6000-6999
+  --token-file "$MINITUN_DEMO_DIR/token"
 ```
 
 ### 3. 启动客户端守护进程

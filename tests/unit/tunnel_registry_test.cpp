@@ -8,6 +8,7 @@
 #include <minitun/common/error.hpp>
 #include <minitun/common/id.hpp>
 #include <minitun/common/port_range.hpp>
+#include <minitun/server/server.hpp>
 #include <minitun/server/tunnel_registry.hpp>
 
 namespace minitun::server {
@@ -22,6 +23,16 @@ namespace {
 [[nodiscard]] std::uint16_t available_port(asio::io_context& io_context) {
     asio::ip::tcp::acceptor probe{io_context, asio::ip::tcp::endpoint{asio::ip::tcp::v4(), 0U}};
     return probe.local_endpoint().port();
+}
+
+TEST(ServerOptionsTest, AllowsEveryValidTcpPortByDefault) {
+    const ServerOptions options;
+    EXPECT_EQ(options.allowed_ports, "1-65535");
+
+    const auto allowed = common::PortRange::parse(options.allowed_ports);
+    ASSERT_TRUE(allowed) << allowed.error();
+    EXPECT_TRUE(allowed->contains(1U));
+    EXPECT_TRUE(allowed->contains(65'535U));
 }
 
 TEST(TunnelRegistryTest, EnforcesAllowlistOwnershipLimitsAndIdempotentRemoval) {

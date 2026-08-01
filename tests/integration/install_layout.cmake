@@ -110,6 +110,9 @@ file(READ "${server_prefix}/${staged_systemd_unit_dir}/minitun-server.service"
 if(NOT server_service MATCHES "--token-file /etc/minitun-server/token")
     message(FATAL_ERROR "server service does not reference the required Token file")
 endif()
+if(server_service MATCHES "--allow-ports")
+    message(FATAL_ERROR "server service unexpectedly restricts the default tunnel port range")
+endif()
 
 install_component(Development development_prefix)
 require_paths("${development_prefix}"

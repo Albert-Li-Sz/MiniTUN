@@ -106,8 +106,9 @@ sudo install -m 0600 -o minitun-server -g minitun-server \
   token /etc/minitun-server/token
 ```
 
-默认服务监听控制端口 `0.0.0.0:2333`，允许隧道使用公网端口 `6000-6999`。请在云安全
-组与主机防火墙中仅开放实际需要的端口。需要修改默认值时创建 systemd override：
+默认服务监听控制端口 `0.0.0.0:2333`，不额外限制隧道端口，应用层允许全部有效 TCP
+端口 `1-65535`。请在云安全组与主机防火墙中仅开放实际需要的端口。如需设置端口
+白名单或修改监听地址，请创建 systemd override：
 
 ```bash
 sudo systemctl edit minitun-server.service
