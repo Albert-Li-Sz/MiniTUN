@@ -1,71 +1,70 @@
-.TH MINITUND 8 "2026-08-01" "MiniTun 0.1.0" "System Administration"
+.TH MINITUND 8 "2026-08-02" "MiniTun 0.1.0" "系统管理"
 .SH NAME
-minitund \- MiniTun client daemon
-.SH SYNOPSIS
+minitund \- MiniTun 客户端守护进程
+.SH 用法
 .B /usr/libexec/minitun/minitund
 .RI [ options ]
-.SH DESCRIPTION
+.SH 描述
 .B minitund
-maintains isolated authenticated TLS sessions and Worker Pools for configured
-public servers. Desired server and tunnel state is persisted in SQLite and
-restored after restart. The process stays in the foreground for service-manager
-supervision.
-.SH OPTIONS
+为已配置的公网服务端维护相互隔离且经过认证的 TLS 会话与 Worker Pool。
+服务器和隧道的期望状态持久化在 SQLite 中，并在重启后恢复。进程保持
+前台运行，以便由服务管理器监督。
+.SH 选项
 .TP
 .BI --socket " path"
-Unix control socket. The default is /run/minitun/minitun.sock.
+Unix 控制套接字。
+默认为 /run/minitun/minitun.sock。
 .TP
 .BI --database " path"
-State database. The default is /var/lib/minitun/state.db.
+状态数据库。默认为 /var/lib/minitun/state.db。
 .TP
 .BI --credentials " path"
-Credential database. The default is /var/lib/minitun/credentials.db.
+凭据数据库。默认为 /var/lib/minitun/credentials.db。
 .TP
 .BI --tls-ca " path"
-PEM CA file used to verify remote server certificates. System trust is used
-when this option is omitted.
+用于验证远程服务端证书的 PEM CA 文件。省略此选项时使用系统信任库。
 .TP
 .B --insecure-skip-verify
-Disable remote certificate verification. This development-only option prints
-a warning and must not be used in production.
+禁用远程证书校验。该选项仅供开发使用，会输出警告，生产环境不得使用。
 .TP
 .BI --relay-idle-timeout " seconds"
-Close inactive relays. The default is 300 seconds.
+关闭不活动的中继。默认为 300 秒。
 .TP
 .BI --shutdown-timeout " seconds"
-Maximum graceful relay drain time. The default is 10 seconds.
+优雅排空中继的最长时间。默认为 10 秒。
 .TP
 .BI --max-idle-workers-per-server " count"
-Per-server idle Worker limit. The default is 32.
+逐服务器空闲 Worker 上限。默认为 32。
 .TP
 .BI --max-total-idle-workers " count"
-Daemon-wide idle Worker limit. The default is 128.
+守护进程全局空闲 Worker 上限。默认为 128。
 .TP
 .BI --max-total-connections " count"
-Daemon-wide Worker and relay limit. The default is 10000.
+守护进程全局 Worker 与中继上限。默认为 10000。
 .TP
 .BI --io-threads " count"
-Asio worker thread count, from 1 through 16.
+Asio 工作线程数，
+范围为 1 到 16。
 .TP
 .BI --log-level " level"
-Structured log level: trace, debug, info, warn, error, critical, or off.
+结构化日志级别：trace、debug、info、warn、error、critical 或 off。
 .TP
 .B --foreground
-Run in the foreground. This is the packaged service mode.
+在前台运行。软件包服务使用该模式。
 .TP
 .B --version
-Print version information and exit.
-.SH FILES
+打印版本信息后退出。
+.SH 文件
 .TP
 .I /run/minitun/minitun.sock
-Local control socket, mode 0660.
+本地控制套接字，模式为 0660。
 .TP
 .I /var/lib/minitun/state.db
-Persistent state database, mode 0600.
+持久化状态数据库，模式为 0600。
 .TP
 .I /var/lib/minitun/credentials.db
-Credential database, mode 0600.
-.SH SEE ALSO
+凭据数据库，模式为 0600。
+.SH 另请参阅
 .BR minitun (1),
 .BR minitun-server (8),
 .BR systemd.service (5)

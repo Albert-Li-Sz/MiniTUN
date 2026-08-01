@@ -1,7 +1,7 @@
-.TH MINITUN-SERVER 8 "2026-08-01" "MiniTun 0.1.0" "System Administration"
+.TH MINITUN-SERVER 8 "2026-08-02" "MiniTun 0.1.0" "系统管理"
 .SH NAME
-minitun-server \- MiniTun public TCP tunnel server
-.SH SYNOPSIS
+minitun-server \- MiniTun 公网 TCP 隧道服务端
+.SH 用法
 .B minitun-server
 .B --tls-cert
 .I file
@@ -10,97 +10,100 @@ minitun-server \- MiniTun public TCP tunnel server
 .B --token-file
 .I file
 .RI [ options ]
-.SH DESCRIPTION
+.SH 描述
 .B minitun-server
-accepts authenticated TLS control and Worker connections and exposes
-allowlisted public TCP tunnel ports. It stays in the foreground for
-service-manager supervision.
-.SH REQUIRED OPTIONS
+接受经过认证的 TLS 控制连接和 Worker 连接，
+并公开端口白名单允许的公网 TCP 隧道端口。
+进程保持前台运行，以便由服务管理器监督。
+.SH 必需选项
 .TP
 .BI --tls-cert " file"
-PEM certificate chain.
+PEM 证书链。
 .TP
 .BI --tls-key " file"
-Matching PEM private key.
+匹配的 PEM 私钥。
 .TP
 .BI --token-file " file"
-Private authentication Token file. It must be a regular service-owned file
-with no group or other permissions.
-.SH OPTIONS
+私有认证 Token 文件。它必须是服务账户所有的普通文件，且组用户和其他用户
+均无访问权限。
+.SH 选项
 .TP
 .BI --listen " endpoint"
-TLS control listener. The default is 0.0.0.0:2333.
+TLS 控制监听器。
+默认为 0.0.0.0:2333。
 .TP
 .BI --allow-ports " range"
-Allowed public tunnel port or inclusive range. The packaged unit uses 6000-6999.
+允许的公网隧道端口或闭区间。软件包 unit 使用 6000-6999。
 .TP
 .BI --max-clients " count"
-Maximum authenticated clients. The default is 1000.
+已认证客户端上限。默认为 1000。
 .TP
 .BI --max-tunnels-per-client " count"
-Maximum tunnels registered by one client. The default is 128.
+单个客户端注册的隧道上限。默认为 128。
 .TP
 .BI --max-connections-per-client " count"
-Maximum active public relays per client. The default is 10000.
+单个客户端的活动公网中继上限。默认为 10000。
 .TP
 .BI --max-total-connections " count"
-Maximum active public relays across all clients. The default is 50000.
+全部客户端的活动公网中继上限。默认为 50000。
 .TP
 .BI --min-idle-workers " count"
-Minimum idle Workers requested per session. The default is 2.
+每个会话请求的最小空闲 Worker 数。默认为 2。
 .TP
 .BI --max-idle-workers " count"
-Maximum idle Workers per session. The default is 32.
+每个会话的空闲 Worker 上限。默认为 32。
 .TP
 .BI --max-total-idle-workers " count"
-Global idle Worker limit. The default is 128.
+全局空闲 Worker 上限。默认为 128。
 .TP
 .BI --handshake-timeout " seconds"
-TLS and authentication timeout. The default is 10 seconds.
+TLS 与认证超时。
+默认为 10 秒。
 .TP
 .BI --heartbeat-interval " seconds"
-Heartbeat interval. The default is 5 seconds.
+心跳间隔。默认为 5 秒。
 .TP
 .BI --heartbeat-timeout " seconds"
-Heartbeat response timeout. The default is 15 seconds.
+心跳响应超时。默认为 15 秒。
 .TP
 .BI --auth-clock-skew " seconds"
-Maximum authentication clock skew. The default is 30 seconds.
+认证允许的最大时钟偏差。默认为 30 秒。
 .TP
 .BI --worker-wait-timeout " seconds"
-Maximum public-connection wait for an idle Worker. The default is 2 seconds.
+公网连接等待空闲 Worker 的最长时间。默认为 2 秒。
 .TP
 .BI --worker-idle-timeout " seconds"
-Idle Worker lifetime. The default is 60 seconds.
+空闲 Worker 生命周期。默认为 60 秒。
 .TP
 .BI --relay-idle-timeout " seconds"
-Relay inactivity timeout. The default is 300 seconds.
+中继不活动超时。默认为 300 秒。
 .TP
 .BI --shutdown-timeout " seconds"
-Maximum graceful relay drain time. The default is 10 seconds.
+优雅排空中继的最长时间。默认为 10 秒。
 .TP
 .BI --io-threads " count"
-Asio worker thread count, from 1 through 16.
+Asio 工作线程数，
+范围为 1 到 16。
 .TP
 .BI --log-level " level"
-Structured log level: trace, debug, info, warn, error, critical, or off.
+结构化日志级别：trace、debug、info、warn、error、critical 或 off。
 .TP
 .B --foreground
-Run in the foreground. This is the packaged service mode.
+在前台运行。软件包服务使用该模式。
 .TP
 .B --version
-Print version information and exit.
-.SH FILES
+打印版本信息后退出。
+.SH 文件
 .TP
 .I /etc/minitun-server/server.crt
-Certificate chain used by the packaged unit.
+软件包 unit 使用的证书链。
 .TP
 .I /etc/minitun-server/server.key
-Private key used by the packaged unit.
+软件包 unit 使用的私钥。
 .TP
 .I /etc/minitun-server/token
-Authentication Token used by the packaged unit.
-.SH SEE ALSO
+软件包 unit 使用的认证 Token。
+.SH 另请参阅
 .BR minitun (1),
 .BR minitund (8),
 .BR systemd.service (5)

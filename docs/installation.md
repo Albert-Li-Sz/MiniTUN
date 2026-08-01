@@ -1,42 +1,44 @@
-# Installation
+# 安装指南
 
-MiniTun installs three CMake components:
+本文档说明如何在 Linux 主机上通过 CMake 直接安装 MiniTun。DEB 和 RPM 软件包的
+构建与生命周期说明见[打包指南](packaging.md)。
 
-| Component | Contents |
+## 安装组件
+
+MiniTun 提供三个 CMake 安装组件：
+
+| 组件 | 内容 |
 | --- | --- |
-| `Client` | `minitun`, `minitund`, client systemd/sysusers files, and client man pages |
-| `Server` | `minitun-server`, server systemd/sysusers files, and the server man page |
-| `Development` | Public C++ headers for source-level integration and inspection |
+| `Client` | `minitun`、`minitund`、客户端 systemd/sysusers 文件和客户端 man 手册 |
+| `Server` | `minitun-server`、服务端 systemd/sysusers 文件和服务端 man 手册 |
+| `Development` | 用于源码级集成与审查的公共 C++ 头文件 |
 
-DEB and RPM packages are described in [packaging.md](packaging.md). This page covers a
-direct CMake installation on a Linux host.
+## 构建依赖
 
-## Build prerequisites
+请安装 CMake 3.22 或更高版本、Ninja、支持 C++20 的编译器，以及 OpenSSL 3、
+SQLite3、CLI11、独立 Asio、nlohmann/json、spdlog 和 GoogleTest 的开发软件包。
+完整集成测试还需要 Python 3 和 OpenSSL 命令行工具；README 快速开始使用 curl。
 
-Install CMake 3.22 or newer, Ninja, a C++20 compiler, and development packages for
-OpenSSL 3, SQLite3, CLI11, standalone Asio, nlohmann/json, spdlog, and GoogleTest.
-
-Debian or Ubuntu package names are typically:
+Debian 或 Ubuntu 上的典型软件包名称如下：
 
 ```bash
 sudo apt-get install \
-  build-essential cmake ninja-build \
+  build-essential cmake ninja-build python3 openssl curl \
   libssl-dev libsqlite3-dev libcli11-dev libasio-dev \
   nlohmann-json3-dev libspdlog-dev libgtest-dev
 ```
 
-Fedora package names are typically:
+Fedora 上的典型软件包名称如下：
 
 ```bash
 sudo dnf install \
-  gcc-c++ cmake ninja-build openssl-devel sqlite-devel \
+  gcc-c++ cmake ninja-build python3 openssl curl openssl-devel sqlite-devel \
   CLI11-devel asio-devel json-devel spdlog-devel gtest-devel
 ```
 
-## Build and verify
+## 构建与验证
 
-Configure the install prefix as `/usr` so the generated paths match the packaged Linux
-layout:
+将安装前缀配置为 `/usr`，使生成路径与 Linux 软件包布局一致：
 
 ```bash
 cmake -S . -B build/install -G Ninja \
@@ -49,7 +51,7 @@ cmake --build build/install --parallel
 ctest --test-dir build/install --output-on-failure
 ```
 
-Inspect an unprivileged staged installation before touching the host:
+接触主机文件系统前，先检查无需特权的暂存安装：
 
 ```bash
 DESTDIR="$PWD/build/stage" cmake --install build/install --component Client
@@ -57,7 +59,7 @@ DESTDIR="$PWD/build/stage" cmake --install build/install --component Server
 find build/stage/usr -type f -o -type l
 ```
 
-Install all runtime components and create the service accounts:
+安装全部运行时组件并创建服务账户：
 
 ```bash
 sudo cmake --install build/install --component Client
@@ -67,14 +69,14 @@ sudo systemd-sysusers /usr/lib/sysusers.d/minitun-server.conf
 sudo systemctl daemon-reload
 ```
 
-The programs do not create `/run/minitun`, `/var/lib/minitun`,
-`/run/minitun-server`, or `/var/lib/minitun-server`. systemd creates them from the
-`RuntimeDirectory` and `StateDirectory` directives with mode `0750`.
+程序不会自行创建 `/run/minitun`、`/var/lib/minitun`、`/run/minitun-server`
+或 `/var/lib/minitun-server`。systemd 会根据 `RuntimeDirectory` 和
+`StateDirectory` 指令以 `0750` 模式创建这些目录。
 
-## Configure the public server
+## 配置公网服务端
 
-MiniTun never ships or overwrites TLS material or Tokens. Install administrator-owned
-files before enabling the server:
+MiniTun 从不随包分发或覆盖 TLS 材料与 Token。启用服务前，请安装由管理员控制的
+文件：
 
 ```bash
 sudo install -d -m 0750 -o root -g minitun-server /etc/minitun-server
@@ -85,14 +87,14 @@ sudo install -m 0600 -o minitun-server -g minitun-server \
   token /etc/minitun-server/token
 ```
 
-The installed service listens on `0.0.0.0:2333` and permits public tunnel ports
-`6000-6999`. Override it without editing the vendor unit:
+默认服务监听 `0.0.0.0:2333`，允许公网隧道端口 `6000-6999`。如需修改配置，
+请使用 systemd override，不要直接编辑发行方 unit：
 
 ```bash
 sudo systemctl edit minitun-server
 ```
 
-An override can replace `ExecStart` after first clearing it:
+替换 `ExecStart` 时必须先清空原值：
 
 ```ini
 [Service]
@@ -105,21 +107,21 @@ ExecStart=/usr/bin/minitun-server --foreground \
   --token-file /etc/minitun-server/token
 ```
 
-## Start services
+## 启动服务
 
 ```bash
 sudo systemctl enable --now minitun-server.service
 sudo systemctl enable --now minitund.service
 ```
 
-The client socket is mode `0660` and belongs to `minitun:minitun`. Add an authorized
-operator to the group, then start a new login session:
+客户端套接字模式为 `0660`，所有者为 `minitun:minitun`。将获授权的操作者加入
+该组，然后重新登录以刷新组成员身份：
 
 ```bash
 sudo usermod -aG minitun "$USER"
 ```
 
-Verify the installation:
+验证安装：
 
 ```bash
 minitun version
@@ -129,7 +131,7 @@ systemctl status minitund.service minitun-server.service
 journalctl -u minitund.service -u minitun-server.service
 ```
 
-## Installed layout
+## 已安装布局
 
 ```text
 /usr/bin/minitun
@@ -146,6 +148,13 @@ journalctl -u minitund.service -u minitun-server.service
 /etc/minitun-server/README
 ```
 
-Normal package removal and upgrades preserve state and credentials. The direct CMake
-installer records installed files in `build/install/install_manifest.txt`; state under
-`/var/lib` is never part of that manifest.
+普通软件包卸载和升级会保留状态与凭据。CMake 直接安装器会将已安装文件记录在
+`build/install/install_manifest.txt`；`/var/lib` 下的状态从不属于该清单。
+
+## 升级与回滚注意事项
+
+升级前应备份 `/var/lib/minitun`、`/var/lib/minitun-server` 以及管理员配置的 TLS
+材料。MiniTun 会拒绝比当前二进制支持版本更新或发生漂移的数据库模式，不会自动
+破坏或重建用户数据。回滚二进制前，请确认旧版本支持当前数据库模式。
+
+常见启动问题及诊断方法见[故障排查](troubleshooting.md)。

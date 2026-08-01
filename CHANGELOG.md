@@ -1,86 +1,81 @@
-# Changelog
+# 变更日志
 
-All notable changes to MiniTun will be documented here.
+MiniTun 的所有重要变更都会记录在此文件中。本文档以
+[Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 的结构为基础，项目
+版本遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased]
+## [未发布]
 
-### Added
+### 新增
 
-- C++20 CMake and Ninja project foundation.
-- System-dependency and pinned FetchContent dependency modes.
-- Common error, result, structured logging, and build-version modules.
-- Strict domain, IPv4, bracketed-IPv6 endpoint parsing and TCP port ranges.
-- Typed 128-bit random IDs backed by OpenSSL's CSPRNG.
-- Overflow-safe Unix/monotonic time helpers and thread-safe UTC formatting.
-- Move-only secret storage with explicit OpenSSL memory cleansing.
-- Bounded structured-log fields with UTF-8-safe truncation.
-- Transactional SQLite schema-version migration with WAL, foreign-key, synchronous,
-  busy-timeout, checkpoint, and journal-size policy verification.
-- Validated `ServerRepository` and `TunnelRepository` CRUD, tombstones, storage limits,
-  deterministic queries, and cross-repository transactions.
-- Atomic restart-state normalization and recovery snapshots for persisted servers and
-  tunnels.
-- Strict 1 MiB length-prefixed UTF-8 JSON IPC request and response codecs.
-- Thread-safe method dispatch with stable error responses and exception containment.
-- Concurrent Unix-domain-socket client/server transport with deadlines, connection
-  limits, exact `0660` permissions, trusted-path validation, serialized startup,
-  and safe stale-socket cleanup.
-- Real `minitun daemon status` communication with the local `minitund` process.
-- Complete `server`, `tun`, and aggregate `status` CLI commands with JSON list
-  and inspect output plus stable `0/2/3/4/5/10` exit codes.
-- Daemon control service backed by consistent SQLite transactions, restart recovery,
-  tombstone filtering, and concurrent local request handling.
-- Separate SQLite credential store with a `0600` file, transactional put/get/remove,
-  schema checks, secure deletion, and opaque references from `state.db`.
-- Non-echoing interactive Token input, explicit `--token-stdin`, and cleansing of
-  Token-bearing CLI and IPC buffers.
-- Versioned 24-byte remote binary frames with explicit network-byte-order encoding,
-  a strict 64 KiB bound, incremental stream decoding, and complete message types.
-- Bounded binary payload primitives, strict UTF-8 fields, control/worker connection
-  state validation, and an ASan/UBSan-capable libFuzzer remote-frame target.
-- TLS 1.2-or-newer server transport with certificate/key validation, explicit framing,
-  bounded handshake and heartbeat deadlines, and fixed Asio I/O threads.
-- HELLO/AUTH message codecs, HMAC-SHA256 challenge authentication, constant-time
-  digest verification, bounded nonce replay cache, per-address failure throttling,
-  isolated session generations, and generic authentication failures.
-- Runtime-generated-certificate integration coverage for trusted and untrusted TLS,
-  correct and incorrect Tokens, heartbeat exchange, and Token-safe server logs.
-- Schema-version-2 migration with a transactionally generated, restart-stable daemon
-  client identity.
-- Daemon-side multi-server manager with isolated TLS control sessions, authentication,
-  heartbeat state, session generations, and jittered per-server reconnect backoff.
-- `minitund` CA selection, fixed I/O thread count, structured log-level selection, and
-  an explicitly warned development-only TLS verification bypass.
-- Dual-server integration coverage for failure isolation, server restart recovery,
-  daemon restart recovery, and stable identity reuse.
-- Bounded REGISTER/UNREGISTER tunnel payload codecs with correlated success and stable
-  failure responses.
-- Server-side public listener registry with numeric bind validation, explicit port
-  allowlists, per-client tunnel limits, idempotent removal, and port-conflict mapping.
-- Daemon tunnel reconciliation that persists `registering`, `active`, `failed`,
-  `pending`, and `removing` transitions and restores listeners after reconnect.
-- Registration integration coverage for policy rejection, port conflicts and recovery,
-  listener release, and daemon/server restart restoration.
-- Isolated, generation-scoped Worker Pools with bounded per-server and global idle
-  capacity, automatic replenishment, public-connection wait deadlines, and idle expiry.
-- A bidirectional TCP relay with fixed 16 KiB buffers, read/write backpressure,
-  half-close propagation, inactivity deadlines, cancellation, and byte statistics.
-- Graceful signal handling with best-effort `GOAWAY`, deadline-bounded relay draining,
-  per-client and global connection quotas, and restart/recovery integration coverage.
-- Component-aware Linux installation with hardened systemd units, systemd-sysusers
-  definitions, man pages, public headers, and staged layout verification.
-- Separate `minitun-client` and `minitun-server` DEB/RPM packages with service-account
-  creation, daemon reload hooks, state-preserving upgrades/removals, DEB purge cleanup,
-  package-content inspection, and clean-container smoke tests.
-- GitHub Actions compiler, sanitizer, bounded-fuzz, DEB/RPM, and tag-release workflows
-  with reusable tested packaging, versioned artifacts, SHA-256 manifests, minimal token
-  permissions, concurrency cancellation, and grouped Dependabot updates.
-- A stage-16 final acceptance record covering tests, sanitizers, E2E behavior, packages,
-  documentation, and release readiness.
-- `minitun`, `minitund`, and `minitun-server` executables.
-- Unit-test and GitHub Actions CI foundations.
+- 基于 C++20、CMake 和 Ninja 的项目基础。
+- 系统依赖模式与锁定版本的 FetchContent 依赖模式。
+- 通用错误、结果、结构化日志和构建版本模块。
+- 严格的域名、IPv4、带方括号 IPv6 端点解析和 TCP 端口范围解析。
+- 由 OpenSSL CSPRNG 支持的强类型 128 位随机 ID。
+- 防溢出的 Unix/单调时间辅助函数和线程安全 UTC 格式化。
+- 可移动但不可复制的秘密存储，并使用 OpenSSL 显式清除内存。
+- 有界的结构化日志字段和 UTF-8 安全截断。
+- 事务化 SQLite 模式版本迁移，以及 WAL、外键、同步、busy timeout、检查点和
+  日志大小策略校验。
+- 已校验的 `ServerRepository` 和 `TunnelRepository` CRUD、墓碑、存储限制、
+  确定性查询和跨仓库事务。
+- 持久化服务器和隧道状态的原子化重启归一化与恢复快照。
+- 严格限制为 1 MiB、长度前缀的 UTF-8 JSON IPC 请求与响应编解码器。
+- 线程安全的方法分派、稳定错误响应和异常隔离。
+- 并发 Unix 域套接字客户端/服务端传输，包含期限、连接上限、精确 `0660` 权限、
+  可信路径校验、串行化启动和安全的陈旧套接字清理。
+- `minitun daemon status` 与本地 `minitund` 进程的真实通信。
+- 完整的 `server`、`tun` 和聚合 `status` CLI 命令，支持 JSON 列表/详情输出以及
+  稳定的 `0/2/3/4/5/10` 退出码。
+- 由一致性 SQLite 事务、重启恢复、墓碑过滤和并发本地请求处理支撑的守护进程
+  控制服务。
+- 独立的 SQLite 凭据存储：文件权限为 `0600`，支持事务化 put/get/remove、
+  模式检查、安全删除，并由 `state.db` 保存不透明引用。
+- 无回显交互式 Token 输入、显式 `--token-stdin`，以及 Token 相关 CLI/IPC
+  缓冲区清除。
+- 带版本的 24 字节远程二进制帧，显式网络字节序编码、严格 64 KiB 上限、增量
+  流解码和完整消息类型。
+- 有界二进制负载原语、严格 UTF-8 字段、控制/Worker 连接状态校验，以及支持
+  ASan/UBSan 的 libFuzzer 远程帧目标。
+- TLS 1.2 或更高版本的服务端传输，包含证书/密钥校验、显式分帧、有界握手与
+  心跳期限以及固定数量的 Asio I/O 线程。
+- HELLO/AUTH 消息编解码器、HMAC-SHA256 质询认证、常量时间摘要校验、有界 nonce
+  重放缓存、按地址失败限速、隔离的会话代次和通用认证失败响应。
+- 运行时生成证书的集成测试，覆盖可信/不可信 TLS、正确/错误 Token、心跳交换和
+  不泄漏 Token 的服务端日志。
+- 模式版本 2 迁移，并事务化生成可跨重启保持稳定的守护进程客户端身份。
+- 守护进程侧多服务器管理器，提供隔离的 TLS 控制会话、认证、心跳状态、会话代次
+  和带抖动的逐服务器指数退避重连。
+- `minitund` CA 选择、固定 I/O 线程数、结构化日志级别选择，以及带显著警告、
+  仅供开发使用的 TLS 校验绕过选项。
+- 双服务器集成测试，覆盖故障隔离、服务端重启恢复、守护进程重启恢复和稳定身份复用。
+- 有界 REGISTER/UNREGISTER 隧道负载编解码器，以及相关联的成功响应和稳定失败响应。
+- 服务端公网监听器注册表，包含数值地址校验、显式端口白名单、逐客户端隧道上限、
+  幂等删除和端口冲突映射。
+- 守护进程隧道同步，持久化 `registering`、`active`、`failed`、`pending` 和
+  `removing` 状态，并在重连后恢复监听器。
+- 注册集成测试，覆盖策略拒绝、端口冲突与恢复、监听器释放以及守护进程/服务端重启恢复。
+- 按代次隔离的 Worker Pool，包含逐服务器与全局空闲容量上限、自动补充、公网连接
+  等待期限和空闲过期。
+- 双向 TCP 中继，双向各使用固定 16 KiB 缓冲区，支持读写背压、半关闭传播、
+  空闲期限、取消和字节统计。
+- 优雅信号处理，包含尽力而为的 `GOAWAY`、有期限的中继排空、逐客户端与全局
+  连接配额，以及重启/恢复集成测试。
+- 支持组件的 Linux 安装，包含加固的 systemd unit、systemd-sysusers 定义、
+  man 手册、公共头文件和暂存安装布局校验。
+- 独立的 `minitun-client` 与 `minitun-server` DEB/RPM 软件包，包含服务账户创建、
+  daemon-reload 钩子、保留状态的升级/卸载、DEB purge 清理、软件包内容检查和
+  干净容器冒烟测试。
+- GitHub Actions 编译器、Sanitizer、有界 fuzz、DEB/RPM 和 tag 发布工作流，
+  包含可复用的已测试打包流程、版本化产物、SHA-256 清单、最小 Token 权限、
+  并发取消和分组 Dependabot 更新。
+- 阶段 16 最终验收记录，覆盖测试、Sanitizer、E2E 行为、软件包、文档和发布就绪状态。
+- 完整的简体中文开源项目文档体系，包括正式 README、文档索引、贡献指南、社区行为
+  准则、支持说明、安全策略、故障排查以及用户、运维、架构、协议和发布文档。
+- `minitun`、`minitund` 和 `minitun-server` 可执行程序。
+- 单元测试和 GitHub Actions CI 基础。
 
-### Fixed
+### 修复
 
-- GCC 11/12 coroutine frame lifetime handling for moved protocol payloads and detached
-  TLS GOAWAY writes.
+- 修复 GCC 11/12 下移动协议负载及分离式 TLS `GOAWAY` 写入的协程帧生命周期问题。
