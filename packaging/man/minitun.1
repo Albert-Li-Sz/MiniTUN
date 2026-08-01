@@ -1,0 +1,71 @@
+.TH MINITUN 1 "2026-08-01" "MiniTun 0.1.0" "User Commands"
+.SH NAME
+minitun \- manage MiniTun servers and TCP tunnels
+.SH SYNOPSIS
+.B minitun
+.RI [ --socket " path" ]
+.I command
+.RI [ arguments ]
+.SH DESCRIPTION
+.B minitun
+is a stateless command-line client. It sends one request to the local
+.BR minitund (8)
+Unix socket, prints the response, and exits. It never opens the MiniTun SQLite
+databases or connects directly to a public server.
+.SH COMMANDS
+.TP
+.BI "server add " endpoint " [--name " name "]"
+Add a public MiniTun server.
+.TP
+.BI "server login " server " [--token-stdin]"
+Store a Token for a server. Without
+.BR --token-stdin ,
+the Token is read from a terminal with echo disabled.
+.TP
+.B server list [--json]
+List configured servers.
+.TP
+.BI "server inspect " server " [--json]"
+Inspect one server by ID or name.
+.TP
+.BI "server remove " server
+Remove one server and its tunnels.
+.TP
+.BI "tun add " server " " local-port " " server-port " [--local-host " host "] [--name " name "]"
+Create a TCP tunnel. The default local host is 127.0.0.1.
+.TP
+.BI "tun list [" server "] [--json]"
+List all tunnels or the tunnels for one server.
+.TP
+.BI "tun inspect " tunnel " [--json]"
+Inspect one tunnel by ID or name.
+.TP
+.BI "tun remove " tunnel
+Remove one tunnel.
+.TP
+.B status
+Show aggregate client state.
+.TP
+.B daemon status
+Check the local daemon.
+.TP
+.B version
+Print version, commit, build, compiler, and protocol information.
+.SH OPTIONS
+.TP
+.BI --socket " path"
+Use a local socket other than /run/minitun/minitun.sock.
+.TP
+.B --json
+Emit stable JSON for supported list and inspect commands.
+.SH EXIT STATUS
+0 indicates success; 2 invalid arguments; 3 daemon unavailable;
+4 authentication failure; 5 remote or network failure; and 10 protocol,
+database, resource, or internal failure.
+.SH FILES
+.TP
+.I /run/minitun/minitun.sock
+Local daemon control socket.
+.SH SEE ALSO
+.BR minitund (8),
+.BR minitun-server (8)

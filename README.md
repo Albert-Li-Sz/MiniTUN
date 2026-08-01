@@ -3,7 +3,7 @@
 MiniTun is an independently implemented TCP reverse-tunnelling system for Linux. It
 uses C++20 and is intentionally not compatible with the FRP protocol.
 
-The repository is currently at **development stage 12**. The local control plane is
+The repository is currently at **development stage 13**. The local control plane is
 operational: the stateless `minitun` CLI talks to `minitund` over a protected Unix
 socket, and the daemon persists server and tunnel intent in SQLite. It supports all
 `server`, `tun`, `status`, and `daemon status` commands, structured JSON inspection,
@@ -36,7 +36,9 @@ then authenticates the corresponding remote session without exposing the secret.
 
 The TCP data path and graceful lifecycle are operational. ASan, UBSan, TSan, and five
 libFuzzer entry points cover the security-sensitive parsers and concurrent shutdown
-paths. Remaining work focuses on Linux installation, packages, and release automation.
+paths. Component-aware CMake installation now provides hardened systemd services,
+systemd-sysusers definitions, man pages, and the documented `/usr` Linux layout.
+Remaining work focuses on DEB/RPM packages and release automation.
 
 ## Run the TLS server
 
@@ -106,12 +108,13 @@ build/dev/minitun --socket "$runtime_dir/minitun.sock" status
 ```
 
 The production paths are `/run/minitun/minitun.sock`,
-`/var/lib/minitun/state.db`, and `/var/lib/minitun/credentials.db`. Packaging will
-create the `minitun:minitun` account and protected runtime/state directories in a later
-stage; the program deliberately does not create those top-level directories.
+`/var/lib/minitun/state.db`, and `/var/lib/minitun/credentials.db`. The installed
+sysusers definition creates the `minitun:minitun` account, and systemd creates protected
+runtime/state directories. The program deliberately does not create those top-level
+directories itself.
 
-See [CLI reference](docs/cli.md), [development notes](docs/development.md), and the
-[architecture overview](docs/architecture.md).
+See [installation](docs/installation.md), [CLI reference](docs/cli.md),
+[development notes](docs/development.md), and the [architecture overview](docs/architecture.md).
 
 ## License
 

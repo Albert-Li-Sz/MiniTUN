@@ -1,0 +1,106 @@
+.TH MINITUN-SERVER 8 "2026-08-01" "MiniTun 0.1.0" "System Administration"
+.SH NAME
+minitun-server \- MiniTun public TCP tunnel server
+.SH SYNOPSIS
+.B minitun-server
+.B --tls-cert
+.I file
+.B --tls-key
+.I file
+.B --token-file
+.I file
+.RI [ options ]
+.SH DESCRIPTION
+.B minitun-server
+accepts authenticated TLS control and Worker connections and exposes
+allowlisted public TCP tunnel ports. It stays in the foreground for
+service-manager supervision.
+.SH REQUIRED OPTIONS
+.TP
+.BI --tls-cert " file"
+PEM certificate chain.
+.TP
+.BI --tls-key " file"
+Matching PEM private key.
+.TP
+.BI --token-file " file"
+Private authentication Token file. It must be a regular service-owned file
+with no group or other permissions.
+.SH OPTIONS
+.TP
+.BI --listen " endpoint"
+TLS control listener. The default is 0.0.0.0:2333.
+.TP
+.BI --allow-ports " range"
+Allowed public tunnel port or inclusive range. The packaged unit uses 6000-6999.
+.TP
+.BI --max-clients " count"
+Maximum authenticated clients. The default is 1000.
+.TP
+.BI --max-tunnels-per-client " count"
+Maximum tunnels registered by one client. The default is 128.
+.TP
+.BI --max-connections-per-client " count"
+Maximum active public relays per client. The default is 10000.
+.TP
+.BI --max-total-connections " count"
+Maximum active public relays across all clients. The default is 50000.
+.TP
+.BI --min-idle-workers " count"
+Minimum idle Workers requested per session. The default is 2.
+.TP
+.BI --max-idle-workers " count"
+Maximum idle Workers per session. The default is 32.
+.TP
+.BI --max-total-idle-workers " count"
+Global idle Worker limit. The default is 128.
+.TP
+.BI --handshake-timeout " seconds"
+TLS and authentication timeout. The default is 10 seconds.
+.TP
+.BI --heartbeat-interval " seconds"
+Heartbeat interval. The default is 5 seconds.
+.TP
+.BI --heartbeat-timeout " seconds"
+Heartbeat response timeout. The default is 15 seconds.
+.TP
+.BI --auth-clock-skew " seconds"
+Maximum authentication clock skew. The default is 30 seconds.
+.TP
+.BI --worker-wait-timeout " seconds"
+Maximum public-connection wait for an idle Worker. The default is 2 seconds.
+.TP
+.BI --worker-idle-timeout " seconds"
+Idle Worker lifetime. The default is 60 seconds.
+.TP
+.BI --relay-idle-timeout " seconds"
+Relay inactivity timeout. The default is 300 seconds.
+.TP
+.BI --shutdown-timeout " seconds"
+Maximum graceful relay drain time. The default is 10 seconds.
+.TP
+.BI --io-threads " count"
+Asio worker thread count, from 1 through 16.
+.TP
+.BI --log-level " level"
+Structured log level: trace, debug, info, warn, error, critical, or off.
+.TP
+.B --foreground
+Run in the foreground. This is the packaged service mode.
+.TP
+.B --version
+Print version information and exit.
+.SH FILES
+.TP
+.I /etc/minitun-server/server.crt
+Certificate chain used by the packaged unit.
+.TP
+.I /etc/minitun-server/server.key
+Private key used by the packaged unit.
+.TP
+.I /etc/minitun-server/token
+Authentication Token used by the packaged unit.
+.SH SEE ALSO
+.BR minitun (1),
+.BR minitund (8),
+.BR systemd.service (5)

@@ -218,6 +218,89 @@ minitun_add_program(minitun apps/minitun_main.cpp MiniTun::ipc)
 minitun_add_program(minitund apps/minitund_main.cpp MiniTun::daemon)
 minitun_add_program(minitun-server apps/minitun_server_main.cpp MiniTun::server)
 
+set(MINITUN_SYSTEMD_UNIT_DIR "${CMAKE_INSTALL_LIBDIR}/systemd/system"
+    CACHE STRING "Installation directory for systemd service units"
+)
+set(MINITUN_SYSUSERS_DIR "${CMAKE_INSTALL_LIBDIR}/sysusers.d"
+    CACHE STRING "Installation directory for systemd-sysusers definitions"
+)
+
+install(
+    TARGETS minitun
+    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+    COMPONENT Client
+)
+install(
+    TARGETS minitund
+    RUNTIME DESTINATION "${CMAKE_INSTALL_LIBEXECDIR}/minitun"
+    COMPONENT Client
+)
+install(
+    TARGETS minitun-server
+    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+    COMPONENT Server
+)
+
+install(
+    FILES packaging/systemd/minitund.service
+    DESTINATION "${MINITUN_SYSTEMD_UNIT_DIR}"
+    COMPONENT Client
+)
+install(
+    FILES packaging/systemd/minitun-server.service
+    DESTINATION "${MINITUN_SYSTEMD_UNIT_DIR}"
+    COMPONENT Server
+)
+install(
+    FILES packaging/sysusers/minitun.conf
+    DESTINATION "${MINITUN_SYSUSERS_DIR}"
+    COMPONENT Client
+)
+install(
+    FILES packaging/sysusers/minitun-server.conf
+    DESTINATION "${MINITUN_SYSUSERS_DIR}"
+    COMPONENT Server
+)
+
+install(
+    FILES packaging/man/minitun.1
+    DESTINATION "${CMAKE_INSTALL_MANDIR}/man1"
+    COMPONENT Client
+)
+install(
+    FILES packaging/man/minitund.8
+    DESTINATION "${CMAKE_INSTALL_MANDIR}/man8"
+    COMPONENT Client
+)
+install(
+    FILES packaging/man/minitun-server.8
+    DESTINATION "${CMAKE_INSTALL_MANDIR}/man8"
+    COMPONENT Server
+)
+
+install(
+    FILES README.md LICENSE
+    DESTINATION "${CMAKE_INSTALL_DOCDIR}/client"
+    COMPONENT Client
+)
+install(
+    FILES README.md LICENSE packaging/config/minitun-server/README
+    DESTINATION "${CMAKE_INSTALL_DOCDIR}/server"
+    COMPONENT Server
+)
+install(
+    FILES packaging/config/minitun-server/README
+    DESTINATION "${CMAKE_INSTALL_SYSCONFDIR}/minitun-server"
+    COMPONENT Server
+    PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ
+)
+install(
+    DIRECTORY include/minitun
+    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
+    COMPONENT Development
+    FILES_MATCHING PATTERN "*.hpp"
+)
+
 if(MINITUN_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)

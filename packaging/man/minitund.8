@@ -1,0 +1,71 @@
+.TH MINITUND 8 "2026-08-01" "MiniTun 0.1.0" "System Administration"
+.SH NAME
+minitund \- MiniTun client daemon
+.SH SYNOPSIS
+.B /usr/libexec/minitun/minitund
+.RI [ options ]
+.SH DESCRIPTION
+.B minitund
+maintains isolated authenticated TLS sessions and Worker Pools for configured
+public servers. Desired server and tunnel state is persisted in SQLite and
+restored after restart. The process stays in the foreground for service-manager
+supervision.
+.SH OPTIONS
+.TP
+.BI --socket " path"
+Unix control socket. The default is /run/minitun/minitun.sock.
+.TP
+.BI --database " path"
+State database. The default is /var/lib/minitun/state.db.
+.TP
+.BI --credentials " path"
+Credential database. The default is /var/lib/minitun/credentials.db.
+.TP
+.BI --tls-ca " path"
+PEM CA file used to verify remote server certificates. System trust is used
+when this option is omitted.
+.TP
+.B --insecure-skip-verify
+Disable remote certificate verification. This development-only option prints
+a warning and must not be used in production.
+.TP
+.BI --relay-idle-timeout " seconds"
+Close inactive relays. The default is 300 seconds.
+.TP
+.BI --shutdown-timeout " seconds"
+Maximum graceful relay drain time. The default is 10 seconds.
+.TP
+.BI --max-idle-workers-per-server " count"
+Per-server idle Worker limit. The default is 32.
+.TP
+.BI --max-total-idle-workers " count"
+Daemon-wide idle Worker limit. The default is 128.
+.TP
+.BI --max-total-connections " count"
+Daemon-wide Worker and relay limit. The default is 10000.
+.TP
+.BI --io-threads " count"
+Asio worker thread count, from 1 through 16.
+.TP
+.BI --log-level " level"
+Structured log level: trace, debug, info, warn, error, critical, or off.
+.TP
+.B --foreground
+Run in the foreground. This is the packaged service mode.
+.TP
+.B --version
+Print version information and exit.
+.SH FILES
+.TP
+.I /run/minitun/minitun.sock
+Local control socket, mode 0660.
+.TP
+.I /var/lib/minitun/state.db
+Persistent state database, mode 0600.
+.TP
+.I /var/lib/minitun/credentials.db
+Credential database, mode 0600.
+.SH SEE ALSO
+.BR minitun (1),
+.BR minitun-server (8),
+.BR systemd.service (5)

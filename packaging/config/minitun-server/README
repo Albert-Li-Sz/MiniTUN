@@ -1,0 +1,10 @@
+MiniTun does not install certificates, private keys, or authentication Tokens.
+
+Before enabling minitun-server.service, install these administrator-provided files:
+
+  server.crt  PEM certificate chain, readable by minitun-server
+  server.key  matching PEM private key, mode 0600, owned by minitun-server
+  token       authentication Token, mode 0600, owned by minitun-server
+
+The packaged unit listens on 0.0.0.0:2333 and permits tunnel ports 6000-6999. Copy and
+override the unit with systemctl edit minitun-server when different values are needed.

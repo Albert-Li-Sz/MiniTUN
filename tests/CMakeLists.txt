@@ -172,4 +172,23 @@ if(UNIX)
         TIMEOUT 90
         PASS_REGULAR_EXPRESSION "stability integration passed"
     )
+
+    add_test(NAME integration.install-layout
+        COMMAND
+            "${CMAKE_COMMAND}"
+            "-DMINITUN_BUILD_DIR=${CMAKE_BINARY_DIR}"
+            "-DMINITUN_BINDIR=${CMAKE_INSTALL_BINDIR}"
+            "-DMINITUN_LIBEXECDIR=${CMAKE_INSTALL_LIBEXECDIR}"
+            "-DMINITUN_INCLUDEDIR=${CMAKE_INSTALL_INCLUDEDIR}"
+            "-DMINITUN_MANDIR=${CMAKE_INSTALL_MANDIR}"
+            "-DMINITUN_SYSCONFDIR=${CMAKE_INSTALL_SYSCONFDIR}"
+            "-DMINITUN_SYSTEMD_UNIT_DIR=${MINITUN_SYSTEMD_UNIT_DIR}"
+            "-DMINITUN_SYSUSERS_DIR=${MINITUN_SYSUSERS_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/integration/install_layout.cmake"
+    )
+    set_tests_properties(integration.install-layout PROPERTIES
+        LABELS "integration;install"
+        TIMEOUT 30
+        PASS_REGULAR_EXPRESSION "component installation layout passed"
+    )
 endif()
