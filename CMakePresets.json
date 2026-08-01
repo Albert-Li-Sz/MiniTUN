@@ -78,7 +78,15 @@
       "inherits": "release",
       "binaryDir": "${sourceDir}/build/package-deb",
       "cacheVariables": {
+        "CMAKE_INSTALL_PREFIX": "/usr",
+        "CMAKE_INSTALL_SYSCONFDIR": "/etc",
+        "CMAKE_INSTALL_LIBEXECDIR": "libexec",
+        "CMAKE_INSTALL_DOCDIR": "share/doc/minitun",
+        "MINITUN_SYSTEMD_UNIT_DIR": "lib/systemd/system",
+        "MINITUN_SYSUSERS_DIR": "lib/sysusers.d",
         "MINITUN_BUILD_PACKAGES": "ON",
+        "MINITUN_ENABLE_LTO": "OFF",
+        "MINITUN_USE_SYSTEM_DEPS": "OFF",
         "CPACK_GENERATOR": "DEB"
       }
     },
@@ -88,7 +96,14 @@
       "inherits": "release",
       "binaryDir": "${sourceDir}/build/package-rpm",
       "cacheVariables": {
+        "CMAKE_INSTALL_PREFIX": "/usr",
+        "CMAKE_INSTALL_SYSCONFDIR": "/etc",
+        "CMAKE_INSTALL_LIBEXECDIR": "libexec",
+        "CMAKE_INSTALL_DOCDIR": "share/doc/minitun",
+        "MINITUN_SYSTEMD_UNIT_DIR": "lib/systemd/system",
+        "MINITUN_SYSUSERS_DIR": "lib/sysusers.d",
         "MINITUN_BUILD_PACKAGES": "ON",
+        "MINITUN_ENABLE_LTO": "OFF",
         "CPACK_GENERATOR": "RPM"
       }
     }

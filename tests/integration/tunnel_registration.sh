@@ -246,7 +246,7 @@ wait_tunnel_state conflict active
 wait_port_released "$active_port"
 wait_port_released "$conflict_port"
 
-if rg -F "$token" "$runtime_dir"/*.log; then
+if grep -F "$token" "$runtime_dir"/*.log; then
     printf 'authentication token leaked into registration logs\n' >&2
     exit 1
 fi

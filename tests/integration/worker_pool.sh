@@ -130,7 +130,7 @@ probe_worker
 sleep 3.5
 probe_worker
 
-if rg -F "$token" "$runtime_dir"/*.log; then
+if grep -F "$token" "$runtime_dir"/*.log; then
     printf 'authentication token leaked into Worker Pool logs\n' >&2
     exit 1
 fi

@@ -268,7 +268,7 @@ PY
     sleep 0.1
 done
 
-if rg -F "$token" "$runtime_dir"/*.log; then
+if grep -F "$token" "$runtime_dir"/*.log; then
     printf 'authentication token leaked into relay logs\n' >&2
     exit 1
 fi

@@ -185,7 +185,7 @@ if [[ "$client_id_before" != "$client_id_after" ]]; then
     exit 1
 fi
 
-if rg -F "$token" "$runtime_dir"/*.log; then
+if grep -F "$token" "$runtime_dir"/*.log; then
     printf 'authentication token leaked into logs\n' >&2
     exit 1
 fi

@@ -2,6 +2,7 @@
 #include <cstddef>
 #include <exception>
 #include <optional>
+#include <utility>
 
 #include <asio/co_spawn.hpp>
 #include <asio/io_context.hpp>

@@ -360,7 +360,8 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
         };
 
         [[nodiscard]] asio::awaitable<void> run() {
-            if (!co_await perform_tls_handshake()) {
+            const bool handshake_complete = co_await perform_tls_handshake();
+            if (!handshake_complete) {
                 co_return;
             }
             auto first_frame = co_await read_initial_frame();
@@ -380,7 +381,12 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
             }
             control_connection_ = true;
             state_.emplace(protocol::PeerRole::server, protocol::ConnectionKind::control);
-            if (!state_->on_receive(first_frame->type) || !co_await authenticate(*first_frame)) {
+            const auto transition = state_->on_receive(first_frame->type);
+            if (!transition) {
+                co_return;
+            }
+            const bool authenticated = co_await authenticate(*first_frame);
+            if (!authenticated) {
                 co_return;
             }
             common::log_info("remote client authenticated", log_context());

@@ -276,7 +276,7 @@ hold_pid=
 wait_for_exit "$daemon_pid"
 daemon_pid=
 
-if rg -F "$token" "$runtime_dir"/*.log; then
+if grep -F "$token" "$runtime_dir"/*.log; then
     printf 'authentication token leaked into stability logs\n' >&2
     exit 1
 fi

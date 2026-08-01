@@ -91,7 +91,7 @@ if "$client_bin" \
     exit 1
 fi
 
-if rg -F "$token" "$runtime_dir/server.log"; then
+if grep -F "$token" "$runtime_dir/server.log"; then
     echo 'authentication Token leaked into server logs' >&2
     exit 1
 fi

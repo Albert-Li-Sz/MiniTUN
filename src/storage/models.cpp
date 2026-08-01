@@ -12,6 +12,9 @@ template <typename Enum> struct EnumEntry final {
     std::string_view text;
 };
 
+template <typename Enum>
+EnumEntry(Enum, std::string_view) -> EnumEntry<Enum>;
+
 constexpr std::array kTunnelProtocols{
     EnumEntry{TunnelProtocol::tcp, std::string_view{"tcp"}},
 };

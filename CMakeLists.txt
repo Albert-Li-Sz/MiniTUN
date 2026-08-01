@@ -344,5 +344,5 @@ if(MINITUN_BUILD_FUZZERS)
 endif()
 
 if(MINITUN_BUILD_PACKAGES)
-    message(STATUS "Package generation will be introduced in packaging phase 14")
+    include(Packaging)
 endif()

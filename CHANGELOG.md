@@ -61,5 +61,10 @@ All notable changes to MiniTun will be documented here.
   `pending`, and `removing` transitions and restores listeners after reconnect.
 - Registration integration coverage for policy rejection, port conflicts and recovery,
   listener release, and daemon/server restart restoration.
+- Component-aware Linux installation with hardened systemd units, systemd-sysusers
+  definitions, man pages, public headers, and staged layout verification.
+- Separate `minitun-client` and `minitun-server` DEB/RPM packages with service-account
+  creation, daemon reload hooks, state-preserving upgrades/removals, DEB purge cleanup,
+  package-content inspection, and clean-container smoke tests.
 - `minitun`, `minitund`, and `minitun-server` stage-0 executables.
 - Unit-test and GitHub Actions CI foundations.
