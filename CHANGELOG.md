@@ -70,9 +70,7 @@ MiniTun 的所有重要变更都会记录在此文件中。本文档以
 - GitHub Actions 编译器、Sanitizer、有界 fuzz、DEB/RPM 和 tag 发布工作流，
   包含可复用的已测试打包流程、版本化产物、SHA-256 清单、最小 Token 权限、
   并发取消和分组 Dependabot 更新。
-- 阶段 16 最终验收记录，覆盖测试、Sanitizer、E2E 行为、软件包、文档和发布就绪状态。
-- 完整的简体中文开源项目文档体系，包括正式 README、文档索引、贡献指南、社区行为
-  准则、支持说明、安全策略、故障排查以及用户、运维、架构、协议和发布文档。
+- 简体中文开源项目文档，包括生产部署 README，以及 CLI、架构、协议和开发文档。
 - `minitun`、`minitund` 和 `minitun-server` 可执行程序。
 - 单元测试和 GitHub Actions CI 基础。
 

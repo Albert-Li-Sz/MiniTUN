@@ -27,15 +27,15 @@ flowchart LR
 控制面与数据面彼此分离。CLI 不接触数据库或公网服务端；公网服务端也不知道本地目标
 地址。只有 `minitund` 能将经过认证的 `tunnel_id` 解析为本地持久化端点。
 
-## 阶段 2：存储层
+## 存储层
 
 公共层提供共享的错误/结果模型、结构化日志、经过校验的端点与端口范围、强类型随机
-ID、时间辅助函数和可移动但不可复制的秘密存储。阶段 2 引入 `MiniTun::storage`，
-仅链接到 `minitund` 和存储测试；CLI 与公网服务端均不链接 SQLite。
+ID、时间辅助函数和可移动但不可复制的秘密存储。`MiniTun::storage` 仅链接到
+`minitund` 和存储测试；CLI 与公网服务端均不链接 SQLite。
 
 `StateRepository` 持有一个已经迁移的 `Database`，并公开 `ServerRepository` 和
-`TunnelRepository`。只有守护进程可以打开或写入状态数据库。阶段 4 的 CLI 命令
-通过 IPC 请求守护进程执行全部查询与修改。
+`TunnelRepository`。只有守护进程可以打开或写入状态数据库。CLI 命令通过 IPC
+请求守护进程执行全部查询与修改。
 
 ### SQLite 模式版本 2
 
@@ -85,7 +85,7 @@ PRAGMA journal_size_limit = 16777216;
 ### 仓库与事务
 
 两个仓库都提供经过校验的创建、查找、确定性列表、更新、墓碑和物理删除操作。服务器
-名称唯一；隧道名称有意允许重复，因此名称匹配多条记录时查询会以歧义失败。将服务器
+名称唯一；隧道名称有意允许重复，因此名称匹配多条记录时查询会因歧义失败。将服务器
 标记为删除也会标记其子隧道；只有服务器及全部子项都成为删除墓碑后，物理删除才会
 级联。创建时间戳不可变，任何使记录时间戳倒退的更新都会被拒绝。
 
@@ -115,7 +115,7 @@ PRAGMA journal_size_limit = 16777216;
 `credential_ref`。秘密缺失时会清除引用并恢复为 `not_authenticated`；已删除
 服务器的凭据会被删除。
 
-## 阶段 3：本地 IPC
+## 本地 IPC
 
 `MiniTun::ipc` 与 SQLite 相互独立。CLI 链接公共库和 IPC 库，只有守护进程链接
 存储库。每条线消息采用以下有界格式：
@@ -130,7 +130,7 @@ uint32 网络字节序 JSON 字节长度 | UTF-8 JSON 负载
 无效 ID、非对象参数和超过 1 MiB 的消息都会在分派前被拒绝。
 
 分派器具有线程安全的方法注册表。处理器失败会转换为协议错误响应；未捕获的处理器
-异常会被隔离并转换为通用 `internal_error`，且不暴露异常文本。阶段 4 通过单个
+异常会被隔离并转换为通用 `internal_error`，且不暴露异常文本。单个
 `ControlService` 注册全部本地控制方法。
 
 `LocalServer` 接受多个 Unix 域套接字会话，限制会话总数，并为每个连接只处理一个
@@ -147,7 +147,7 @@ uint32 网络字节序 JSON 字节长度 | UTF-8 JSON 负载
 生产路径为 `/run/minitun/minitun.sock`。已安装的 systemd unit 会创建受保护的
 `minitun:minitun` 运行时目录，并以该账户运行服务。
 
-## 阶段 4：本地控制面
+## 本地控制面
 
 `MiniTun::daemon` 持有 IPC 控制处理器，同时依赖存储和 IPC。CLI 继续只链接公共库
 与 IPC，因此无法绕过守护进程授权或数据库生命周期规则。注册的方法如下：
@@ -174,14 +174,14 @@ tun.add     tun.list      tun.inspect  tun.remove
 仍是凭据边界使用的可移动但不可复制表示。文件权限和内存清除可以降低暴露风险，但
 不会把凭据数据库变成加密保险库；文件系统与主机信任仍然是安全前提。
 
-## 阶段 5 至 6：远程协议与认证
+## 远程协议与认证
 
 远程协议库提供显式的 24 字节网络字节序头、64 KiB 帧上限、增量解码、有界负载
 字段以及独立的控制/Worker 连接状态机。公网服务端接受 TLS 1.2 或更高版本的控制
 连接，执行 HMAC 质询认证，为每个认证会话分配新代次，并强制执行心跳期限。线协议
 详情见[远程协议](protocol.md)。
 
-## 阶段 7：多服务器会话
+## 多服务器会话
 
 `ServerManager` 定期同步已启用且已配置凭据的服务器记录，并为每个服务器 ID 持有
 一个独立 `ServerSession`。每个会话都有自己的 strand、解析器、TLS 流、操作定时器、
@@ -194,7 +194,7 @@ tun.add     tun.list      tun.inspect  tun.remove
 仅供开发使用的 `--insecure-skip-verify` 会输出显著警告。隧道注册与 Worker Pool
 建立在这些隔离的会话生命周期之上。
 
-## 阶段 8：隧道状态同步
+## 隧道状态同步
 
 每个在线客户端会话在心跳处理期间比较持久化隧道期望状态与内存注册集合。缺失的活动
 隧道从 `registering` 转为 `active`；服务端策略或绑定失败只会使该隧道转为
@@ -206,7 +206,7 @@ tun.add     tun.list      tun.inspect  tun.remove
 `client_id` 和 `tunnel_id`，所有权还记录当前会话代次。确认注册前会检查数值地址
 解析、`--allow-ports`、逐客户端数量以及操作系统绑定错误。
 
-## 阶段 9：Worker Pool
+## Worker Pool
 
 每个守护进程 `ServerSession` 都拥有独立的客户端 Worker Pool，仅共享一个有界全局
 Worker 预算。Worker 独立连接并校验 TLS，携带当前 `client_id` 和
@@ -214,7 +214,7 @@ Worker 预算。Worker 独立连接并校验 TLS，携带当前 `client_id` 和
 上限约束；清理陈旧代次时会立即关闭底层 TLS 连接。公网套接字等待匹配 Worker 最长
 两秒；空闲 Worker 默认 60 秒后过期。
 
-## 阶段 10：TCP 中继
+## TCP 中继
 
 已分配的客户端 Worker 在本地 SQLite 中查找活动隧道，并只异步连接该持久化端点。
 `LOCAL_CONNECT_OK` 使双方切换为原始 TLS 应用字节。共享中继操作在每个方向使用一个
@@ -222,7 +222,7 @@ Worker 预算。Worker 独立连接并校验 TLS，携带当前 `client_id` 和
 发送侧关闭，同时保留反向流量。连接重置、broken pipe、EOF 和取消视为普通断开；
 非预期 I/O 失败及有界空闲超时会取消两个套接字。
 
-## 阶段 11：稳定性与关闭
+## 稳定性与关闭
 
 公网服务端在其 Asio strand 上跟踪已接受的 TLS 会话和待处理公网套接字。收到
 `SIGINT` 或 `SIGTERM` 后，先停止控制监听器和隧道监听器、拒绝新的中继预留，向
@@ -240,7 +240,6 @@ Worker 预算。Worker 独立连接并校验 TLS，携带当前 `client_id` 和
 
 - MiniTun 只提供 TCP 反向隧道，不实现 UDP 转发；
 - 不实现 P2P、NAT 穿透、SOCKS5 代理或通用端口转发协议；
-- 不兼容 FRP 线协议；
 - 每条活动中继使用独立 TLS Worker 连接，不在单连接中复用多条数据流；
 - 生产服务管理、账户和软件包布局面向 Linux 与 systemd；
 - 管理员负责 CA、证书、私钥、Token、防火墙和端口白名单策略。
