@@ -3,7 +3,7 @@
 MiniTun is an independently implemented TCP reverse-tunnelling system for Linux. It
 uses C++20 and is intentionally not compatible with the FRP protocol.
 
-The repository is currently at **development stage 14**. The local control plane is
+The repository is currently at **development stage 15**. The local control plane is
 operational: the stateless `minitun` CLI talks to `minitund` over a protected Unix
 socket, and the daemon persists server and tunnel intent in SQLite. It supports all
 `server`, `tun`, `status`, and `daemon status` commands, structured JSON inspection,
@@ -39,7 +39,9 @@ libFuzzer entry points cover the security-sensitive parsers and concurrent shutd
 paths. Component-aware CMake installation and CPack now provide separate
 `minitun-client` and `minitun-server` DEB/RPM packages with hardened systemd services,
 systemd-sysusers definitions, man pages, safe upgrade/removal behavior, and container
-installation smoke tests. Remaining work focuses on release automation.
+installation smoke tests. GitHub Actions now runs the compiler matrix, sanitizers,
+bounded fuzz smoke tests, clean-container package installation, and tested tag releases.
+Remaining work is the final acceptance pass.
 
 ## Run the TLS server
 
@@ -115,7 +117,8 @@ runtime/state directories. The program deliberately does not create those top-le
 directories itself.
 
 See [installation](docs/installation.md), [CLI reference](docs/cli.md),
-[development notes](docs/development.md), and the [architecture overview](docs/architecture.md).
+[development notes](docs/development.md), [CI and release automation](docs/ci.md), and
+the [architecture overview](docs/architecture.md).
 
 ## License
 

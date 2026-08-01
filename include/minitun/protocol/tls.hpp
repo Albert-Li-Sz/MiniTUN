@@ -40,8 +40,7 @@ make_client_tls_context(const ClientTlsContextOptions& options);
 async_read_frame(TlsStream& stream, std::size_t max_frame_size = kMaxFrameSize);
 
 [[nodiscard]] asio::awaitable<common::Result<void>>
-async_write_frame(TlsStream& stream, const Frame& frame,
-                  std::size_t max_frame_size = kMaxFrameSize);
+async_write_frame(TlsStream& stream, Frame frame, std::size_t max_frame_size = kMaxFrameSize);
 
 void close_tls_stream(TlsStream& stream) noexcept;
 

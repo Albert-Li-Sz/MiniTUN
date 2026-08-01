@@ -85,8 +85,9 @@ run_protocol(minitun::protocol::TlsStream& stream, const Options& options,
         co_return minitun::common::Result<void>::failure(minitun::common::ErrorCode::internal_error,
                                                          "test HELLO encoding failed");
     }
-    auto written = co_await minitun::protocol::async_write_frame(
-        stream, {minitun::protocol::MessageType::hello, 0U, 1U, std::move(*hello_payload)});
+    const minitun::protocol::Frame hello_frame{minitun::protocol::MessageType::hello, 0U, 1U,
+                                               std::move(*hello_payload)};
+    auto written = co_await minitun::protocol::async_write_frame(stream, hello_frame);
     if (!written) {
         co_return written;
     }
@@ -113,8 +114,9 @@ run_protocol(minitun::protocol::TlsStream& stream, const Options& options,
         co_return minitun::common::Result<void>::failure(minitun::common::ErrorCode::internal_error,
                                                          "test AUTH encoding failed");
     }
-    written = co_await minitun::protocol::async_write_frame(
-        stream, {minitun::protocol::MessageType::auth, 0U, 2U, std::move(*auth_payload)});
+    const minitun::protocol::Frame auth_frame{minitun::protocol::MessageType::auth, 0U, 2U,
+                                              std::move(*auth_payload)};
+    written = co_await minitun::protocol::async_write_frame(stream, auth_frame);
     if (!written) {
         co_return written;
     }
@@ -173,9 +175,9 @@ run_protocol(minitun::protocol::TlsStream& stream, const Options& options,
             co_return minitun::common::Result<void>::failure(
                 minitun::common::ErrorCode::internal_error, "test PONG encoding failed");
         }
-        written = co_await minitun::protocol::async_write_frame(
-            stream, {minitun::protocol::MessageType::pong, 0U, ping_frame->request_id,
-                     std::move(*pong_payload)});
+        const minitun::protocol::Frame pong_frame{minitun::protocol::MessageType::pong, 0U,
+                                                  ping_frame->request_id, std::move(*pong_payload)};
+        written = co_await minitun::protocol::async_write_frame(stream, pong_frame);
         if (!written) {
             co_return written;
         }

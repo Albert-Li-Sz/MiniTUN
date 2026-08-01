@@ -60,8 +60,11 @@ jobs:
           sudo apt-get install --no-install-recommends --yes \
             cmake \
             ninja-build \
+            ccache \
             g++ \
             clang \
+            openssl \
+            python3 \
             libssl-dev \
             libsqlite3-dev \
             libasio-dev \
@@ -72,6 +75,14 @@ jobs:
             libgtest-dev \
             pkg-config
 
+      - name: Restore compiler cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ccache
+          key: ccache-${{ matrix.os }}-${{ matrix.cxx }}-${{ matrix.build_type }}-${{ hashFiles('CMakeLists.txt', 'cmake/**', 'include/**', 'src/**', 'apps/**') }}
+          restore-keys: |
+            ccache-${{ matrix.os }}-${{ matrix.cxx }}-${{ matrix.build_type }}-
+
       - name: Configure
         run: |
           mkdir -p "${CI_LOG_DIR}"
@@ -81,6 +92,7 @@ jobs:
             -B "${BUILD_DIR}" \
             -G Ninja \
             -DCMAKE_BUILD_TYPE="${{ matrix.build_type }}" \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_FLAGS="-Wall -Wextra -Wpedantic -Wconversion -Wshadow" \
             -DMINITUN_USE_SYSTEM_DEPS=ON \
             -DMINITUN_BUILD_TESTS=ON \
@@ -111,6 +123,10 @@ jobs:
             2>&1 | tee --append "${CI_LOG_DIR}/smoke.log"
           "${BUILD_DIR}/minitun-server" --help \
             2>&1 | tee --append "${CI_LOG_DIR}/smoke.log"
+
+      - name: Report compiler cache
+        if: always()
+        run: ccache --show-stats
 
       - name: Upload tested build
         if: success()

@@ -161,9 +161,12 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
                 .session_generation = pool->options_.session_generation,
                 .worker_id = worker_id_,
             });
-            if (!hello_payload || !co_await write_frame({protocol::MessageType::worker_hello, 0U,
-                                                         1U, std::move(*hello_payload)},
-                                                        pool->options_.handshake_timeout)) {
+            if (!hello_payload) {
+                co_return;
+            }
+            const protocol::Frame hello_frame{protocol::MessageType::worker_hello, 0U, 1U,
+                                              std::move(*hello_payload)};
+            if (!co_await write_frame(hello_frame, pool->options_.handshake_timeout)) {
                 co_return;
             }
 
@@ -210,10 +213,13 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
             }
 
             auto connected_payload = protocol::encode_local_connect_ok({relay->connection_id});
-            if (!connected_payload ||
-                !co_await write_frame({protocol::MessageType::local_connect_ok, 0U,
-                                       relay_frame->request_id, std::move(*connected_payload)},
-                                      pool->options_.handshake_timeout)) {
+            if (!connected_payload) {
+                co_return;
+            }
+            const protocol::Frame connected_frame{protocol::MessageType::local_connect_ok, 0U,
+                                                  relay_frame->request_id,
+                                                  std::move(*connected_payload)};
+            if (!co_await write_frame(connected_frame, pool->options_.handshake_timeout)) {
                 co_return;
             }
 
@@ -232,9 +238,9 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
             auto failed_payload = protocol::encode_local_connect_error(
                 {connection_id, common::ErrorCode::local_connect_failed});
             if (failed_payload) {
-                static_cast<void>(co_await write_frame({protocol::MessageType::local_connect_error,
-                                                        0U, request_id, std::move(*failed_payload)},
-                                                       timeout));
+                const protocol::Frame failed_frame{protocol::MessageType::local_connect_error, 0U,
+                                                   request_id, std::move(*failed_payload)};
+                static_cast<void>(co_await write_frame(failed_frame, timeout));
             }
         }
 
@@ -253,7 +259,7 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
             co_return frame;
         }
 
-        [[nodiscard]] asio::awaitable<bool> write_frame(protocol::Frame frame,
+        [[nodiscard]] asio::awaitable<bool> write_frame(const protocol::Frame& frame,
                                                         const std::chrono::seconds timeout) {
             auto transition = state_.on_send(frame.type);
             if (!transition) {

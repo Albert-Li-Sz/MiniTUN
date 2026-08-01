@@ -30,6 +30,7 @@ MINITUN_ENABLE_UBSAN
 MINITUN_ENABLE_TSAN
 MINITUN_ENABLE_LTO
 MINITUN_BUILD_PACKAGES
+MINITUN_PACKAGE_VERSION
 ```
 
 Sanitizer builds have their own presets. TSan is intentionally kept separate from

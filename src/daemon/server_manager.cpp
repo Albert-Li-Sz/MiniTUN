@@ -234,9 +234,9 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
             if (!hello_payload) {
                 co_return disconnected(common::ErrorCode::internal_error, "failed to encode HELLO");
             }
-            if (auto written = co_await write_frame(
-                    state, {protocol::MessageType::hello, 0U, 1U, std::move(*hello_payload)},
-                    options_.handshake_timeout);
+            const protocol::Frame hello_frame{protocol::MessageType::hello, 0U, 1U,
+                                              std::move(*hello_payload)};
+            if (auto written = co_await write_frame(state, hello_frame, options_.handshake_timeout);
                 !written) {
                 co_return disconnected(written.error().code(), written.error().message());
             }
@@ -262,9 +262,10 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
             if (!auth_payload) {
                 co_return disconnected(common::ErrorCode::internal_error, "failed to encode AUTH");
             }
-            if (auto written = co_await write_frame(
-                    state, {protocol::MessageType::auth, 0U, 2U, std::move(*auth_payload)},
-                    options_.handshake_timeout);
+            const protocol::Frame auth_request_frame{protocol::MessageType::auth, 0U, 2U,
+                                                     std::move(*auth_payload)};
+            if (auto written =
+                    co_await write_frame(state, auth_request_frame, options_.handshake_timeout);
                 !written) {
                 co_return disconnected(written.error().code(), written.error().message());
             }
@@ -363,10 +364,9 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                         co_return disconnected(reconciled.error().code(),
                                                reconciled.error().message());
                     }
-                    auto written = co_await write_frame(
-                        state,
-                        {protocol::MessageType::pong, 0U, frame->request_id, std::move(*payload)},
-                        heartbeat_timeout);
+                    const protocol::Frame pong_frame{protocol::MessageType::pong, 0U,
+                                                     frame->request_id, std::move(*payload)};
+                    auto written = co_await write_frame(state, pong_frame, heartbeat_timeout);
                     if (!written) {
                         co_return disconnected(written.error().code(), written.error().message());
                     }
@@ -429,10 +429,9 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                     co_return common::Result<void>::failure(payload.error());
                 }
                 const std::uint64_t request_id = next_request_id();
-                auto written = co_await write_frame(
-                    state,
-                    {protocol::MessageType::register_tunnel, 0U, request_id, std::move(*payload)},
-                    timeout);
+                const protocol::Frame registration_frame{protocol::MessageType::register_tunnel, 0U,
+                                                         request_id, std::move(*payload)};
+                auto written = co_await write_frame(state, registration_frame, timeout);
                 if (!written) {
                     co_return written;
                 }
@@ -487,10 +486,9 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                     co_return common::Result<void>::failure(payload.error());
                 }
                 const std::uint64_t request_id = next_request_id();
-                auto written = co_await write_frame(
-                    state,
-                    {protocol::MessageType::unregister_tunnel, 0U, request_id, std::move(*payload)},
-                    timeout);
+                const protocol::Frame removal_frame{protocol::MessageType::unregister_tunnel, 0U,
+                                                    request_id, std::move(*payload)};
+                auto written = co_await write_frame(state, removal_frame, timeout);
                 if (!written) {
                     co_return written;
                 }
@@ -543,10 +541,9 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                     if (!payload) {
                         co_return common::Result<protocol::Frame>::failure(payload.error());
                     }
-                    auto written = co_await write_frame(
-                        state,
-                        {protocol::MessageType::pong, 0U, frame->request_id, std::move(*payload)},
-                        timeout);
+                    const protocol::Frame pong_frame{protocol::MessageType::pong, 0U,
+                                                     frame->request_id, std::move(*payload)};
+                    auto written = co_await write_frame(state, pong_frame, timeout);
                     if (!written) {
                         co_return common::Result<protocol::Frame>::failure(written.error());
                     }
@@ -588,7 +585,7 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
         }
 
         [[nodiscard]] asio::awaitable<common::Result<void>>
-        write_frame(protocol::StateMachine& state, protocol::Frame frame,
+        write_frame(protocol::StateMachine& state, const protocol::Frame& frame,
                     const std::chrono::milliseconds timeout) {
             if (stream_ == nullptr) {
                 co_return common::Result<void>::failure(common::ErrorCode::connection_failed,

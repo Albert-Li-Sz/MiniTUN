@@ -32,6 +32,11 @@ minitun-client_0.1.0_amd64.deb
 minitun-server_0.1.0_amd64.deb
 ```
 
+Release automation can set `MINITUN_PACKAGE_VERSION`. Stable versions use
+`MAJOR.MINOR.PATCH`; release candidates use `MAJOR.MINOR.PATCH-rc.NUMBER` and are
+translated to Debian's ordering-safe `MAJOR.MINOR.PATCH~rc.NUMBER` metadata. The base
+version must match the CMake project version.
+
 Inspect a package directly with:
 
 ```bash
@@ -58,6 +63,9 @@ The generated files use native RPM names:
 minitun-client-0.1.0-1.x86_64.rpm
 minitun-server-0.1.0-1.x86_64.rpm
 ```
+
+For release candidates, RPM metadata uses the stable base version and a release such
+as `0.rc.1`, preserving correct RPM upgrade ordering.
 
 Inspect a package directly with:
 

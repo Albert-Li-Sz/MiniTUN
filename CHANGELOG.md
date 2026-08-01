@@ -66,5 +66,13 @@ All notable changes to MiniTun will be documented here.
 - Separate `minitun-client` and `minitun-server` DEB/RPM packages with service-account
   creation, daemon reload hooks, state-preserving upgrades/removals, DEB purge cleanup,
   package-content inspection, and clean-container smoke tests.
+- GitHub Actions compiler, sanitizer, bounded-fuzz, DEB/RPM, and tag-release workflows
+  with reusable tested packaging, versioned artifacts, SHA-256 manifests, minimal token
+  permissions, concurrency cancellation, and grouped Dependabot updates.
 - `minitun`, `minitund`, and `minitun-server` stage-0 executables.
 - Unit-test and GitHub Actions CI foundations.
+
+### Fixed
+
+- GCC 11/12 coroutine frame lifetime handling for moved protocol payloads and detached
+  TLS GOAWAY writes.

@@ -223,7 +223,7 @@ asio::awaitable<common::Result<Frame>> async_read_frame(TlsStream& stream,
     }
 }
 
-asio::awaitable<common::Result<void>> async_write_frame(TlsStream& stream, const Frame& frame,
+asio::awaitable<common::Result<void>> async_write_frame(TlsStream& stream, Frame frame,
                                                         const std::size_t max_frame_size) {
     auto encoded = encode_frame(frame, max_frame_size);
     if (!encoded) {

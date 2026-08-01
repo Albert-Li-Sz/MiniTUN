@@ -1,0 +1,309 @@
+name: Packages
+
+on:
+  workflow_call:
+    inputs:
+      package_version:
+        description: Validated package version without the leading v
+        required: false
+        type: string
+        default: ""
+  workflow_dispatch:
+    inputs:
+      package_version:
+        description: Optional MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH-rc.NUMBER override
+        required: false
+        type: string
+        default: ""
+  push:
+    branches:
+      - main
+    paths:
+      - "src/**"
+      - "include/**"
+      - "apps/**"
+      - "tests/**"
+      - "packaging/**"
+      - "cmake/**"
+      - "CMakeLists.txt"
+      - "CMakePresets.json"
+      - ".github/workflows/package.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: packages-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  deb-amd64:
+    name: DEB amd64
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    env:
+      PACKAGE_VERSION: ${{ inputs.package_version || '' }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Validate package version
+        run: |
+          if [[ -n "${PACKAGE_VERSION}" &&
+                ! "${PACKAGE_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
+            echo "invalid package version: ${PACKAGE_VERSION}" >&2
+            exit 1
+          fi
+          if [[ -n "${PACKAGE_VERSION}" ]]; then
+            base_version=${PACKAGE_VERSION%%-rc.*}
+            project_version=$(awk '$1 == "VERSION" { print $2; exit }' CMakeLists.txt)
+            if [[ -z "${project_version}" || "${base_version}" != "${project_version}" ]]; then
+              echo "package version ${PACKAGE_VERSION} does not match CMake project version ${project_version:-unknown}" >&2
+              exit 1
+            fi
+          fi
+
+      - name: Install DEB build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes \
+            clang \
+            cmake \
+            dpkg-dev \
+            fakeroot \
+            file \
+            git \
+            libasio-dev \
+            libboost-system-dev \
+            libcli11-dev \
+            libgtest-dev \
+            libspdlog-dev \
+            libsqlite3-dev \
+            libssl-dev \
+            ninja-build \
+            nlohmann-json3-dev \
+            openssl \
+            pkg-config \
+            python3
+
+      - name: Restore fetched dependencies
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/minitun-fetchcontent/package-deb
+          key: package-deb-fetchcontent-${{ hashFiles('cmake/Dependencies.cmake') }}
+
+      - name: Configure DEB build
+        env:
+          CC: clang
+          CXX: clang++
+        run: |
+          mkdir -p ci-logs/deb
+          version_arguments=()
+          if [[ -n "${PACKAGE_VERSION}" ]]; then
+            version_arguments+=("-DMINITUN_PACKAGE_VERSION=${PACKAGE_VERSION}")
+          fi
+          cmake --preset package-deb \
+            -DFETCHCONTENT_BASE_DIR="${HOME}/.cache/minitun-fetchcontent/package-deb" \
+            "${version_arguments[@]}" \
+            2>&1 | tee ci-logs/deb/configure.log
+
+      - name: Build DEB binaries
+        run: |
+          cmake --build --preset package-deb --parallel 2 \
+            2>&1 | tee ci-logs/deb/build.log
+
+      - name: Test DEB build
+        run: |
+          ctest --test-dir build/package-deb --output-on-failure --no-tests=error \
+            2>&1 | tee ci-logs/deb/ctest.log
+
+      - name: Generate DEB packages
+        run: |
+          cpack --config build/package-deb/CPackConfig.cmake -G DEB \
+            2>&1 | tee ci-logs/deb/cpack.log
+
+      - name: Verify DEB metadata and contents
+        run: |
+          packaging/tests/verify-deb.sh build/package-deb \
+            2>&1 | tee ci-logs/deb/verify.log
+
+      - name: Smoke test DEB packages in clean Ubuntu
+        run: |
+          docker run --rm --platform linux/amd64 \
+            -v "${PWD}/build/package-deb:/packages:ro" \
+            -v "${PWD}/packaging/tests:/tests:ro" \
+            ubuntu:22.04 \
+            /tests/smoke-deb.sh /packages \
+            2>&1 | tee ci-logs/deb/smoke.log
+
+      - name: Prepare DEB artifacts
+        run: |
+          client_package=$(find build/package-deb -maxdepth 1 -type f \
+            -name 'minitun-client_*_amd64.deb')
+          server_package=$(find build/package-deb -maxdepth 1 -type f \
+            -name 'minitun-server_*_amd64.deb')
+          test -n "${client_package}"
+          test -n "${server_package}"
+
+          artifact_version=${PACKAGE_VERSION}
+          if [[ -z "${artifact_version}" ]]; then
+            artifact_version=$(dpkg-deb -f "${client_package}" Version)
+            artifact_version=${artifact_version//~/-}
+          fi
+
+          install -d dist/deb
+          install -m 0644 "${client_package}" \
+            "dist/deb/minitun-client-${artifact_version}-linux-amd64.deb"
+          install -m 0644 "${server_package}" \
+            "dist/deb/minitun-server-${artifact_version}-linux-amd64.deb"
+          (cd dist/deb && sha256sum ./*.deb >SHA256SUMS)
+
+      - name: Upload DEB packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: minitun-deb-amd64
+          if-no-files-found: error
+          retention-days: 14
+          path: dist/deb/
+
+      - name: Upload DEB logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: minitun-deb-amd64-logs
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            ci-logs/deb/
+            build/package-deb/Testing/Temporary/
+
+  rpm-x86-64:
+    name: RPM x86_64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    env:
+      PACKAGE_VERSION: ${{ inputs.package_version || '' }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Validate package version
+        run: |
+          if [[ -n "${PACKAGE_VERSION}" &&
+                ! "${PACKAGE_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
+            echo "invalid package version: ${PACKAGE_VERSION}" >&2
+            exit 1
+          fi
+          if [[ -n "${PACKAGE_VERSION}" ]]; then
+            base_version=${PACKAGE_VERSION%%-rc.*}
+            project_version=$(awk '$1 == "VERSION" { print $2; exit }' CMakeLists.txt)
+            if [[ -z "${project_version}" || "${base_version}" != "${project_version}" ]]; then
+              echo "package version ${PACKAGE_VERSION} does not match CMake project version ${project_version:-unknown}" >&2
+              exit 1
+            fi
+          fi
+
+      - name: Build, test, and inspect RPM packages in Fedora
+        run: |
+          mkdir -p ci-logs/rpm
+          docker run --rm --platform linux/amd64 \
+            -v "${PWD}:/work" \
+            -w /work \
+            -e CC=clang \
+            -e CXX=clang++ \
+            -e MINITUN_PACKAGE_VERSION="${PACKAGE_VERSION}" \
+            fedora:43 \
+            bash -euo pipefail -c '
+              dnf install -y --setopt=install_weak_deps=False \
+                asio-devel \
+                boost-devel \
+                clang \
+                cli11-devel \
+                cmake \
+                file \
+                findutils \
+                gcc-c++ \
+                git \
+                gtest-devel \
+                gzip \
+                json-devel \
+                ninja-build \
+                openssl \
+                openssl-devel \
+                pkgconf-pkg-config \
+                python3 \
+                rpm-build \
+                spdlog-devel \
+                sqlite-devel \
+                tar
+              git config --global --add safe.directory /work
+              version_arguments=()
+              if [[ -n "${MINITUN_PACKAGE_VERSION}" ]]; then
+                version_arguments+=("-DMINITUN_PACKAGE_VERSION=${MINITUN_PACKAGE_VERSION}")
+              fi
+              cmake --preset package-rpm "${version_arguments[@]}"
+              cmake --build --preset package-rpm --parallel 2
+              ctest --test-dir build/package-rpm --output-on-failure --no-tests=error
+              cpack --config build/package-rpm/CPackConfig.cmake -G RPM
+              packaging/tests/verify-rpm.sh build/package-rpm
+            ' 2>&1 | tee ci-logs/rpm/build-test-package.log
+
+      - name: Smoke test RPM packages in clean Fedora
+        run: |
+          docker run --rm --platform linux/amd64 \
+            -v "${PWD}/build/package-rpm:/packages:ro" \
+            -v "${PWD}/packaging/tests:/tests:ro" \
+            fedora:43 \
+            /tests/smoke-rpm.sh /packages \
+            2>&1 | tee ci-logs/rpm/smoke.log
+
+      - name: Prepare RPM artifacts
+        run: |
+          client_package=$(find build/package-rpm -maxdepth 1 -type f \
+            -name 'minitun-client-*.x86_64.rpm')
+          server_package=$(find build/package-rpm -maxdepth 1 -type f \
+            -name 'minitun-server-*.x86_64.rpm')
+          test -n "${client_package}"
+          test -n "${server_package}"
+
+          artifact_version=${PACKAGE_VERSION}
+          if [[ -z "${artifact_version}" ]]; then
+            native_name=${client_package##*/minitun-client-}
+            artifact_version=${native_name%-*.x86_64.rpm}
+          fi
+
+          install -d dist/rpm
+          install -m 0644 "${client_package}" \
+            "dist/rpm/minitun-client-${artifact_version}-linux-x86_64.rpm"
+          install -m 0644 "${server_package}" \
+            "dist/rpm/minitun-server-${artifact_version}-linux-x86_64.rpm"
+          (cd dist/rpm && sha256sum ./*.rpm >SHA256SUMS)
+
+      - name: Upload RPM packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: minitun-rpm-x86_64
+          if-no-files-found: error
+          retention-days: 14
+          path: dist/rpm/
+
+      - name: Upload RPM logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: minitun-rpm-x86_64-logs
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            ci-logs/rpm/
+            build/package-rpm/Testing/Temporary/

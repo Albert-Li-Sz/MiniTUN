@@ -19,6 +19,28 @@ option(MINITUN_ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer" OFF)
 option(MINITUN_ENABLE_TSAN "Enable ThreadSanitizer" OFF)
 option(MINITUN_ENABLE_LTO "Enable interprocedural optimization" OFF)
 option(MINITUN_BUILD_PACKAGES "Enable package-generation support" OFF)
+set(MINITUN_PACKAGE_VERSION "" CACHE STRING
+    "Optional package version override (MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH-rc.NUMBER)"
+)
+if(MINITUN_PACKAGE_VERSION STREQUAL "")
+    set(MINITUN_PACKAGE_VERSION "${PROJECT_VERSION}")
+endif()
+
+if(NOT MINITUN_PACKAGE_VERSION MATCHES
+   "^[0-9]+\\.[0-9]+\\.[0-9]+(-rc\\.[0-9]+)?$")
+    message(FATAL_ERROR
+        "MINITUN_PACKAGE_VERSION must be MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH-rc.NUMBER"
+    )
+endif()
+
+string(REGEX REPLACE "-rc\\.[0-9]+$" ""
+    MINITUN_PACKAGE_BASE_VERSION "${MINITUN_PACKAGE_VERSION}"
+)
+if(NOT "${MINITUN_PACKAGE_BASE_VERSION}" STREQUAL "${PROJECT_VERSION}")
+    message(FATAL_ERROR
+        "MINITUN_PACKAGE_VERSION base version must match PROJECT_VERSION (${PROJECT_VERSION})"
+    )
+endif()
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

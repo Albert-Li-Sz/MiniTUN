@@ -2,8 +2,8 @@
 set -eu
 
 package_directory=${1:?usage: smoke-rpm.sh PACKAGE_DIRECTORY}
-client_package=$(find "$package_directory" -maxdepth 1 -type f -name 'minitun-client-*-1.x86_64.rpm')
-server_package=$(find "$package_directory" -maxdepth 1 -type f -name 'minitun-server-*-1.x86_64.rpm')
+client_package=$(find "$package_directory" -maxdepth 1 -type f -name 'minitun-client-*.x86_64.rpm')
+server_package=$(find "$package_directory" -maxdepth 1 -type f -name 'minitun-server-*.x86_64.rpm')
 [ -n "$client_package" ]
 [ -n "$server_package" ]
 

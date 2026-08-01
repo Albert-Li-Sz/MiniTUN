@@ -423,10 +423,12 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
                 .server_time_seconds = common::unix_seconds_now(),
                 .nonce = challenge_nonce_,
             });
-            if (!ack_payload ||
-                !co_await write_frame({protocol::MessageType::hello_ack, 0U, hello_frame.request_id,
-                                       std::move(*ack_payload)},
-                                      server_->options_.handshake_timeout)) {
+            if (!ack_payload) {
+                co_return false;
+            }
+            const protocol::Frame hello_ack_frame{protocol::MessageType::hello_ack, 0U,
+                                                  hello_frame.request_id, std::move(*ack_payload)};
+            if (!co_await write_frame(hello_ack_frame, server_->options_.handshake_timeout)) {
                 co_return false;
             }
 
@@ -469,10 +471,11 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
                 auto error_payload =
                     protocol::encode_auth_error({common::ErrorCode::resource_exhausted});
                 if (error_payload) {
-                    static_cast<void>(
-                        co_await write_frame({protocol::MessageType::auth_error, 0U,
-                                              auth_frame->request_id, std::move(*error_payload)},
-                                             server_->options_.handshake_timeout));
+                    const protocol::Frame auth_error_frame{protocol::MessageType::auth_error, 0U,
+                                                           auth_frame->request_id,
+                                                           std::move(*error_payload)};
+                    static_cast<void>(co_await write_frame(auth_error_frame,
+                                                           server_->options_.handshake_timeout));
                 }
                 co_return false;
             }
@@ -490,10 +493,12 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
                 .min_idle_workers = server_->options_.min_idle_workers,
                 .max_idle_workers = server_->options_.max_idle_workers,
             });
-            if (!ok_payload ||
-                !co_await write_frame({protocol::MessageType::auth_ok, 0U, auth_frame->request_id,
-                                       std::move(*ok_payload)},
-                                      server_->options_.handshake_timeout)) {
+            if (!ok_payload) {
+                co_return false;
+            }
+            const protocol::Frame auth_ok_frame{protocol::MessageType::auth_ok, 0U,
+                                                auth_frame->request_id, std::move(*ok_payload)};
+            if (!co_await write_frame(auth_ok_frame, server_->options_.handshake_timeout)) {
                 co_return false;
             }
             server_->auth_rate_limiter_.record_success(remote_endpoint_);
@@ -503,9 +508,10 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
         [[nodiscard]] asio::awaitable<bool> reject_authentication(const std::uint64_t request_id) {
             auto payload = protocol::encode_auth_error({common::ErrorCode::authentication_failed});
             if (payload) {
-                static_cast<void>(co_await write_frame(
-                    {protocol::MessageType::auth_error, 0U, request_id, std::move(*payload)},
-                    server_->options_.handshake_timeout));
+                const protocol::Frame auth_error_frame{protocol::MessageType::auth_error, 0U,
+                                                       request_id, std::move(*payload)};
+                static_cast<void>(
+                    co_await write_frame(auth_error_frame, server_->options_.handshake_timeout));
             }
             common::log_warn("remote client authentication failed",
                              log_context(common::ErrorCode::authentication_failed));
@@ -523,10 +529,13 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
             worker_id_ = hello->worker_id;
 
             auto accepted_payload = protocol::encode_worker_accepted({worker_id_});
-            if (!accepted_payload ||
-                !co_await write_frame({protocol::MessageType::worker_accepted, 0U,
-                                       hello_frame.request_id, std::move(*accepted_payload)},
-                                      server_->options_.handshake_timeout)) {
+            if (!accepted_payload) {
+                co_return;
+            }
+            const protocol::Frame accepted_frame{protocol::MessageType::worker_accepted, 0U,
+                                                 hello_frame.request_id,
+                                                 std::move(*accepted_payload)};
+            if (!co_await write_frame(accepted_frame, server_->options_.handshake_timeout)) {
                 co_return;
             }
 
@@ -583,9 +592,12 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
             const std::string connection_id_text = connection_id->str();
             auto relay_payload = protocol::encode_start_relay(
                 {worker_assignment_->binding.tunnel_id, connection_id_text});
-            if (!relay_payload || !co_await write_frame({protocol::MessageType::start_relay, 0U, 1U,
-                                                         std::move(*relay_payload)},
-                                                        server_->options_.handshake_timeout)) {
+            if (!relay_payload) {
+                co_return;
+            }
+            const protocol::Frame relay_frame{protocol::MessageType::start_relay, 0U, 1U,
+                                              std::move(*relay_payload)};
+            if (!co_await write_frame(relay_frame, server_->options_.handshake_timeout)) {
                 co_return;
             }
             auto local_result = co_await read_frame(server_->options_.handshake_timeout);
@@ -637,18 +649,23 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
                     const auto missing = static_cast<std::uint16_t>(
                         server_->options_.min_idle_workers - idle_workers);
                     auto request_payload = protocol::encode_request_workers({missing});
-                    if (!request_payload ||
-                        !co_await write_frame({protocol::MessageType::request_workers, 0U, sequence,
-                                               std::move(*request_payload)},
-                                              server_->options_.heartbeat_timeout)) {
+                    if (!request_payload) {
+                        co_return;
+                    }
+                    const protocol::Frame request_frame{protocol::MessageType::request_workers, 0U,
+                                                        sequence, std::move(*request_payload)};
+                    if (!co_await write_frame(request_frame, server_->options_.heartbeat_timeout)) {
                         co_return;
                     }
                 }
 
                 auto ping_payload = protocol::encode_heartbeat({sequence});
-                if (!ping_payload || !co_await write_frame({protocol::MessageType::ping, 0U,
-                                                            sequence, std::move(*ping_payload)},
-                                                           server_->options_.heartbeat_timeout)) {
+                if (!ping_payload) {
+                    co_return;
+                }
+                const protocol::Frame ping_frame{protocol::MessageType::ping, 0U, sequence,
+                                                 std::move(*ping_payload)};
+                if (!co_await write_frame(ping_frame, server_->options_.heartbeat_timeout)) {
                     co_return;
                 }
 
@@ -684,10 +701,13 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
                             co_return;
                         }
                         auto pong_payload = protocol::encode_heartbeat(*ping);
-                        if (!pong_payload ||
-                            !co_await write_frame({protocol::MessageType::pong, 0U,
-                                                   frame->request_id, std::move(*pong_payload)},
-                                                  remaining)) {
+                        if (!pong_payload) {
+                            co_return;
+                        }
+                        const protocol::Frame pong_frame{protocol::MessageType::pong, 0U,
+                                                         frame->request_id,
+                                                         std::move(*pong_payload)};
+                        if (!co_await write_frame(pong_frame, remaining)) {
                             co_return;
                         }
                         continue;
@@ -729,15 +749,20 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
             if (!registered) {
                 auto payload = protocol::encode_register_tunnel_error(
                     {registration->tunnel_id, registered.error().code()});
-                co_return payload&& co_await write_frame(
-                    {protocol::MessageType::register_tunnel_error, 0U, frame.request_id,
-                     std::move(*payload)},
-                    timeout);
+                if (!payload) {
+                    co_return false;
+                }
+                const protocol::Frame error_frame{protocol::MessageType::register_tunnel_error, 0U,
+                                                  frame.request_id, std::move(*payload)};
+                co_return co_await write_frame(error_frame, timeout);
             }
             auto payload = protocol::encode_register_tunnel_ok({registration->tunnel_id});
-            co_return payload&& co_await write_frame({protocol::MessageType::register_tunnel_ok, 0U,
-                                                      frame.request_id, std::move(*payload)},
-                                                     timeout);
+            if (!payload) {
+                co_return false;
+            }
+            const protocol::Frame accepted_frame{protocol::MessageType::register_tunnel_ok, 0U,
+                                                 frame.request_id, std::move(*payload)};
+            co_return co_await write_frame(accepted_frame, timeout);
         }
 
         [[nodiscard]] asio::awaitable<bool>
@@ -749,9 +774,12 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
             server_->tunnel_registry_.unregister_tunnel(client_id_, generation_,
                                                         removal->tunnel_id);
             auto payload = protocol::encode_unregister_tunnel_ok({removal->tunnel_id});
-            co_return payload&& co_await write_frame({protocol::MessageType::unregister_tunnel_ok,
-                                                      0U, frame.request_id, std::move(*payload)},
-                                                     timeout);
+            if (!payload) {
+                co_return false;
+            }
+            const protocol::Frame removed_frame{protocol::MessageType::unregister_tunnel_ok, 0U,
+                                                frame.request_id, std::move(*payload)};
+            co_return co_await write_frame(removed_frame, timeout);
         }
 
         [[nodiscard]] asio::awaitable<common::Result<protocol::Frame>> read_initial_frame() {
@@ -780,7 +808,7 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
             co_return frame;
         }
 
-        [[nodiscard]] asio::awaitable<bool> write_frame(protocol::Frame frame,
+        [[nodiscard]] asio::awaitable<bool> write_frame(const protocol::Frame& frame,
                                                         const std::chrono::seconds timeout) {
             if (!state_.has_value()) {
                 co_return false;

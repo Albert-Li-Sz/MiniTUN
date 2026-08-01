@@ -1,0 +1,141 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  validate-tag:
+    name: Validate release tag
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      package_version: ${{ steps.version.outputs.package_version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Validate tag and project version
+        id: version
+        run: |
+          tag=${GITHUB_REF_NAME}
+          if [[ ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
+            echo "invalid release tag: ${tag}" >&2
+            exit 1
+          fi
+
+          package_version=${tag#v}
+          base_version=${package_version%%-rc.*}
+          project_version=$(awk '$1 == "VERSION" { print $2; exit }' CMakeLists.txt)
+          if [[ -z "${project_version}" || "${base_version}" != "${project_version}" ]]; then
+            echo "tag ${tag} does not match CMake project version ${project_version:-unknown}" >&2
+            exit 1
+          fi
+
+          prerelease=false
+          if [[ "${package_version}" == *-rc.* ]]; then
+            prerelease=true
+          fi
+
+          echo "package_version=${package_version}" >>"${GITHUB_OUTPUT}"
+          echo "prerelease=${prerelease}" >>"${GITHUB_OUTPUT}"
+
+  packages:
+    name: Build tested packages
+    needs: validate-tag
+    permissions:
+      contents: read
+    uses: ./.github/workflows/package.yml
+    with:
+      package_version: ${{ needs.validate-tag.outputs.package_version }}
+
+  publish:
+    name: Publish GitHub Release
+    needs:
+      - validate-tag
+      - packages
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: write
+
+    steps:
+      - name: Download DEB artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: minitun-deb-amd64
+          path: release-assets/deb
+
+      - name: Download RPM artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: minitun-rpm-x86_64
+          path: release-assets/rpm
+
+      - name: Assemble and verify release assets
+        env:
+          PACKAGE_VERSION: ${{ needs.validate-tag.outputs.package_version }}
+        run: |
+          client_deb="release-assets/deb/minitun-client-${PACKAGE_VERSION}-linux-amd64.deb"
+          server_deb="release-assets/deb/minitun-server-${PACKAGE_VERSION}-linux-amd64.deb"
+          client_rpm="release-assets/rpm/minitun-client-${PACKAGE_VERSION}-linux-x86_64.rpm"
+          server_rpm="release-assets/rpm/minitun-server-${PACKAGE_VERSION}-linux-x86_64.rpm"
+
+          test -f "${client_deb}"
+          test -f "${server_deb}"
+          test -f "${client_rpm}"
+          test -f "${server_rpm}"
+
+          install -d release-assets/dist
+          install -m 0644 "${client_deb}" release-assets/dist/
+          install -m 0644 "${server_deb}" release-assets/dist/
+          install -m 0644 "${client_rpm}" release-assets/dist/
+          install -m 0644 "${server_rpm}" release-assets/dist/
+          (cd release-assets/dist && sha256sum ./*.deb ./*.rpm >SHA256SUMS)
+          (cd release-assets/dist && sha256sum --check SHA256SUMS)
+
+      - name: Upload assembled release artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: minitun-release-${{ needs.validate-tag.outputs.package_version }}
+          if-no-files-found: error
+          retention-days: 30
+          path: release-assets/dist/
+
+      - name: Create GitHub Release
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ needs.validate-tag.outputs.prerelease }}
+        run: |
+          release_arguments=(
+            --generate-notes
+            --title "${GITHUB_REF_NAME}"
+            --verify-tag
+          )
+          if [[ "${PRERELEASE}" == true ]]; then
+            release_arguments+=(--prerelease)
+          else
+            release_arguments+=(--latest)
+          fi
+          gh release create \
+            "${GITHUB_REF_NAME}" \
+            release-assets/dist/* \
+            "${release_arguments[@]}"
