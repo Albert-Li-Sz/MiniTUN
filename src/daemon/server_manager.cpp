@@ -869,14 +869,13 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
             return common::Result<std::shared_ptr<Impl>>::failure(
                 common::ErrorCode::invalid_argument, "server manager requires a client ID");
         }
-        auto tls_context =
+        auto validated_tls_context =
             protocol::make_client_tls_context({.ca_certificate_path = options.ca_certificate_path});
-        if (!tls_context) {
-            return common::Result<std::shared_ptr<Impl>>::failure(tls_context.error());
+        if (!validated_tls_context) {
+            return common::Result<std::shared_ptr<Impl>>::failure(validated_tls_context.error());
         }
         return std::shared_ptr<Impl>{new Impl(io_context, repository, credentials,
-                                              std::move(client_id), std::move(options),
-                                              std::move(*tls_context))};
+                                              std::move(client_id), std::move(options))};
     }
 
     ~Impl() { stop(); }
@@ -923,11 +922,9 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
 
   private:
     Impl(asio::io_context& io_context, storage::StateRepository& repository,
-         storage::CredentialStore& credentials, common::Id client_id, ServerManagerOptions options,
-         std::shared_ptr<asio::ssl::context> tls_context)
+         storage::CredentialStore& credentials, common::Id client_id, ServerManagerOptions options)
         : io_context_(io_context), repository_(repository), credentials_(credentials),
           client_id_(std::move(client_id)), options_(std::move(options)),
-          tls_context_(std::move(tls_context)),
           worker_budget_(std::make_shared<WorkerBudget>(options_.max_total_idle_workers)),
           connection_budget_(std::make_shared<WorkerBudget>(options_.max_total_connections)),
           strand_(asio::make_strand(io_context)), reconcile_timer_(strand_) {}
@@ -972,9 +969,20 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                     sessions_.erase(existing);
                 }
                 if (record.actual_state != storage::ServerActualState::not_authenticated) {
+                    auto tls_context = protocol::make_client_tls_context(
+                        {.ca_certificate_path = options_.ca_certificate_path});
+                    if (!tls_context) {
+                        common::log_error(
+                            "failed to create isolated TLS context for server session",
+                            {.component = "daemon.server-manager",
+                             .server_id = record.id.str(),
+                             .remote_endpoint = record.endpoint.to_string(),
+                             .error_code = tls_context.error().code()});
+                        continue;
+                    }
                     auto session = std::make_shared<ServerSession>(
-                        io_context_, repository_, credentials_, client_id_, record, tls_context_,
-                        worker_budget_, connection_budget_, options_);
+                        io_context_, repository_, credentials_, client_id_, record,
+                        std::move(*tls_context), worker_budget_, connection_budget_, options_);
                     sessions_.emplace(id, session);
                     session->start();
                 }
@@ -1011,7 +1019,6 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
     storage::CredentialStore& credentials_;
     common::Id client_id_;
     ServerManagerOptions options_;
-    std::shared_ptr<asio::ssl::context> tls_context_;
     std::shared_ptr<WorkerBudget> worker_budget_;
     std::shared_ptr<WorkerBudget> connection_budget_;
     asio::strand<asio::io_context::executor_type> strand_;
