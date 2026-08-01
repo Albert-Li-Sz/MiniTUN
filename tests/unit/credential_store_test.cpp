@@ -1,4 +1,5 @@
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <thread>
@@ -25,7 +26,7 @@ TEST(CredentialStoreTest, PersistsUpdatesAndRemovesSecretsInPrivateFile) {
     auto store = SqliteCredentialStore::open(temporary.path_string());
 
     ASSERT_TRUE(store) << store.error();
-    struct stat status {};
+    struct stat status{};
     ASSERT_EQ(::stat(temporary.path_string().c_str(), &status), 0);
     EXPECT_EQ(status.st_mode & 0777, 0600);
 
@@ -104,6 +105,25 @@ TEST(CredentialStoreTest, SerializesConcurrentAccess) {
     for (auto& worker : workers) {
         worker.join();
     }
+}
+
+TEST(CredentialStoreTest, RejectsSymbolicLinksAndWritableParentDirectories) {
+    TemporaryDatabaseFile temporary;
+    const auto target = temporary.directory() / "target.db";
+    test::write_binary_file(target, "preserve-me");
+    const auto symbolic_link = temporary.directory() / "credentials-link.db";
+    std::filesystem::create_symlink(target, symbolic_link);
+
+    const auto symbolic = SqliteCredentialStore::open(symbolic_link.string());
+    ASSERT_FALSE(symbolic);
+    EXPECT_EQ(symbolic.error().code(), common::ErrorCode::permission_denied);
+    EXPECT_EQ(test::read_binary_file(target), "preserve-me");
+
+    ASSERT_EQ(::chmod(temporary.directory().c_str(), 0770), 0);
+    const auto writable_parent = SqliteCredentialStore::open(temporary.path_string());
+    ASSERT_FALSE(writable_parent);
+    EXPECT_EQ(writable_parent.error().code(), common::ErrorCode::permission_denied);
+    ASSERT_EQ(::chmod(temporary.directory().c_str(), 0700), 0);
 }
 
 } // namespace

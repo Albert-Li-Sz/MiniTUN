@@ -1,6 +1,6 @@
 # Security design status
 
-Stage 11 provides a protected local control plane, authenticated TLS control sessions,
+Stage 12 provides a protected local control plane, authenticated TLS control sessions,
 generation-scoped TLS Worker Pools, a bounded raw TCP relay data plane, and tracked
 graceful shutdown.
 
@@ -10,8 +10,10 @@ Implemented local protections include:
 - a `0660` Unix socket in a trusted daemon-owned directory;
 - safe stale-socket replacement, connection limits, deadlines, and exception
   containment;
-- daemon-only SQLite ownership and transactional resource mutations;
-- a separate daemon-owned `0600` credential database;
+- daemon-owned state and credential databases with exact `0600` permissions;
+- refusal of symbolic links, multiply-linked files, non-regular files, ownership
+  mismatches, and group/world-writable parent directories;
+- descriptor/path inode verification across SQLite open to detect path replacement;
 - bound credential values, secure SQLite deletion, and schema refusal rather than
   destructive rebuilding;
 - non-echoing interactive Token input and explicit `--token-stdin` automation;
@@ -48,3 +50,8 @@ connection budget, strand-serialized session ownership, bounded pending-connecti
 lifetimes, best-effort `GOAWAY`, and deadline-enforced relay draining. Capacity uses
 move-only leases so rejection, timeout, cancellation, half-close, and ordinary teardown
 cannot leak or double-release a quota slot.
+
+Stage 12 validates the complete suite under AddressSanitizer, UndefinedBehaviorSanitizer,
+and ThreadSanitizer. TLS stream objects remain alive until all cancelled asynchronous
+operations have completed, including during `GOAWAY` shutdown. Dedicated libFuzzer
+targets exercise remote frames, IPC frames, IPC JSON, endpoints, and port ranges.

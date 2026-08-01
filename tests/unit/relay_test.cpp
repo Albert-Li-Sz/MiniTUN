@@ -17,6 +17,13 @@
 namespace minitun::protocol {
 namespace {
 
+asio::awaitable<void>
+run_relay_with_invalid_timeout(TlsStream& tls_stream, asio::ip::tcp::socket& tcp_socket,
+                               std::optional<common::Result<RelayStats>>& outcome) {
+    outcome = co_await relay_tls_and_tcp(tls_stream, tcp_socket,
+                                         {.inactivity_timeout = std::chrono::seconds::zero()});
+}
+
 TEST(RelayTest, UsesFixedBoundedDirectionBuffersAndZeroedStatistics) {
     EXPECT_EQ(kRelayBufferSize, 16U * 1024U);
     EXPECT_EQ(RelayStats{}, RelayStats{});
@@ -29,14 +36,8 @@ TEST(RelayTest, RejectsInvalidInactivityTimeoutBeforeUsingSockets) {
     asio::ip::tcp::socket tcp_socket{io_context};
     std::optional<common::Result<RelayStats>> outcome;
 
-    asio::co_spawn(
-        io_context,
-        [&]() -> asio::awaitable<void> {
-            outcome = co_await relay_tls_and_tcp(
-                tls_stream, tcp_socket, {.inactivity_timeout = std::chrono::seconds::zero()});
-            co_return;
-        }(),
-        [](const std::exception_ptr failure) { EXPECT_FALSE(failure); });
+    asio::co_spawn(io_context, run_relay_with_invalid_timeout(tls_stream, tcp_socket, outcome),
+                   [](const std::exception_ptr failure) { EXPECT_FALSE(failure); });
     io_context.run();
 
     ASSERT_TRUE(outcome.has_value());

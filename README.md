@@ -3,7 +3,7 @@
 MiniTun is an independently implemented TCP reverse-tunnelling system for Linux. It
 uses C++20 and is intentionally not compatible with the FRP protocol.
 
-The repository is currently at **development stage 10**. The local control plane is
+The repository is currently at **development stage 12**. The local control plane is
 operational: the stateless `minitun` CLI talks to `minitund` over a protected Unix
 socket, and the daemon persists server and tunnel intent in SQLite. It supports all
 `server`, `tun`, `status`, and `daemon status` commands, structured JSON inspection,
@@ -27,14 +27,16 @@ and switch to a raw TLS byte stream. The relay uses fixed 16 KiB buffers in each
 direction, read/write backpressure, TCP half-close propagation, cancellation,
 inactivity deadlines, and byte statistics.
 
-Authentication material is stored separately in `/var/lib/minitun/credentials.db`,
-whose file mode is enforced as `0600`; Tokens are never stored in `state.db`, returned
-by IPC, or printed by the CLI. `server login` stores a Token and wakes reconciliation;
-the daemon then authenticates the corresponding remote session without exposing the
-secret.
+Authentication material is stored separately in `/var/lib/minitun/credentials.db`.
+Both SQLite databases enforce daemon ownership, exact `0600` permissions, one hard
+link, a trusted private parent directory, no symbolic-link traversal, and stable inode
+identity across open. Tokens are never stored in `state.db`, returned by IPC, or
+printed by the CLI. `server login` stores a Token and wakes reconciliation; the daemon
+then authenticates the corresponding remote session without exposing the secret.
 
-The TCP data path and graceful lifecycle are operational. Remaining work focuses on
-security validation, Linux installation, packages, and release automation.
+The TCP data path and graceful lifecycle are operational. ASan, UBSan, TSan, and five
+libFuzzer entry points cover the security-sensitive parsers and concurrent shutdown
+paths. Remaining work focuses on Linux installation, packages, and release automation.
 
 ## Run the TLS server
 

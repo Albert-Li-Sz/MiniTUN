@@ -33,7 +33,35 @@ MINITUN_BUILD_PACKAGES
 ```
 
 Sanitizer builds have their own presets. TSan is intentionally kept separate from
-ASan/UBSan.
+ASan/UBSan:
+
+```bash
+cmake --preset asan
+cmake --build --preset asan --parallel 2
+ctest --preset asan
+
+cmake --preset ubsan
+cmake --build --preset ubsan --parallel 2
+ctest --preset ubsan
+
+cmake --preset tsan
+cmake --build --preset tsan --parallel 2
+ctest --preset tsan
+```
+
+Build and smoke-test every fuzz target with Clang and libFuzzer:
+
+```bash
+cmake --preset fuzz
+cmake --build --preset fuzz --parallel 2
+for target in remote_frame ipc_frame ipc_json endpoint port_range; do
+  "build/fuzz/minitun_${target}_fuzz" -runs=2000 -max_total_time=10
+done
+```
+
+Apple's command-line-tools Clang may omit the libFuzzer runtime. On a Homebrew LLVM
+installation, configure the fuzz preset once with
+`-DCMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm/bin/clang++`.
 
 ## Local control and multi-server development
 
@@ -97,8 +125,8 @@ ctest --test-dir build/dev --output-on-failure -R '(Storage|Recovery|Credential)
 The tests cover fresh and repeated migration, refusal of future, drifted, or malformed
 schemas, migration rollback, connection policy, transaction commit/rollback/isolation,
 repository validation and constraints, monotonic timestamps, tombstone behavior,
-restart-state recovery, credential permissions and CRUD, and concurrent daemon
-mutations.
+restart-state recovery, credential permissions and CRUD, unsafe links and parent
+directories, and concurrent daemon mutations.
 
 `minitund` accepts `--database` and `--credentials`, opens both stores, runs state
 recovery, checks credential references, and only then starts IPC. Tests must pass paths

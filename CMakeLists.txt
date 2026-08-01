@@ -106,6 +106,7 @@ minitun_apply_lto(minitun_protocol)
 add_library(minitun_storage STATIC
     src/storage/credential_store.cpp
     src/storage/database.cpp
+    src/storage/file_security.cpp
     src/storage/models.cpp
     src/storage/server_repository.cpp
     src/storage/sqlite_internal.cpp
@@ -227,17 +228,36 @@ if(MINITUN_BUILD_FUZZERS)
         message(FATAL_ERROR "MINITUN_BUILD_FUZZERS requires Clang with libFuzzer")
     endif()
 
-    target_compile_options(minitun_protocol PRIVATE -fsanitize=fuzzer-no-link)
+    foreach(target minitun_common minitun_protocol minitun_ipc)
+        target_compile_options("${target}" PRIVATE -fsanitize=fuzzer-no-link)
+    endforeach()
 
-    add_executable(minitun_remote_frame_fuzz fuzz/remote_frame_fuzz.cpp)
-    target_link_libraries(minitun_remote_frame_fuzz
-        PRIVATE
-            MiniTun::protocol
-            minitun_project_warnings
+    function(minitun_add_fuzzer target source)
+        add_executable("${target}" "${source}")
+        target_link_libraries("${target}"
+            PRIVATE
+                ${ARGN}
+                minitun_project_warnings
+        )
+        target_compile_options("${target}" PRIVATE -fsanitize=fuzzer)
+        target_link_options("${target}" PRIVATE -fsanitize=fuzzer)
+        minitun_apply_sanitizers("${target}")
+    endfunction()
+
+    minitun_add_fuzzer(minitun_remote_frame_fuzz fuzz/remote_frame_fuzz.cpp MiniTun::protocol)
+    minitun_add_fuzzer(minitun_ipc_frame_fuzz fuzz/ipc_frame_fuzz.cpp MiniTun::ipc)
+    minitun_add_fuzzer(minitun_ipc_json_fuzz fuzz/ipc_json_fuzz.cpp MiniTun::ipc)
+    minitun_add_fuzzer(minitun_endpoint_fuzz fuzz/endpoint_fuzz.cpp MiniTun::common)
+    minitun_add_fuzzer(minitun_port_range_fuzz fuzz/port_range_fuzz.cpp MiniTun::common)
+
+    add_custom_target(minitun_fuzzers
+        DEPENDS
+            minitun_remote_frame_fuzz
+            minitun_ipc_frame_fuzz
+            minitun_ipc_json_fuzz
+            minitun_endpoint_fuzz
+            minitun_port_range_fuzz
     )
-    target_compile_options(minitun_remote_frame_fuzz PRIVATE -fsanitize=fuzzer)
-    target_link_options(minitun_remote_frame_fuzz PRIVATE -fsanitize=fuzzer)
-    minitun_apply_sanitizers(minitun_remote_frame_fuzz)
 endif()
 
 if(MINITUN_BUILD_PACKAGES)

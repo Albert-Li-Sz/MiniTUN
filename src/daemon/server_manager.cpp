@@ -668,7 +668,6 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
         void close_transport() noexcept {
             if (stream_ != nullptr) {
                 protocol::close_tls_stream(*stream_);
-                stream_.reset();
             }
         }
 

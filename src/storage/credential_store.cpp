@@ -1,9 +1,6 @@
 #include <minitun/storage/credential_store.hpp>
 
-#include <cerrno>
 #include <cstdint>
-#include <cstring>
-#include <limits>
 #include <memory>
 #include <mutex>
 #include <new>
@@ -11,16 +8,13 @@
 #include <string_view>
 #include <utility>
 
-#include <fcntl.h>
 #include <sqlite3.h>
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <unistd.h>
 
 #include <minitun/common/error.hpp>
 #include <minitun/common/time.hpp>
 #include <minitun/storage/database.hpp>
 
+#include "file_security.hpp"
 #include "sqlite_internal.hpp"
 
 namespace minitun::storage {
@@ -44,20 +38,6 @@ CREATE TABLE credentials (
 )
 )sql";
 
-[[nodiscard]] common::Error posix_error(const int error_number,
-                                         const std::string_view operation) {
-    common::ErrorCode code = common::ErrorCode::database_error;
-    if (error_number == EACCES || error_number == EPERM || error_number == ELOOP) {
-        code = common::ErrorCode::permission_denied;
-    } else if (error_number == ENOENT || error_number == ENOTDIR) {
-        code = common::ErrorCode::not_found;
-    }
-    std::string message{operation};
-    message.append(" failed: ");
-    message.append(std::strerror(error_number));
-    return common::Error{code, std::move(message)};
-}
-
 [[nodiscard]] common::Result<void> validate_key(const std::string_view key) {
     return internal::validate_text(key, 1U, kMaxCredentialKeyBytes, "credential key");
 }
@@ -72,56 +52,6 @@ CREATE TABLE credentials (
                                              "credential secret must not contain NUL bytes");
     }
     return common::Result<void>::success();
-}
-
-[[nodiscard]] std::string parent_path(const std::string_view path) {
-    const auto slash = path.rfind('/');
-    if (slash == std::string_view::npos) {
-        return ".";
-    }
-    if (slash == 0U) {
-        return "/";
-    }
-    return std::string{path.substr(0U, slash)};
-}
-
-[[nodiscard]] common::Result<void> prepare_credential_file(const std::string_view path) {
-    const std::string parent = parent_path(path);
-    struct stat parent_status {};
-    if (::lstat(parent.c_str(), &parent_status) != 0) {
-        return posix_error(errno, "credential database directory inspection");
-    }
-    if (!S_ISDIR(parent_status.st_mode) || parent_status.st_uid != ::geteuid() ||
-        (parent_status.st_mode & (S_IWGRP | S_IWOTH)) != 0) {
-        return common::Result<void>::failure(
-            common::ErrorCode::permission_denied,
-            "credential database directory must be private and owned by the daemon user");
-    }
-
-    const std::string owned_path{path};
-    const int descriptor = ::open(owned_path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW,
-                                  S_IRUSR | S_IWUSR);
-    if (descriptor < 0) {
-        return posix_error(errno, "credential database file open");
-    }
-
-    common::Result<void> result = common::Result<void>::success();
-    struct stat status {};
-    if (::fstat(descriptor, &status) != 0) {
-        result = posix_error(errno, "credential database file inspection");
-    } else if (!S_ISREG(status.st_mode) || status.st_uid != ::geteuid() || status.st_nlink != 1) {
-        result = common::Result<void>::failure(
-            common::ErrorCode::permission_denied,
-            "credential database must be a daemon-owned regular file with one link");
-    } else if (::fchmod(descriptor, S_IRUSR | S_IWUSR) != 0) {
-        result = posix_error(errno, "credential database permission update");
-    }
-
-    const int close_result = ::close(descriptor);
-    if (result && close_result != 0) {
-        return posix_error(errno, "credential database file close");
-    }
-    return result;
 }
 
 [[nodiscard]] common::Result<void> rollback_with_error(sqlite3* database, common::Error error) {
@@ -154,7 +84,7 @@ SqliteCredentialStore::open(const std::string_view path) {
         return common::Error{common::ErrorCode::invalid_argument,
                              "credential database path is empty, oversized, or contains NUL"};
     }
-    auto prepared = prepare_credential_file(path);
+    auto prepared = internal::prepare_private_database_file(path, "credential database");
     if (!prepared) {
         return prepared.error();
     }
@@ -170,6 +100,10 @@ SqliteCredentialStore::open(const std::string_view path) {
             sqlite3_close_v2(handle);
         }
         return error;
+    }
+    if (auto verified = prepared->verify_path_identity(); !verified) {
+        sqlite3_close_v2(handle);
+        return verified.error();
     }
 
     sqlite3_extended_result_codes(handle, 1);
@@ -226,7 +160,8 @@ common::Result<void> SqliteCredentialStore::migrate() {
     }
 
     auto table_count = internal::query_single_int64(
-        handle_, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name NOT GLOB 'sqlite_*'",
+        handle_,
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name NOT GLOB 'sqlite_*'",
         "inspect credential schema");
     if (!table_count) {
         return table_count.error();
@@ -277,7 +212,7 @@ common::Result<void> SqliteCredentialStore::migrate() {
 }
 
 common::Result<void> SqliteCredentialStore::put(const std::string_view key,
-                                                 const std::string_view secret) {
+                                                const std::string_view secret) {
     if (auto valid = validate_key(key); !valid) {
         return valid;
     }
@@ -321,15 +256,13 @@ common::Result<void> SqliteCredentialStore::put(const std::string_view key,
     return common::Result<void>::success();
 }
 
-common::Result<common::SecureString>
-SqliteCredentialStore::get(const std::string_view key) const {
+common::Result<common::SecureString> SqliteCredentialStore::get(const std::string_view key) const {
     if (auto valid = validate_key(key); !valid) {
         return valid.error();
     }
     std::scoped_lock lock{mutex_};
-    auto statement = internal::Statement::prepare(handle_,
-                                                  "SELECT secret FROM credentials WHERE key = ?1",
-                                                  "read credential");
+    auto statement = internal::Statement::prepare(
+        handle_, "SELECT secret FROM credentials WHERE key = ?1", "read credential");
     if (!statement) {
         return statement.error();
     }
@@ -355,8 +288,8 @@ SqliteCredentialStore::get(const std::string_view key) const {
                              "credential database contains an invalid secret"};
     }
     try {
-        common::SecureString secret{std::string_view{static_cast<const char*>(data),
-                                                     static_cast<std::size_t>(byte_count)}};
+        common::SecureString secret{
+            std::string_view{static_cast<const char*>(data), static_cast<std::size_t>(byte_count)}};
         step = statement->step();
         if (!step || *step != internal::StepResult::done) {
             return !step ? step.error()
@@ -379,8 +312,8 @@ common::Result<void> SqliteCredentialStore::remove(const std::string_view key) {
     if (!begun) {
         return begun;
     }
-    auto statement = internal::Statement::prepare(
-        handle_, "DELETE FROM credentials WHERE key = ?1", "remove credential");
+    auto statement = internal::Statement::prepare(handle_, "DELETE FROM credentials WHERE key = ?1",
+                                                  "remove credential");
     if (!statement) {
         return rollback_with_error(handle_, statement.error());
     }

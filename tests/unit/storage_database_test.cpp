@@ -8,6 +8,9 @@
 #include <string_view>
 #include <utility>
 
+#include <sys/stat.h>
+#include <unistd.h>
+
 #include <gtest/gtest.h>
 
 #include <minitun/common/endpoint.hpp>
@@ -82,6 +85,12 @@ TEST(StorageDatabaseTest, FreshDatabaseMigratesCompleteVersionTwoSchema) {
     auto database = Database::open(temporary.path_string());
 
     ASSERT_TRUE(database) << database.error();
+    struct stat status{};
+    ASSERT_EQ(::lstat(temporary.path_string().c_str(), &status), 0);
+    EXPECT_TRUE(S_ISREG(status.st_mode));
+    EXPECT_EQ(status.st_uid, ::geteuid());
+    EXPECT_EQ(status.st_nlink, 1);
+    EXPECT_EQ(status.st_mode & 0777, 0600);
     const auto version = (*database)->schema_version();
     ASSERT_TRUE(version) << version.error();
     EXPECT_EQ(*version, kCurrentSchemaVersion);
@@ -107,6 +116,32 @@ TEST(StorageDatabaseTest, FreshDatabaseMigratesCompleteVersionTwoSchema) {
                                 "WHERE \"table\" = 'servers' AND \"from\" = 'server_id' "
                                 "AND \"to\" = 'id' AND on_delete = 'CASCADE'"),
               1);
+}
+
+TEST(StorageDatabaseTest, RejectsSymbolicLinksHardLinksAndWritableParentDirectories) {
+    TemporaryDatabaseFile temporary;
+    const auto target = temporary.directory() / "target.db";
+    test::write_binary_file(target, "preserve-me");
+
+    const auto symbolic_link = temporary.directory() / "symbolic.db";
+    std::filesystem::create_symlink(target, symbolic_link);
+    const auto symbolic = Database::open(symbolic_link.string());
+    ASSERT_FALSE(symbolic);
+    EXPECT_EQ(symbolic.error().code(), common::ErrorCode::permission_denied);
+    EXPECT_EQ(test::read_binary_file(target), "preserve-me");
+
+    const auto hard_link = temporary.directory() / "hard.db";
+    std::filesystem::create_hard_link(target, hard_link);
+    const auto hard = Database::open(hard_link.string());
+    ASSERT_FALSE(hard);
+    EXPECT_EQ(hard.error().code(), common::ErrorCode::permission_denied);
+    EXPECT_EQ(test::read_binary_file(target), "preserve-me");
+
+    ASSERT_EQ(::chmod(temporary.directory().c_str(), 0770), 0);
+    const auto writable_parent = Database::open(temporary.path_string());
+    ASSERT_FALSE(writable_parent);
+    EXPECT_EQ(writable_parent.error().code(), common::ErrorCode::permission_denied);
+    ASSERT_EQ(::chmod(temporary.directory().c_str(), 0700), 0);
 }
 
 TEST(StorageDatabaseTest, EnablesWalAndRequiredConnectionPolicy) {

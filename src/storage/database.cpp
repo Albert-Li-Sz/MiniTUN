@@ -14,6 +14,7 @@
 #include <minitun/common/error.hpp>
 #include <minitun/common/time.hpp>
 
+#include "file_security.hpp"
 #include "sqlite_internal.hpp"
 
 namespace minitun::storage {
@@ -684,6 +685,11 @@ common::Result<std::unique_ptr<Database>> Database::open(const std::string_view 
                              "database path is empty, oversized, or contains a NUL byte"};
     }
 
+    auto prepared = internal::prepare_private_database_file(path, "SQLite state database");
+    if (!prepared) {
+        return prepared.error();
+    }
+
     sqlite3* handle = nullptr;
     std::string owned_path{path};
     const int result = sqlite3_open_v2(
@@ -696,6 +702,10 @@ common::Result<std::unique_ptr<Database>> Database::open(const std::string_view 
             sqlite3_close_v2(handle);
         }
         return error;
+    }
+    if (auto verified = prepared->verify_path_identity(); !verified) {
+        sqlite3_close_v2(handle);
+        return verified.error();
     }
 
     sqlite3_extended_result_codes(handle, 1);

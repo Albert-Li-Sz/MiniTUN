@@ -63,6 +63,16 @@
       }
     },
     {
+      "name": "fuzz",
+      "displayName": "LibFuzzer smoke build with ASan and UBSan",
+      "inherits": "asan",
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "clang++",
+        "MINITUN_BUILD_TESTS": "OFF",
+        "MINITUN_BUILD_FUZZERS": "ON"
+      }
+    },
+    {
       "name": "package-deb",
       "displayName": "DEB package build",
       "inherits": "release",
@@ -103,6 +113,13 @@
     {
       "name": "tsan",
       "configurePreset": "tsan"
+    },
+    {
+      "name": "fuzz",
+      "configurePreset": "fuzz",
+      "targets": [
+        "minitun_fuzzers"
+      ]
     },
     {
       "name": "package-deb",
