@@ -260,6 +260,73 @@ packaging/tests/smoke-rpm.sh "$PWD/build/package-rpm"
 普通升级和卸载保留状态目录；Debian purge 删除状态目录，RPM 卸载则始终保留状态。
 软件包不会携带或覆盖管理员提供的证书、私钥和 Token。
 
+## 构建 OpenWrt APK
+
+MiniTun 使用 OpenWrt 25.12 SDK 生成 APK v3 软件包。每个 SDK 只能为对应的
+target/subtarget 交叉编译，因此不应仅根据 CPU 名称交换不同 OpenWrt 目标的包。
+官方发布矩阵如下：
+
+| target/subtarget | APK 架构 | 指令集 |
+| --- | --- | --- |
+| `x86/64` | `x86_64` | x86-64 |
+| `armsr/armv8` | `aarch64_generic` | AArch64 |
+| `armsr/armv7` | `arm_cortex-a15_neon-vfpv4` | ARMv7-A |
+| `ath79/generic` | `mips_24kc` | MIPS32 大端 |
+| `ramips/mt7621` | `mipsel_24kc` | MIPS32 小端 |
+| `sifiveu/generic` | `riscv64_generic` | RISC-V 64 |
+
+在 x86_64 Linux 构建主机上安装 SDK 前置依赖：
+
+```bash
+sudo apt-get update
+sudo apt-get install --no-install-recommends --yes \
+  build-essential ca-certificates cmake curl file gawk gettext git jq \
+  libncurses-dev ninja-build python3 qemu-user-static rsync unzip wget zstd
+```
+
+从 [OpenWrt 25.12.5 官方目录](https://downloads.openwrt.org/releases/25.12.5/targets/)
+下载与目标完全匹配的 SDK 及 `sha256sums`。以 `x86/64` 为例：
+
+```bash
+export MINITUN_SDK_ARCHIVE="$PWD/openwrt-sdk-25.12.5-x86-64_gcc-14.3.0_musl.Linux-x86_64.tar.zst"
+sha256sum --check sha256sums --ignore-missing
+
+mkdir -p build/openwrt/x86_64/sdk
+tar --zstd --extract --file "$MINITUN_SDK_ARCHIVE" \
+  --directory build/openwrt/x86_64/sdk --strip-components=1
+
+MINITUN_OPENWRT_JOBS=2 \
+  packaging/openwrt/build-sdk.sh \
+    "$PWD/build/openwrt/x86_64/sdk" "$PWD" 0.2.0
+```
+
+`build-sdk.sh` 会按 SDK 内锁定的 feed 提交安装 OpenSSL、SQLite 与 CA 依赖，
+并由 OpenWrt 下载系统获取和校验 CLI11、nlohmann/json、spdlog 与 Asio 的固定版本
+源码；CMake 随后以完全离线模式使用这些源码。脚本会清理 SDK 中的全包默认选项，
+然后仅编译 `minitun-client` 和 `minitun-server`。
+为防止混入上一次构建的配置，脚本要求 SDK 中不存在 `package/minitun`；
+重复构建时应重新解压 SDK。
+
+软件包位于 SDK 的 `bin/packages/` 目录。可使用 SDK 自带的 APK 工具、
+`file` 与 QEMU 同时验证包元数据、布局、架构和可执行文件启动：
+
+```bash
+mkdir -p build/openwrt/x86_64/packages
+find build/openwrt/x86_64/sdk/bin/packages -type f \
+  -name 'minitun-*.apk' \
+  -exec cp {} build/openwrt/x86_64/packages/ \;
+
+packaging/tests/verify-openwrt.sh \
+  "$PWD/build/openwrt/x86_64/sdk" \
+  "$PWD/build/openwrt/x86_64/packages" \
+  0.2.0 x86_64 qemu-x86_64-static
+```
+
+OpenWrt 包默认不启用服务。客户端和服务端分别使用
+`/etc/config/minitun` 与 `/etc/config/minitun-server`，由 procd 以专用非特权账户
+运行。服务端默认不向 `--allow-ports` 传值，因此应用层允许
+`1-65535`；实际可绑定范围仍受进程权限、防火墙与设备资源限制。
+
 ## CI 与发布
 
 GitHub Actions 包含四条工作流：
@@ -268,18 +335,20 @@ GitHub Actions 包含四条工作流：
 | --- | --- |
 | `ci.yml` | GCC/Clang 构建、完整 CTest 与 CLI 冒烟测试 |
 | `sanitizers.yml` | ASan、UBSan、TSan 与有界 fuzz 测试 |
-| `package.yml` | DEB/RPM 构建、内容检查和干净容器安装测试 |
+| `package.yml` | DEB/RPM 验收，以及 OpenWrt 六架构交叉编译、APK 检查与 QEMU 启动测试 |
 | `release.yml` | 校验版本 tag，复用打包工作流并创建 GitHub Release |
 
 发布 tag 必须是 `vMAJOR.MINOR.PATCH` 或 `vMAJOR.MINOR.PATCH-rc.NUMBER`，且基础版本
 必须与 `CMakeLists.txt` 中的项目版本一致：
 
 ```bash
-git tag -a v0.1.0 -m "MiniTun v0.1.0"
-git push origin v0.1.0
+git tag -a v0.2.0 -m "MiniTun v0.2.0"
+git push origin v0.2.0
 ```
 
-发布工作流仅在全部软件包测试通过后上传四个 x86_64 产物和 `SHA256SUMS`。
+发布工作流仅在全部软件包测试通过后创建 GitHub Release。每个版本
+包含四个 x86_64 DEB/RPM、六种 OpenWrt 架构的 Client/Server APK（共十二个）
+和一份覆盖全部产物的 `SHA256SUMS`。
 
 ## 开发排障
 

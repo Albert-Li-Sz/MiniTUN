@@ -307,3 +307,196 @@ jobs:
           path: |
             ci-logs/rpm/
             build/package-rpm/Testing/Temporary/
+
+  openwrt:
+    name: OpenWrt 25.12.5 / ${{ matrix.package_arch }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86
+            subtarget: "64"
+            package_arch: x86_64
+            qemu: qemu-x86_64-static
+            sdk_file: openwrt-sdk-25.12.5-x86-64_gcc-14.3.0_musl.Linux-x86_64.tar.zst
+            sdk_sha256: 0c8df0151a1e88feb7c03d694d61f6a18d51872815b7c811d76e2b77504d5e9c
+          - target: armsr
+            subtarget: armv8
+            package_arch: aarch64_generic
+            qemu: qemu-aarch64-static
+            sdk_file: openwrt-sdk-25.12.5-armsr-armv8_gcc-14.3.0_musl.Linux-x86_64.tar.zst
+            sdk_sha256: 1b0316604a3e820b2b008a1baff3f9dac6716af942bef800930e58c7de98c98b
+          - target: armsr
+            subtarget: armv7
+            package_arch: arm_cortex-a15_neon-vfpv4
+            qemu: qemu-arm-static
+            sdk_file: openwrt-sdk-25.12.5-armsr-armv7_gcc-14.3.0_musl_eabi.Linux-x86_64.tar.zst
+            sdk_sha256: b4284390873291da05651cfb5970670a6ec7d85910616b5090b2aec3b9ad6591
+          - target: ath79
+            subtarget: generic
+            package_arch: mips_24kc
+            qemu: qemu-mips-static
+            sdk_file: openwrt-sdk-25.12.5-ath79-generic_gcc-14.3.0_musl.Linux-x86_64.tar.zst
+            sdk_sha256: bc4307ae2065c0c0b7c84627356e9f3d368a5a803c81552fcb77aa034a843f5a
+          - target: ramips
+            subtarget: mt7621
+            package_arch: mipsel_24kc
+            qemu: qemu-mipsel-static
+            sdk_file: openwrt-sdk-25.12.5-ramips-mt7621_gcc-14.3.0_musl.Linux-x86_64.tar.zst
+            sdk_sha256: 9962084f4131610e90e48bc864c6ceade0b238f15f335de5f672910532b20e9c
+          - target: sifiveu
+            subtarget: generic
+            package_arch: riscv64_generic
+            qemu: qemu-riscv64-static
+            sdk_file: openwrt-sdk-25.12.5-sifiveu-generic_gcc-14.3.0_musl.Linux-x86_64.tar.zst
+            sdk_sha256: f5d7d584acd386883294011442b251c006a5a17ba68c990742efd8738931a70d
+    env:
+      OPENWRT_VERSION: 25.12.5
+      PACKAGE_VERSION: ${{ inputs.package_version || '' }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Validate package version
+        run: |
+          if [[ -n "${PACKAGE_VERSION}" &&
+                ! "${PACKAGE_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
+            echo "invalid package version: ${PACKAGE_VERSION}" >&2
+            exit 1
+          fi
+          if [[ -n "${PACKAGE_VERSION}" ]]; then
+            base_version=${PACKAGE_VERSION%%-rc.*}
+            project_version=$(awk '$1 == "VERSION" { print $2; exit }' CMakeLists.txt)
+            if [[ -z "${project_version}" || "${base_version}" != "${project_version}" ]]; then
+              echo "package version ${PACKAGE_VERSION} does not match CMake project version ${project_version:-unknown}" >&2
+              exit 1
+            fi
+          fi
+
+      - name: Install OpenWrt SDK dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes \
+            build-essential \
+            ca-certificates \
+            cmake \
+            curl \
+            file \
+            gawk \
+            gettext \
+            git \
+            jq \
+            libncurses-dev \
+            ninja-build \
+            python3 \
+            qemu-user-static \
+            rsync \
+            unzip \
+            wget \
+            zstd
+
+      - name: Restore official OpenWrt SDK archive
+        uses: actions/cache@v6
+        with:
+          path: .cache/openwrt/${{ matrix.sdk_file }}
+          key: openwrt-sdk-${{ matrix.sdk_sha256 }}
+
+      - name: Download and verify official OpenWrt SDK
+        run: |
+          install -d .cache/openwrt
+          sdk_archive=".cache/openwrt/${{ matrix.sdk_file }}"
+          if [[ ! -f "${sdk_archive}" ]]; then
+            curl --fail --location --retry 3 \
+              "https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/${{ matrix.target }}/${{ matrix.subtarget }}/${{ matrix.sdk_file }}" \
+              --output "${sdk_archive}"
+          fi
+          echo "${{ matrix.sdk_sha256 }}  ${sdk_archive}" | sha256sum --check
+
+      - name: Extract OpenWrt SDK
+        run: |
+          sdk_dir="build/openwrt/${{ matrix.package_arch }}/sdk"
+          install -d "${sdk_dir}"
+          tar --zstd --extract \
+            --file ".cache/openwrt/${{ matrix.sdk_file }}" \
+            --directory "${sdk_dir}" \
+            --strip-components=1
+
+      - name: Build OpenWrt APK packages
+        run: |
+          set -o pipefail
+          install -d "ci-logs/openwrt/${{ matrix.package_arch }}"
+          MINITUN_OPENWRT_JOBS=2 \
+            packaging/openwrt/build-sdk.sh \
+              "build/openwrt/${{ matrix.package_arch }}/sdk" \
+              "${GITHUB_WORKSPACE}" \
+              "${PACKAGE_VERSION}" \
+            2>&1 | tee "ci-logs/openwrt/${{ matrix.package_arch }}/build.log"
+
+      - name: Verify OpenWrt packages and cross-built executables
+        run: |
+          sdk_dir="build/openwrt/${{ matrix.package_arch }}/sdk"
+          package_dir="build/openwrt/${{ matrix.package_arch }}/packages"
+          install -d "${package_dir}"
+          find "${sdk_dir}/bin/packages" -type f \
+            \( -name 'minitun-client-*.apk' -o -name 'minitun-server-*.apk' \) \
+            -exec install -m 0644 {} "${package_dir}/" \;
+
+          artifact_version=${PACKAGE_VERSION}
+          if [[ -z "${artifact_version}" ]]; then
+            artifact_version=$(awk '$1 == "VERSION" { print $2; exit }' CMakeLists.txt)
+          fi
+          packaging/tests/verify-openwrt.sh \
+            "${sdk_dir}" \
+            "${package_dir}" \
+            "${artifact_version}" \
+            "${{ matrix.package_arch }}" \
+            "${{ matrix.qemu }}" \
+            2>&1 | tee "ci-logs/openwrt/${{ matrix.package_arch }}/verify.log"
+
+      - name: Prepare OpenWrt artifacts
+        run: |
+          package_dir="build/openwrt/${{ matrix.package_arch }}/packages"
+          client_package=$(find "${package_dir}" -maxdepth 1 -type f \
+            -name 'minitun-client-*.apk')
+          server_package=$(find "${package_dir}" -maxdepth 1 -type f \
+            -name 'minitun-server-*.apk')
+          test -n "${client_package}"
+          test -n "${server_package}"
+
+          artifact_version=${PACKAGE_VERSION}
+          if [[ -z "${artifact_version}" ]]; then
+            artifact_version=$(awk '$1 == "VERSION" { print $2; exit }' CMakeLists.txt)
+          fi
+
+          dist_dir="dist/openwrt/${{ matrix.package_arch }}"
+          install -d "${dist_dir}"
+          install -m 0644 "${client_package}" \
+            "${dist_dir}/minitun-client-${artifact_version}-openwrt-${OPENWRT_VERSION}-${{ matrix.package_arch }}.apk"
+          install -m 0644 "${server_package}" \
+            "${dist_dir}/minitun-server-${artifact_version}-openwrt-${OPENWRT_VERSION}-${{ matrix.package_arch }}.apk"
+          (cd "${dist_dir}" && \
+            sha256sum ./*.apk >"SHA256SUMS-${{ matrix.package_arch }}")
+
+      - name: Upload OpenWrt packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: minitun-openwrt-apk-${{ matrix.package_arch }}
+          if-no-files-found: error
+          retention-days: 14
+          path: dist/openwrt/${{ matrix.package_arch }}/
+
+      - name: Upload OpenWrt logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: minitun-openwrt-${{ matrix.package_arch }}-logs
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            ci-logs/openwrt/${{ matrix.package_arch }}/
+            build/openwrt/${{ matrix.package_arch }}/sdk/logs/package/minitun/

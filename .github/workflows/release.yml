@@ -89,6 +89,13 @@ jobs:
           name: minitun-rpm-x86_64
           path: release-assets/rpm
 
+      - name: Download OpenWrt artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: minitun-openwrt-apk-*
+          merge-multiple: true
+          path: release-assets/openwrt
+
       - name: Assemble and verify release assets
         env:
           PACKAGE_VERSION: ${{ needs.validate-tag.outputs.package_version }}
@@ -103,12 +110,28 @@ jobs:
           test -f "${client_rpm}"
           test -f "${server_rpm}"
 
+          openwrt_arches=(
+            x86_64
+            aarch64_generic
+            arm_cortex-a15_neon-vfpv4
+            mips_24kc
+            mipsel_24kc
+            riscv64_generic
+          )
+          for arch in "${openwrt_arches[@]}"; do
+            test -f "release-assets/openwrt/minitun-client-${PACKAGE_VERSION}-openwrt-25.12.5-${arch}.apk"
+            test -f "release-assets/openwrt/minitun-server-${PACKAGE_VERSION}-openwrt-25.12.5-${arch}.apk"
+          done
+          test "$(find release-assets/openwrt -maxdepth 1 -type f -name '*.apk' | wc -l)" -eq 12
+
           install -d release-assets/dist
           install -m 0644 "${client_deb}" release-assets/dist/
           install -m 0644 "${server_deb}" release-assets/dist/
           install -m 0644 "${client_rpm}" release-assets/dist/
           install -m 0644 "${server_rpm}" release-assets/dist/
-          (cd release-assets/dist && sha256sum ./*.deb ./*.rpm >SHA256SUMS)
+          install -m 0644 release-assets/openwrt/*.apk release-assets/dist/
+          (cd release-assets/dist && \
+            sha256sum ./*.apk ./*.deb ./*.rpm >SHA256SUMS)
           (cd release-assets/dist && sha256sum --check SHA256SUMS)
 
       - name: Upload assembled release artifact

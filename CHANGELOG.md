@@ -6,6 +6,10 @@ MiniTun 的所有重要变更都会记录在此文件中。本文档以
 
 ## [未发布]
 
+暂无未发布变更。
+
+## [0.2.0] - 2026-08-02
+
 ### 变更
 
 - 软件包提供的 `minitun-server.service` 不再将隧道端口限制为 `6000-6999`，默认使用
@@ -14,6 +18,12 @@ MiniTun 的所有重要变更都会记录在此文件中。本文档以
 
 ### 新增
 
+- OpenWrt 25.12 APK v3 客户端与服务端包，包含 UCI 默认配置、
+  procd 服务、专用服务账户和保守的禁用状态。
+- `x86_64`、AArch64、ARMv7、MIPS 大端、MIPS 小端与 RISC-V 64 六种
+  OpenWrt 发布架构。
+- 基于官方 SDK SHA-256 校验、APK v3 元数据/布局检查与 QEMU 启动的
+  多架构打包验收流程。
 - 基于 C++20、CMake 和 Ninja 的项目基础。
 - 系统依赖模式与锁定版本的 FetchContent 依赖模式。
 - 通用错误、结果、结构化日志和构建版本模块。
@@ -73,7 +83,7 @@ MiniTun 的所有重要变更都会记录在此文件中。本文档以
 - 独立的 `minitun-client` 与 `minitun-server` DEB/RPM 软件包，包含服务账户创建、
   daemon-reload 钩子、保留状态的升级/卸载、DEB purge 清理、软件包内容检查和
   干净容器冒烟测试。
-- GitHub Actions 编译器、Sanitizer、有界 fuzz、DEB/RPM 和 tag 发布工作流，
+- GitHub Actions 编译器、Sanitizer、有界 fuzz、DEB/RPM、OpenWrt 多架构和 tag 发布工作流，
   包含可复用的已测试打包流程、版本化产物、SHA-256 清单、最小 Token 权限、
   并发取消和分组 Dependabot 更新。
 - 简体中文开源项目文档，包括生产部署 README，以及 CLI、架构、协议和开发文档。

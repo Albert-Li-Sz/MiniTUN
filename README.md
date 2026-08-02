@@ -9,7 +9,7 @@
 
 MiniTun 使用 C++20 开发，可将公网服务器上的 TCP 端口转发到内网主机中的本地服务。
 它由公网服务端 `minitun-server`、客户端守护进程 `minitund` 和命令行工具 `minitun`
-组成，适合以 systemd 服务长期运行。
+组成，适合以 systemd 或 OpenWrt procd 服务长期运行。
 
 [特性](#特性) · [工作原理](#工作原理) · [生产部署](#生产部署) ·
 [常用命令](#常用命令) · [文档](#文档)
@@ -28,10 +28,10 @@ MiniTun 使用 C++20 开发，可将公网服务器上的 TCP 端口转发到内
   TCP 中继采用固定 16 KiB 双向缓冲和写入背压。
 - **稳定的连接生命周期**：支持心跳、指数退避重连、TCP 半关闭、空闲超时、会话代次
   隔离和有期限的优雅退出。
-- **Linux 原生交付**：提供独立 Client/Server DEB 与 RPM、systemd unit、
-  systemd-sysusers 定义和 man 手册。
+- **多平台交付**：提供独立 Client/Server DEB 与 RPM，以及集成
+  UCI 和 procd 的 OpenWrt APK；OpenWrt 产物覆盖 x86_64、ARM、MIPS 与 RISC-V。
 - **持续验证**：CI 覆盖 GCC、Clang、完整 CTest、ASan、UBSan、TSan、libFuzzer，
-  以及 DEB/RPM 的干净容器安装测试。
+  DEB/RPM 的干净容器安装测试，以及 OpenWrt 多架构交叉编译与 QEMU 启动验证。
 
 ## 工作原理
 
@@ -54,8 +54,14 @@ TLS Worker 承载。
 
 ## 生产部署
 
-当前发布架构为 x86_64。部署前请准备一台公网 Linux 服务器、一台可以访问目标服务的
-内网 Linux 主机、服务端域名与有效 TLS 证书，并确定允许对外开放的 TCP 端口范围。
+部署前请准备一台公网服务器、一台可以访问目标服务的内网主机、
+服务端域名与有效 TLS 证书，并确定实际需要对外开放的 TCP 端口。
+
+| 软件包 | 运行环境 | 发布架构 |
+| --- | --- | --- |
+| DEB | Debian/Ubuntu | `amd64` |
+| RPM | Fedora/RHEL 系 | `x86_64` |
+| APK | OpenWrt 25.12 | `x86_64`、`aarch64_generic`、`arm_cortex-a15_neon-vfpv4`、`mips_24kc`、`mipsel_24kc`、`riscv64_generic` |
 
 ### 1. 获取并安装软件包
 
@@ -71,28 +77,51 @@ Debian/Ubuntu：
 
 ```bash
 # 公网服务器
-sudo apt install ./minitun-server-0.1.0-linux-amd64.deb
+sudo apt install ./minitun-server-0.2.0-linux-amd64.deb
 
 # 内网客户端
-sudo apt install ./minitun-client-0.1.0-linux-amd64.deb
+sudo apt install ./minitun-client-0.2.0-linux-amd64.deb
 ```
 
 Fedora/RHEL 系：
 
 ```bash
 # 公网服务器
-sudo dnf install ./minitun-server-0.1.0-linux-x86_64.rpm
+sudo dnf install ./minitun-server-0.2.0-linux-x86_64.rpm
 
 # 内网客户端
-sudo dnf install ./minitun-client-0.1.0-linux-x86_64.rpm
+sudo dnf install ./minitun-client-0.2.0-linux-x86_64.rpm
 ```
 
-软件包会创建专用服务账户，但不会生成凭据，也不会自动启动服务。
+OpenWrt 25.12 使用 APK v3。先查看设备的包架构，再安装同架构的
+服务端或客户端包：
+
+```sh
+apk --print-arch
+
+# 公网设备；以 aarch64_generic 为例
+grep 'minitun-server-0.2.0-openwrt-25.12.5-aarch64_generic.apk$' \
+  SHA256SUMS | sha256sum -c -
+apk add --allow-untrusted \
+  ./minitun-server-0.2.0-openwrt-25.12.5-aarch64_generic.apk
+
+# 内网设备
+grep 'minitun-client-0.2.0-openwrt-25.12.5-aarch64_generic.apk$' \
+  SHA256SUMS | sha256sum -c -
+apk add --allow-untrusted \
+  ./minitun-client-0.2.0-openwrt-25.12.5-aarch64_generic.apk
+```
+
+GitHub Release 中的 APK 是独立发布产物，不属于 OpenWrt 官方签名软件源，
+因此安装本地包时需要 `--allow-untrusted`；安装前必须先校验 `SHA256SUMS`。
+所有软件包都会创建专用服务账户，但不会生成凭据，也不会自动启动服务。
 
 ### 2. 配置公网服务端
 
-在公网服务器上准备完整证书链、匹配的 PEM 私钥和随机 Token。证书的 SAN 必须包含
+为公网服务器准备完整证书链、匹配的 PEM 私钥和随机 Token。证书的 SAN 必须包含
 客户端连接时使用的域名。
+
+DEB/RPM 主机：
 
 ```bash
 umask 077
@@ -106,9 +135,21 @@ sudo install -m 0600 -o minitun-server -g minitun-server \
   token /etc/minitun-server/token
 ```
 
+OpenWrt 主机：
+
+```sh
+mkdir -p /etc/minitun-server
+cp server.crt server.key token /etc/minitun-server/
+chown root:root /etc/minitun-server/server.crt
+chown minitun-server:minitun-server \
+  /etc/minitun-server/server.key /etc/minitun-server/token
+chmod 0644 /etc/minitun-server/server.crt
+chmod 0600 /etc/minitun-server/server.key /etc/minitun-server/token
+```
+
 默认服务监听控制端口 `0.0.0.0:2333`，不额外限制隧道端口，应用层允许全部有效 TCP
-端口 `1-65535`。请在云安全组与主机防火墙中仅开放实际需要的端口。如需设置端口
-白名单或修改监听地址，请创建 systemd override：
+端口 `1-65535`。请在云安全组与主机防火墙中仅开放实际需要的端口。DEB/RPM
+部署如需设置端口白名单或修改监听地址，请创建 systemd override：
 
 ```bash
 sudo systemctl edit minitun-server.service
@@ -120,7 +161,7 @@ ExecStart=
 ExecStart=/usr/bin/minitun-server --foreground --listen 0.0.0.0:4433 --allow-ports 10000-10999 --tls-cert /etc/minitun-server/server.crt --tls-key /etc/minitun-server/server.key --token-file /etc/minitun-server/token
 ```
 
-启动并检查服务：
+DEB/RPM 主机启动并检查服务：
 
 ```bash
 sudo systemctl enable --now minitun-server.service
@@ -128,10 +169,26 @@ systemctl status minitun-server.service
 journalctl -u minitun-server.service -n 50 --no-pager
 ```
 
+OpenWrt 通过 UCI 启用 procd 服务：
+
+```sh
+uci set minitun-server.main.enabled='1'
+uci commit minitun-server
+/etc/init.d/minitun-server enable
+/etc/init.d/minitun-server start
+logread -e minitun-server
+```
+
+OpenWrt 默认配置也不设置端口白名单。如需限制，执行
+`uci set minitun-server.main.allow_ports='10000-10999'` 并提交、重启服务。
+专用服务账户默认无法绑定低于 `1024` 的特权端口。
+
 ### 3. 启动客户端守护进程
 
 `minitund` 默认使用系统 CA 信任库验证服务端证书。使用私有 CA 时，应先将 CA 证书
 安装到内网主机的系统信任库。
+
+DEB/RPM 主机：
 
 ```bash
 sudo systemctl enable --now minitund.service
@@ -143,6 +200,17 @@ sudo usermod -aG minitun "$USER"
 ```bash
 minitun daemon status
 minitun version
+```
+
+OpenWrt 上通常以 `root` 运行管理命令：
+
+```sh
+uci set minitun.main.enabled='1'
+uci commit minitun
+/etc/init.d/minitun enable
+/etc/init.d/minitun start
+minitun daemon status
+logread -e minitun
 ```
 
 ### 4. 创建隧道
@@ -176,14 +244,18 @@ minitun tun add primary 8080 6001 \
 | 路径 | 用途 |
 | --- | --- |
 | `/run/minitun/minitun.sock` | CLI 与客户端守护进程之间的 Unix 套接字 |
-| `/var/lib/minitun/state.db` | 服务器、隧道与客户端身份 |
-| `/var/lib/minitun/credentials.db` | 客户端凭据存储 |
+| `/var/lib/minitun/state.db` | DEB/RPM 的服务器、隧道与客户端身份 |
+| `/var/lib/minitun/credentials.db` | DEB/RPM 的客户端凭据存储 |
+| `/etc/minitun/state.db` | OpenWrt 的服务器、隧道与客户端身份 |
+| `/etc/minitun/credentials.db` | OpenWrt 的客户端凭据存储 |
 | `/etc/minitun-server/server.crt` | 服务端证书链 |
 | `/etc/minitun-server/server.key` | 服务端私钥 |
 | `/etc/minitun-server/token` | 服务端认证 Token |
 
 升级和普通卸载会保留 `/var/lib/minitun` 与 `/var/lib/minitun-server`。Debian purge
-会删除状态目录；RPM 卸载会保留状态。升级或回滚前应备份状态目录与管理员提供的凭据。
+会删除状态目录；RPM 卸载会保留状态。OpenWrt 的 UCI 配置属于 conffile，
+本地修改在升级时保留。无论使用哪种包格式，升级、回滚或卸载前都应备份状态目录
+与管理员提供的凭据。
 
 ## 常用命令
 
