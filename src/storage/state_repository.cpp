@@ -51,6 +51,8 @@ common::Result<Transaction> StateRepository::begin_transaction() {
 
 common::Result<int> StateRepository::schema_version() const { return database_->schema_version(); }
 
+common::Result<void> StateRepository::checkpoint() { return database_->checkpoint(); }
+
 common::Result<common::Id> StateRepository::client_id() {
     auto transaction = database_->begin_transaction();
     if (!transaction) {

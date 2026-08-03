@@ -81,23 +81,34 @@ validate_recovered_credentials(minitun::storage::StateRepository& repository,
                                const minitun::storage::RecoverySnapshot& snapshot) {
     for (auto server : snapshot.servers) {
         const std::string stable_key = credential_key(server);
+        if (server.desired_state == minitun::storage::ServerDesiredState::removed) {
+            if (server.credential_ref.has_value()) {
+                auto removed = credentials.remove(*server.credential_ref);
+                if (!removed) {
+                    return removed;
+                }
+                if (*server.credential_ref != stable_key) {
+                    removed = remove_credential_if_present(credentials, stable_key);
+                    if (!removed) {
+                        return removed;
+                    }
+                }
+            } else {
+                auto removed = remove_credential_if_present(credentials, stable_key);
+                if (!removed) {
+                    return removed;
+                }
+            }
+            auto erased = repository.servers().erase(server.id);
+            if (!erased && erased.error().code() != minitun::common::ErrorCode::not_found) {
+                return erased;
+            }
+            continue;
+        }
         if (!server.credential_ref.has_value()) {
             auto removed = remove_credential_if_present(credentials, stable_key);
             if (!removed) {
                 return removed;
-            }
-            continue;
-        }
-        if (server.desired_state == minitun::storage::ServerDesiredState::removed) {
-            auto removed = credentials.remove(*server.credential_ref);
-            if (!removed) {
-                return removed;
-            }
-            if (*server.credential_ref != stable_key) {
-                removed = remove_credential_if_present(credentials, stable_key);
-                if (!removed) {
-                    return removed;
-                }
             }
             continue;
         }

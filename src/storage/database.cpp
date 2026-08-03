@@ -896,6 +896,31 @@ common::Result<Transaction> Database::begin_transaction() {
     return Transaction{*this, std::move(lock)};
 }
 
+common::Result<void> Database::checkpoint() {
+    std::scoped_lock lock{mutex_};
+    if (poisoned_) {
+        return common::Error{common::ErrorCode::database_error,
+                             "SQLite connection is unusable after a rollback failure"};
+    }
+    if (transaction_active_) {
+        return common::Error{common::ErrorCode::invalid_argument,
+                             "cannot checkpoint during an active SQLite transaction"};
+    }
+
+    int log_frames = -1;
+    int checkpointed_frames = -1;
+    const int result = sqlite3_wal_checkpoint_v2(handle_, nullptr, SQLITE_CHECKPOINT_FULL,
+                                                 &log_frames, &checkpointed_frames);
+    if (result != SQLITE_OK) {
+        return internal::sqlite_error(handle_, result, "checkpoint SQLite state database");
+    }
+    if (log_frames >= 0 && checkpointed_frames < log_frames) {
+        return common::Error{common::ErrorCode::database_error,
+                             "SQLite state checkpoint was incomplete"};
+    }
+    return common::Result<void>::success();
+}
+
 const std::string& Database::path() const noexcept { return path_; }
 
 } // namespace minitun::storage

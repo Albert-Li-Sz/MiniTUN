@@ -161,6 +161,37 @@ TEST(StorageDatabaseTest, EnablesWalAndRequiredConnectionPolicy) {
     EXPECT_EQ(missing_parent.error().code(), common::ErrorCode::not_found);
 }
 
+TEST(StorageDatabaseTest, ExplicitCheckpointRejectsActiveTransactionsAndFlushesWal) {
+    TemporaryDatabaseFile temporary;
+    auto repository = StateRepository::open(temporary.path_string());
+    ASSERT_TRUE(repository) << repository.error();
+
+    ASSERT_TRUE((*repository)->checkpoint());
+    const std::filesystem::path immutable_path{"file:" + temporary.path_string() + "?immutable=1"};
+    const int immutable_flags = SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX | SQLITE_OPEN_URI;
+    {
+        NativeSqliteDatabase main_file_only{immutable_path, immutable_flags};
+        EXPECT_EQ(main_file_only.query_int64("SELECT COUNT(*) FROM servers"), 0);
+    }
+
+    ASSERT_TRUE((*repository)->servers().create(sample_server()));
+    {
+        NativeSqliteDatabase main_file_only{immutable_path, immutable_flags};
+        EXPECT_EQ(main_file_only.query_int64("SELECT COUNT(*) FROM servers"), 0);
+    }
+
+    auto transaction = (*repository)->begin_transaction();
+    ASSERT_TRUE(transaction) << transaction.error();
+    const auto active_checkpoint = (*repository)->checkpoint();
+    ASSERT_FALSE(active_checkpoint);
+    EXPECT_EQ(active_checkpoint.error().code(), common::ErrorCode::invalid_argument);
+    ASSERT_TRUE(transaction->rollback());
+
+    ASSERT_TRUE((*repository)->checkpoint());
+    NativeSqliteDatabase main_file_only{immutable_path, immutable_flags};
+    EXPECT_EQ(main_file_only.query_int64("SELECT COUNT(*) FROM servers"), 1);
+}
+
 TEST(StorageDatabaseTest, ReopeningCurrentSchemaIsIdempotentAndPreservesData) {
     TemporaryDatabaseFile temporary;
     std::int64_t first_applied_at = 0;

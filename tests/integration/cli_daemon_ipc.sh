@@ -358,7 +358,29 @@ for path in sys.argv[1:]:
         assert json.load(stream) == []
 PY
 
+python3 - "$state_path" "$credentials_path" <<'PY'
+import sqlite3
+import sys
+
+with sqlite3.connect(sys.argv[1]) as state:
+    assert state.execute("SELECT COUNT(*) FROM servers").fetchone()[0] == 0
+    assert state.execute("SELECT COUNT(*) FROM tunnels").fetchone()[0] == 0
+with sqlite3.connect(sys.argv[2]) as credentials:
+    assert credentials.execute("SELECT COUNT(*) FROM credentials").fetchone()[0] == 0
+PY
+
 stop_daemon
+
+python3 - "$state_path" "$credentials_path" <<'PY'
+import sqlite3
+import sys
+
+with sqlite3.connect(sys.argv[1]) as state:
+    assert state.execute("SELECT COUNT(*) FROM servers").fetchone()[0] == 0
+    assert state.execute("SELECT COUNT(*) FROM tunnels").fetchone()[0] == 0
+with sqlite3.connect(sys.argv[2]) as credentials:
+    assert credentials.execute("SELECT COUNT(*) FROM credentials").fetchone()[0] == 0
+PY
 
 python3 - "$runtime_dir" "$orphan_token" "$stdin_token" "$interactive_token" <<'PY'
 import os

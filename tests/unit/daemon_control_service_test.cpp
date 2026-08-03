@@ -86,8 +86,7 @@ TEST_F(DaemonControlServiceTest, RegistersCompleteStageFourMethodSet) {
 
 TEST_F(DaemonControlServiceTest, PersistsServerLoginAndOfflineTunnelWithoutLeakingToken) {
     const auto added = dispatch(dispatcher_, "server.add",
-                                ipc::Json{{"endpoint", "example.com:2333"},
-                                          {"name", "primary"}});
+                                ipc::Json{{"endpoint", "example.com:2333"}, {"name", "primary"}});
     ASSERT_TRUE(added.ok()) << *added.error();
     const auto& added_server = require_result(added).at("server");
     EXPECT_EQ(added_server.at("actual_state"), "not_authenticated");
@@ -115,8 +114,8 @@ TEST_F(DaemonControlServiceTest, PersistsServerLoginAndOfflineTunnelWithoutLeaki
 
     const auto tunnel_added = dispatch(
         dispatcher_, "tun.add",
-        ipc::Json{{"server", "primary"}, {"local_port", 22}, {"remote_port", 6000},
-                  {"name", "ssh"}});
+        ipc::Json{
+            {"server", "primary"}, {"local_port", 22}, {"remote_port", 6000}, {"name", "ssh"}});
     ASSERT_TRUE(tunnel_added.ok()) << *tunnel_added.error();
     const auto& tunnel = require_result(tunnel_added).at("tunnel");
     EXPECT_EQ(tunnel.at("desired_state"), "active");
@@ -130,10 +129,26 @@ TEST_F(DaemonControlServiceTest, PersistsServerLoginAndOfflineTunnelWithoutLeaki
     EXPECT_EQ(require_result(status).at("tunnels").at("active"), 0);
 }
 
-TEST_F(DaemonControlServiceTest, RemovalUsesTombstonesAndFiltersPublicLists) {
+TEST_F(DaemonControlServiceTest, PendingTunnelExplainsMissingServerAuthentication) {
     const auto added = dispatch(dispatcher_, "server.add",
-                                ipc::Json{{"endpoint", "example.com:2333"},
-                                          {"name", "primary"}});
+                                ipc::Json{{"endpoint", "example.com:2333"}, {"name", "primary"}});
+    ASSERT_TRUE(added.ok()) << *added.error();
+
+    const auto tunnel_added = dispatch(
+        dispatcher_, "tun.add",
+        ipc::Json{
+            {"server", "primary"}, {"local_port", 8888}, {"remote_port", 82}, {"name", "web81"}});
+    ASSERT_TRUE(tunnel_added.ok()) << *tunnel_added.error();
+    const auto& tunnel = require_result(tunnel_added).at("tunnel");
+    EXPECT_EQ(tunnel.at("actual_state"), "pending");
+    ASSERT_TRUE(tunnel.at("last_error").is_object());
+    EXPECT_EQ(tunnel.at("last_error").at("code"), "not_authenticated");
+    EXPECT_EQ(tunnel.at("last_error").at("message"), "server credentials are not configured");
+}
+
+TEST_F(DaemonControlServiceTest, ServerRemovalDeletesStateAndCredentialImmediately) {
+    const auto added = dispatch(dispatcher_, "server.add",
+                                ipc::Json{{"endpoint", "example.com:2333"}, {"name", "primary"}});
     ASSERT_TRUE(added.ok()) << *added.error();
     const std::string server_id_text =
         require_result(added).at("server").at("id").get<std::string>();
@@ -150,16 +165,16 @@ TEST_F(DaemonControlServiceTest, RemovalUsesTombstonesAndFiltersPublicLists) {
 
     const auto tunnel_added = dispatch(
         dispatcher_, "tun.add",
-        ipc::Json{{"server", "primary"}, {"local_port", 22}, {"remote_port", 6000},
-                  {"name", "ssh"}});
+        ipc::Json{
+            {"server", "primary"}, {"local_port", 22}, {"remote_port", 6000}, {"name", "ssh"}});
     ASSERT_TRUE(tunnel_added.ok()) << *tunnel_added.error();
     const std::string tunnel_id_text =
         require_result(tunnel_added).at("tunnel").at("id").get<std::string>();
     auto tunnel_id = common::Id::parse(tunnel_id_text, common::IdKind::tunnel);
     ASSERT_TRUE(tunnel_id) << tunnel_id.error();
 
-    const auto removed = dispatch(dispatcher_, "server.remove",
-                                  ipc::Json{{"identifier", "primary"}});
+    const auto removed =
+        dispatch(dispatcher_, "server.remove", ipc::Json{{"identifier", "primary"}});
     ASSERT_TRUE(removed.ok()) << *removed.error();
 
     const auto listed_servers = dispatch(dispatcher_, "server.list", ipc::Json::object());
@@ -171,32 +186,64 @@ TEST_F(DaemonControlServiceTest, RemovalUsesTombstonesAndFiltersPublicLists) {
 
     const auto persisted_server = repository_->servers().get_by_id(*server_id);
     const auto persisted_tunnel = repository_->tunnels().get_by_id(*tunnel_id);
-    ASSERT_TRUE(persisted_server) << persisted_server.error();
-    ASSERT_TRUE(persisted_tunnel) << persisted_tunnel.error();
-    EXPECT_EQ(persisted_server->desired_state, storage::ServerDesiredState::removed);
-    EXPECT_EQ(persisted_tunnel->desired_state, storage::TunnelDesiredState::removed);
-    EXPECT_EQ(persisted_tunnel->actual_state, storage::TunnelActualState::removing);
+    ASSERT_FALSE(persisted_server);
+    ASSERT_FALSE(persisted_tunnel);
+    EXPECT_EQ(persisted_server.error().code(), common::ErrorCode::not_found);
+    EXPECT_EQ(persisted_tunnel.error().code(), common::ErrorCode::not_found);
 
     const auto missing_credential = credentials_->get(credential_key);
     ASSERT_FALSE(missing_credential);
     EXPECT_EQ(missing_credential.error().code(), common::ErrorCode::not_found);
+
+    const auto reused = dispatch(dispatcher_, "server.add",
+                                 ipc::Json{{"endpoint", "example.com:2333"}, {"name", "primary"}});
+    ASSERT_TRUE(reused.ok()) << *reused.error();
+    EXPECT_NE(require_result(reused).at("server").at("id").get<std::string>(), server_id_text);
+}
+
+TEST_F(DaemonControlServiceTest, TunnelRemovalDeletesStateAndAllowsImmediateReuse) {
+    const auto added = dispatch(dispatcher_, "server.add",
+                                ipc::Json{{"endpoint", "example.com:2333"}, {"name", "primary"}});
+    ASSERT_TRUE(added.ok()) << *added.error();
+
+    const auto first = dispatch(
+        dispatcher_, "tun.add",
+        ipc::Json{
+            {"server", "primary"}, {"local_port", 22}, {"remote_port", 6000}, {"name", "ssh"}});
+    ASSERT_TRUE(first.ok()) << *first.error();
+    const std::string first_id_text =
+        require_result(first).at("tunnel").at("id").get<std::string>();
+    auto first_id = common::Id::parse(first_id_text, common::IdKind::tunnel);
+    ASSERT_TRUE(first_id) << first_id.error();
+
+    const auto removed = dispatch(dispatcher_, "tun.remove", ipc::Json{{"identifier", "ssh"}});
+    ASSERT_TRUE(removed.ok()) << *removed.error();
+    const auto missing = repository_->tunnels().get_by_id(*first_id);
+    ASSERT_FALSE(missing);
+    EXPECT_EQ(missing.error().code(), common::ErrorCode::not_found);
+
+    const auto reused = dispatch(
+        dispatcher_, "tun.add",
+        ipc::Json{
+            {"server", "primary"}, {"local_port", 2222}, {"remote_port", 6000}, {"name", "ssh"}});
+    ASSERT_TRUE(reused.ok()) << *reused.error();
+    EXPECT_NE(require_result(reused).at("tunnel").at("id").get<std::string>(), first_id_text);
 }
 
 TEST_F(DaemonControlServiceTest, RejectsUnknownFieldsAndInvalidPorts) {
-    const auto unknown = dispatch(dispatcher_, "server.add",
-                                  ipc::Json{{"endpoint", "example.com:2333"},
-                                            {"unexpected", true}});
+    const auto unknown =
+        dispatch(dispatcher_, "server.add",
+                 ipc::Json{{"endpoint", "example.com:2333"}, {"unexpected", true}});
     ASSERT_FALSE(unknown.ok());
     ASSERT_NE(unknown.error(), nullptr);
     EXPECT_EQ(unknown.error()->code(), common::ErrorCode::invalid_argument);
 
     const auto added = dispatch(dispatcher_, "server.add",
-                                ipc::Json{{"endpoint", "example.com:2333"},
-                                          {"name", "primary"}});
+                                ipc::Json{{"endpoint", "example.com:2333"}, {"name", "primary"}});
     ASSERT_TRUE(added.ok()) << *added.error();
-    const auto invalid_port = dispatch(
-        dispatcher_, "tun.add",
-        ipc::Json{{"server", "primary"}, {"local_port", 0}, {"remote_port", 6000}});
+    const auto invalid_port =
+        dispatch(dispatcher_, "tun.add",
+                 ipc::Json{{"server", "primary"}, {"local_port", 0}, {"remote_port", 6000}});
     ASSERT_FALSE(invalid_port.ok());
     ASSERT_NE(invalid_port.error(), nullptr);
     EXPECT_EQ(invalid_port.error()->code(), common::ErrorCode::invalid_argument);
@@ -204,8 +251,7 @@ TEST_F(DaemonControlServiceTest, RejectsUnknownFieldsAndInvalidPorts) {
 
 TEST_F(DaemonControlServiceTest, HandlesConcurrentPersistentMutations) {
     const auto added = dispatch(dispatcher_, "server.add",
-                                ipc::Json{{"endpoint", "example.com:2333"},
-                                          {"name", "primary"}});
+                                ipc::Json{{"endpoint", "example.com:2333"}, {"name", "primary"}});
     ASSERT_TRUE(added.ok()) << *added.error();
 
     constexpr std::size_t kTunnelCount = 12U;
@@ -214,12 +260,12 @@ TEST_F(DaemonControlServiceTest, HandlesConcurrentPersistentMutations) {
     workers.reserve(kTunnelCount);
     for (std::size_t index = 0; index < kTunnelCount; ++index) {
         workers.emplace_back([this, index, &success_count] {
-            const auto response = dispatch(
-                dispatcher_, "tun.add",
-                ipc::Json{{"server", "primary"},
-                          {"local_port", 10'000 + static_cast<int>(index)},
-                          {"remote_port", 20'000 + static_cast<int>(index)},
-                          {"name", "tunnel-" + std::to_string(index)}});
+            const auto response =
+                dispatch(dispatcher_, "tun.add",
+                         ipc::Json{{"server", "primary"},
+                                   {"local_port", 10'000 + static_cast<int>(index)},
+                                   {"remote_port", 20'000 + static_cast<int>(index)},
+                                   {"name", "tunnel-" + std::to_string(index)}});
             if (response.ok()) {
                 success_count.fetch_add(1U, std::memory_order_relaxed);
             }

@@ -4,7 +4,7 @@
 #include <sstream>
 
 #ifndef MINITUN_VERSION
-#define MINITUN_VERSION "0.2.0-dev"
+#define MINITUN_VERSION "0.2.1-dev"
 #endif
 
 #ifndef MINITUN_GIT_COMMIT

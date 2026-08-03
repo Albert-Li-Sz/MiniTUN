@@ -81,6 +81,7 @@ class Database final {
 
     [[nodiscard]] common::Result<int> schema_version() const;
     [[nodiscard]] common::Result<Transaction> begin_transaction();
+    [[nodiscard]] common::Result<void> checkpoint();
     [[nodiscard]] const std::string& path() const noexcept;
 
   private:

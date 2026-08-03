@@ -77,20 +77,20 @@ Debian/Ubuntu：
 
 ```bash
 # 公网服务器
-sudo apt install ./minitun-server-0.2.0-linux-amd64.deb
+sudo apt install ./minitun-server-0.2.1-linux-amd64.deb
 
 # 内网客户端
-sudo apt install ./minitun-client-0.2.0-linux-amd64.deb
+sudo apt install ./minitun-client-0.2.1-linux-amd64.deb
 ```
 
 Fedora/RHEL 系：
 
 ```bash
 # 公网服务器
-sudo dnf install ./minitun-server-0.2.0-linux-x86_64.rpm
+sudo dnf install ./minitun-server-0.2.1-linux-x86_64.rpm
 
 # 内网客户端
-sudo dnf install ./minitun-client-0.2.0-linux-x86_64.rpm
+sudo dnf install ./minitun-client-0.2.1-linux-x86_64.rpm
 ```
 
 OpenWrt 25.12 使用 APK v3。先查看设备的包架构，再安装同架构的
@@ -100,16 +100,16 @@ OpenWrt 25.12 使用 APK v3。先查看设备的包架构，再安装同架构�
 apk --print-arch
 
 # 公网设备；以 aarch64_generic 为例
-grep 'minitun-server-0.2.0-openwrt-25.12.5-aarch64_generic.apk$' \
+grep 'minitun-server-0.2.1-openwrt-25.12.5-aarch64_generic.apk$' \
   SHA256SUMS | sha256sum -c -
 apk add --allow-untrusted \
-  ./minitun-server-0.2.0-openwrt-25.12.5-aarch64_generic.apk
+  ./minitun-server-0.2.1-openwrt-25.12.5-aarch64_generic.apk
 
 # 内网设备
-grep 'minitun-client-0.2.0-openwrt-25.12.5-aarch64_generic.apk$' \
+grep 'minitun-client-0.2.1-openwrt-25.12.5-aarch64_generic.apk$' \
   SHA256SUMS | sha256sum -c -
 apk add --allow-untrusted \
-  ./minitun-client-0.2.0-openwrt-25.12.5-aarch64_generic.apk
+  ./minitun-client-0.2.1-openwrt-25.12.5-aarch64_generic.apk
 ```
 
 GitHub Release 中的 APK 是独立发布产物，不属于 OpenWrt 官方签名软件源，
@@ -181,7 +181,9 @@ logread -e minitun-server
 
 OpenWrt 默认配置也不设置端口白名单。如需限制，执行
 `uci set minitun-server.main.allow_ports='10000-10999'` 并提交、重启服务。
-专用服务账户默认无法绑定低于 `1024` 的特权端口。
+官方 DEB、RPM 与 OpenWrt 服务仅授予 `CAP_NET_BIND_SERVICE`，因此专用非 root
+账户也可按配置绑定 `1-65535`。直接运行自行编译的二进制时，低于 `1024` 的端口仍需
+由管理员显式授予该能力。
 
 ### 3. 启动客户端守护进程
 
@@ -230,6 +232,11 @@ minitun tun inspect web --json
 ```bash
 curl http://tunnel.example.com:6000/
 ```
+
+如果隧道持续为 `pending`，先执行 `minitun server inspect primary --json` 检查父级
+会话。`2333/tcp` 只承载控制和 Worker 连接；云安全组与主机防火墙还必须放行实际的
+公网映射端口（本例为 `6000/tcp`）。TLS SAN、CA、Token 或系统时间异常会记录在
+服务器与隧道的 `last_error` 中。
 
 本地目标不在回环地址时，使用 `--local-host`：
 

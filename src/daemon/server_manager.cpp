@@ -156,7 +156,8 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                 stop_worker_pool();
                 close_transport();
                 session_generation_ = 0U;
-                mark_tunnels_pending();
+                mark_tunnels_pending(stopping_ ? std::nullopt
+                                               : std::optional<common::Error>{result.error});
                 if (stopping_ || result.kind == AttemptKind::stopped) {
                     terminal_state_.store(TerminalState::stopped);
                     co_return;
@@ -399,11 +400,82 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
 
             std::unordered_set<std::string> retained;
             for (const auto& tunnel : *tunnels) {
+                if (tunnel.desired_state == storage::TunnelDesiredState::active) {
+                    retained.insert(tunnel.id.str());
+                }
+            }
+
+            // Release stale listeners before registering replacements. This ordering
+            // lets a remove followed immediately by an add reuse the same public port
+            // during a single reconciliation cycle.
+            for (auto iterator = registered_tunnels_.begin();
+                 iterator != registered_tunnels_.end();) {
+                if (retained.contains(*iterator)) {
+                    ++iterator;
+                    continue;
+                }
+                const std::string tunnel_id = *iterator;
+                auto payload = protocol::encode_unregister_tunnel({tunnel_id});
+                if (!payload) {
+                    co_return common::Result<void>::failure(payload.error());
+                }
+                const std::uint64_t request_id = next_request_id();
+                const protocol::Frame removal_frame{protocol::MessageType::unregister_tunnel, 0U,
+                                                    request_id, std::move(*payload)};
+                auto written = co_await write_frame(state, removal_frame, timeout);
+                if (!written) {
+                    co_return written;
+                }
+                auto response = co_await read_reconcile_response(state, request_id, timeout);
+                if (!response || response->type != protocol::MessageType::unregister_tunnel_ok) {
+                    co_return common::Result<void>::failure(
+                        response ? common::Error{common::ErrorCode::protocol_error,
+                                                 "remote tunnel removal response is invalid"}
+                                 : response.error());
+                }
+                auto removed = protocol::decode_unregister_tunnel_ok(response->payload);
+                if (!removed || removed->tunnel_id != tunnel_id) {
+                    co_return common::Result<void>::failure(
+                        common::ErrorCode::protocol_error,
+                        "remote tunnel removal response is invalid");
+                }
+                iterator = registered_tunnels_.erase(iterator);
+                auto parsed = common::Id::parse(tunnel_id, common::IdKind::tunnel);
+                if (parsed) {
+                    auto current = repository_.tunnels().get_by_id(*parsed);
+                    if (current) {
+                        if (current->desired_state == storage::TunnelDesiredState::removed) {
+                            auto erased = repository_.tunnels().erase(*parsed);
+                            if (!erased && erased.error().code() != common::ErrorCode::not_found) {
+                                co_return erased;
+                            }
+                        } else {
+                            auto updated = persist_tunnel_state(
+                                *parsed, storage::TunnelActualState::disabled, std::nullopt);
+                            if (!updated) {
+                                co_return updated;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Purge tombstones left by an interrupted removal or an older build.
+            for (const auto& tunnel : *tunnels) {
+                if (tunnel.desired_state != storage::TunnelDesiredState::removed) {
+                    continue;
+                }
+                auto erased = repository_.tunnels().erase(tunnel.id);
+                if (!erased && erased.error().code() != common::ErrorCode::not_found) {
+                    co_return erased;
+                }
+            }
+
+            for (const auto& tunnel : *tunnels) {
                 const std::string tunnel_id = tunnel.id.str();
                 if (tunnel.desired_state != storage::TunnelDesiredState::active) {
                     continue;
                 }
-                retained.insert(tunnel_id);
                 if (registered_tunnels_.contains(tunnel_id)) {
                     if (tunnel.actual_state != storage::TunnelActualState::active) {
                         auto updated = persist_tunnel_state(
@@ -472,54 +544,6 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                 co_return common::Result<void>::failure(
                     common::ErrorCode::protocol_error,
                     "remote server returned an unexpected tunnel registration response");
-            }
-
-            for (auto iterator = registered_tunnels_.begin();
-                 iterator != registered_tunnels_.end();) {
-                if (retained.contains(*iterator)) {
-                    ++iterator;
-                    continue;
-                }
-                const std::string tunnel_id = *iterator;
-                auto payload = protocol::encode_unregister_tunnel({tunnel_id});
-                if (!payload) {
-                    co_return common::Result<void>::failure(payload.error());
-                }
-                const std::uint64_t request_id = next_request_id();
-                const protocol::Frame removal_frame{protocol::MessageType::unregister_tunnel, 0U,
-                                                    request_id, std::move(*payload)};
-                auto written = co_await write_frame(state, removal_frame, timeout);
-                if (!written) {
-                    co_return written;
-                }
-                auto response = co_await read_reconcile_response(state, request_id, timeout);
-                if (!response || response->type != protocol::MessageType::unregister_tunnel_ok) {
-                    co_return common::Result<void>::failure(
-                        response ? common::Error{common::ErrorCode::protocol_error,
-                                                 "remote tunnel removal response is invalid"}
-                                 : response.error());
-                }
-                auto removed = protocol::decode_unregister_tunnel_ok(response->payload);
-                if (!removed || removed->tunnel_id != tunnel_id) {
-                    co_return common::Result<void>::failure(
-                        common::ErrorCode::protocol_error,
-                        "remote tunnel removal response is invalid");
-                }
-                iterator = registered_tunnels_.erase(iterator);
-                auto parsed = common::Id::parse(tunnel_id, common::IdKind::tunnel);
-                if (parsed) {
-                    auto current = repository_.tunnels().get_by_id(*parsed);
-                    if (current) {
-                        const auto actual =
-                            current->desired_state == storage::TunnelDesiredState::disabled
-                                ? storage::TunnelActualState::disabled
-                                : storage::TunnelActualState::removing;
-                        auto updated = persist_tunnel_state(*parsed, actual, std::nullopt);
-                        if (!updated) {
-                            co_return updated;
-                        }
-                    }
-                }
             }
             co_return common::Result<void>::success();
         }
@@ -746,7 +770,7 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
             }
         }
 
-        void mark_tunnels_pending() noexcept {
+        void mark_tunnels_pending(const std::optional<common::Error>& error) noexcept {
             registered_tunnels_.clear();
             try {
                 auto tunnels = repository_.tunnels().list_by_server(server_.id);
@@ -754,11 +778,9 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                     return;
                 }
                 for (const auto& tunnel : *tunnels) {
-                    if (tunnel.desired_state == storage::TunnelDesiredState::active &&
-                        (tunnel.actual_state == storage::TunnelActualState::active ||
-                         tunnel.actual_state == storage::TunnelActualState::registering)) {
+                    if (tunnel.desired_state == storage::TunnelDesiredState::active) {
                         static_cast<void>(persist_tunnel_state(
-                            tunnel.id, storage::TunnelActualState::pending, std::nullopt));
+                            tunnel.id, storage::TunnelActualState::pending, error));
                     }
                 }
             } catch (...) {
@@ -929,6 +951,52 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
           connection_budget_(std::make_shared<WorkerBudget>(options_.max_total_connections)),
           strand_(asio::make_strand(io_context)), reconcile_timer_(strand_) {}
 
+    void purge_removed_tunnels(const storage::ServerRecord& server) {
+        auto tunnels = repository_.tunnels().list_by_server(server.id);
+        if (!tunnels) {
+            common::log_error("failed to inspect removed tunnels during reconciliation",
+                              {.component = "daemon.server-manager",
+                               .server_id = server.id.str(),
+                               .error_code = tunnels.error().code()});
+            return;
+        }
+        for (const auto& tunnel : *tunnels) {
+            if (tunnel.desired_state != storage::TunnelDesiredState::removed) {
+                continue;
+            }
+            auto erased = repository_.tunnels().erase(tunnel.id);
+            if (!erased && erased.error().code() != common::ErrorCode::not_found) {
+                common::log_error("failed to purge removed tunnel state",
+                                  {.component = "daemon.server-manager",
+                                   .server_id = server.id.str(),
+                                   .tunnel_id = tunnel.id.str(),
+                                   .error_code = erased.error().code()});
+            }
+        }
+    }
+
+    [[nodiscard]] bool purge_removed_server(const storage::ServerRecord& server) {
+        if (server.credential_ref.has_value()) {
+            auto removed = credentials_.remove(*server.credential_ref);
+            if (!removed) {
+                common::log_error("failed to purge credentials for removed server",
+                                  {.component = "daemon.server-manager",
+                                   .server_id = server.id.str(),
+                                   .error_code = removed.error().code()});
+                return false;
+            }
+        }
+        auto erased = repository_.servers().erase(server.id);
+        if (!erased && erased.error().code() != common::ErrorCode::not_found) {
+            common::log_error("failed to purge removed server state",
+                              {.component = "daemon.server-manager",
+                               .server_id = server.id.str(),
+                               .error_code = erased.error().code()});
+            return false;
+        }
+        return true;
+    }
+
     void reconcile() {
         if (!running_.load()) {
             return;
@@ -945,6 +1013,17 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
         std::unordered_set<std::string> retained;
         for (const auto& record : *records) {
             const std::string id = record.id.str();
+            if (record.desired_state == storage::ServerDesiredState::removed) {
+                const auto existing = sessions_.find(id);
+                if (existing != sessions_.end()) {
+                    existing->second->stop();
+                    sessions_.erase(existing);
+                }
+                static_cast<void>(purge_removed_server(record));
+                continue;
+            }
+
+            purge_removed_tunnels(record);
             if (record.desired_state != storage::ServerDesiredState::enabled ||
                 !record.credential_ref.has_value()) {
                 const auto existing = sessions_.find(id);

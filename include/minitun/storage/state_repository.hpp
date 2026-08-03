@@ -32,6 +32,7 @@ class StateRepository final {
 
     [[nodiscard]] common::Result<Transaction> begin_transaction();
     [[nodiscard]] common::Result<int> schema_version() const;
+    [[nodiscard]] common::Result<void> checkpoint();
 
     /// Returns the stable daemon identity, creating it transactionally once.
     [[nodiscard]] common::Result<common::Id> client_id();

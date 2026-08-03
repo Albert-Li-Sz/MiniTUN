@@ -34,6 +34,8 @@ start_service() {
 	[ -n "$allow_ports" ] && \
 		procd_append_param command --allow-ports "$allow_ports"
 	procd_set_param user minitun-server
+	procd_set_param capabilities /etc/capabilities/minitun-server.json
+	procd_set_param no_new_privs 1
 	procd_set_param respawn 3600 5 5
 	procd_set_param limits nofile="16384 16384"
 	procd_set_param file /etc/config/minitun-server

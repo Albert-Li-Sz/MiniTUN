@@ -95,13 +95,23 @@ done
 
 for path in \
 	"$client_root/etc/config/minitun" \
-	"$server_root/etc/config/minitun-server"; do
+	"$server_root/etc/config/minitun-server" \
+	"$server_root/etc/capabilities/minitun-server.json"; do
 	[ -f "$path" ] || {
 		echo "missing configuration file: $path" >&2
 		exit 1
 	}
 	check_mode "$path" 600
 done
+
+jq -e '
+	[.bounding, .effective, .ambient, .permitted, .inheritable]
+	| all(. == ["CAP_NET_BIND_SERVICE"])
+' "$server_root/etc/capabilities/minitun-server.json" >/dev/null
+grep -q 'procd_set_param capabilities /etc/capabilities/minitun-server.json' \
+	"$server_root/etc/init.d/minitun-server"
+grep -q 'procd_set_param no_new_privs 1' \
+	"$server_root/etc/init.d/minitun-server"
 
 grep -q "option enabled '0'" "$client_root/etc/config/minitun"
 grep -q "option enabled '0'" "$server_root/etc/config/minitun-server"

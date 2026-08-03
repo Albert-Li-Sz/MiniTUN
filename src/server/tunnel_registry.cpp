@@ -83,9 +83,13 @@ class TunnelRegistry::Impl final {
             }
             if (error) {
                 stop();
-                const auto code = error == asio::error::address_in_use
-                                      ? common::ErrorCode::remote_port_in_use
-                                      : common::ErrorCode::connection_failed;
+                common::ErrorCode code = common::ErrorCode::connection_failed;
+                if (error == asio::error::address_in_use) {
+                    code = common::ErrorCode::remote_port_in_use;
+                } else if (error == asio::error::access_denied ||
+                           error == asio::error::no_permission) {
+                    code = common::ErrorCode::permission_denied;
+                }
                 return common::Result<void>::failure(code,
                                                      "remote tunnel listener could not be created");
             }

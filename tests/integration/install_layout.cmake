@@ -113,6 +113,10 @@ endif()
 if(server_service MATCHES "--allow-ports")
     message(FATAL_ERROR "server service unexpectedly restricts the default tunnel port range")
 endif()
+if(NOT server_service MATCHES "AmbientCapabilities=CAP_NET_BIND_SERVICE" OR
+   NOT server_service MATCHES "CapabilityBoundingSet=CAP_NET_BIND_SERVICE")
+    message(FATAL_ERROR "server service cannot bind the full configured TCP port range")
+endif()
 
 install_component(Development development_prefix)
 require_paths("${development_prefix}"

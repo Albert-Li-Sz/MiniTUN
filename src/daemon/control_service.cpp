@@ -91,8 +91,8 @@ validate_params(const Json& params, const std::initializer_list<std::string_view
         return std::optional<std::string>{};
     }
     if (!value->is_string()) {
-        return Result<std::optional<std::string>>::failure(
-            ErrorCode::invalid_argument, "IPC parameter must be a string");
+        return Result<std::optional<std::string>>::failure(ErrorCode::invalid_argument,
+                                                           "IPC parameter must be a string");
     }
     return std::optional<std::string>{value->get<std::string>()};
 }
@@ -100,8 +100,7 @@ validate_params(const Json& params, const std::initializer_list<std::string_view
 [[nodiscard]] Result<std::uint16_t> required_port(const Json& params,
                                                   const std::string_view field) {
     const auto value = params.find(field);
-    if (value == params.end() ||
-        (!value->is_number_integer() && !value->is_number_unsigned())) {
+    if (value == params.end() || (!value->is_number_integer() && !value->is_number_unsigned())) {
         return Result<std::uint16_t>::failure(ErrorCode::invalid_argument,
                                               "port parameter must be an integer");
     }
@@ -526,12 +525,6 @@ Result<Json> ControlService::server_remove(const ipc::Request& request) {
     if (!server) {
         return server.error();
     }
-    if (server->credential_ref.has_value()) {
-        auto removed = credentials_.remove(*server->credential_ref);
-        if (!removed) {
-            return removed.error();
-        }
-    }
     auto removed = repository_.servers().mark_removed(
         server->id, update_time(server->updated_at_unix_ms), *transaction);
     if (!removed) {
@@ -541,13 +534,35 @@ Result<Json> ControlService::server_remove(const ipc::Request& request) {
     if (!committed) {
         return committed.error();
     }
-    return Json{{"removed", Json{{"id", server->id.str()},
-                                  {"name", optional_json(server->name)}}}};
+
+    // The two databases cannot participate in one SQLite transaction. Persist the
+    // state tombstone into the main database file first so a crash can never leave
+    // an enabled server pointing at a credential that has already been deleted.
+    // Startup reconciliation can finish this small removal saga if a later step is
+    // interrupted.
+    auto checkpointed = repository_.checkpoint();
+    if (!checkpointed) {
+        return checkpointed.error();
+    }
+    if (server->credential_ref.has_value()) {
+        removed = credentials_.remove(*server->credential_ref);
+        if (!removed) {
+            return removed.error();
+        }
+    }
+    auto erased = repository_.servers().erase(server->id);
+    if (!erased && erased.error().code() != ErrorCode::not_found) {
+        return erased.error();
+    }
+    checkpointed = repository_.checkpoint();
+    if (!checkpointed) {
+        return checkpointed.error();
+    }
+    return Json{{"removed", Json{{"id", server->id.str()}, {"name", optional_json(server->name)}}}};
 }
 
 Result<Json> ControlService::tunnel_add(const ipc::Request& request) {
-    if (auto valid = validate_params(request.params,
-                                     {"server", "local_port", "remote_port"},
+    if (auto valid = validate_params(request.params, {"server", "local_port", "remote_port"},
                                      {"local_host", "name"});
         !valid) {
         return valid.error();
@@ -582,8 +597,7 @@ Result<Json> ControlService::tunnel_add(const ipc::Request& request) {
     }
     const std::string host = local_host->value_or("127.0.0.1");
     auto local_endpoint = common::Endpoint::parse(endpoint_text(host, *local_port));
-    auto remote_endpoint =
-        common::Endpoint::parse(endpoint_text("0.0.0.0", *remote_port));
+    auto remote_endpoint = common::Endpoint::parse(endpoint_text("0.0.0.0", *remote_port));
     if (!local_endpoint) {
         return local_endpoint.error();
     }
@@ -595,6 +609,13 @@ Result<Json> ControlService::tunnel_add(const ipc::Request& request) {
         return id.error();
     }
     const std::int64_t now = common::unix_milliseconds_now();
+    std::optional<ErrorCode> initial_error_code = server->last_error_code;
+    std::optional<std::string> initial_error_message = server->last_error_message;
+    if (server->actual_state != ServerActualState::online && !server->credential_ref.has_value() &&
+        !initial_error_code.has_value()) {
+        initial_error_code = ErrorCode::not_authenticated;
+        initial_error_message = "server credentials are not configured";
+    }
     TunnelRecord tunnel{
         .id = std::move(*id),
         .name = std::move(*name),
@@ -604,8 +625,8 @@ Result<Json> ControlService::tunnel_add(const ipc::Request& request) {
         .remote_endpoint = std::move(*remote_endpoint),
         .desired_state = TunnelDesiredState::active,
         .actual_state = TunnelActualState::pending,
-        .last_error_code = std::nullopt,
-        .last_error_message = std::nullopt,
+        .last_error_code = initial_error_code,
+        .last_error_message = std::move(initial_error_message),
         .created_at_unix_ms = now,
         .updated_at_unix_ms = now,
     };
@@ -673,9 +694,9 @@ Result<Json> ControlService::tunnel_list(const ipc::Request& request) const {
             continue;
         }
         const auto server_name = server_names.find(tunnel.server_id.str());
-        result.push_back(tunnel_json(
-            tunnel, server_name == server_names.end() ? std::optional<std::string>{}
-                                                       : server_name->second));
+        result.push_back(tunnel_json(tunnel, server_name == server_names.end()
+                                                 ? std::optional<std::string>{}
+                                                 : server_name->second));
     }
     return Json{{"tunnels", std::move(result)}};
 }
@@ -728,12 +749,19 @@ Result<Json> ControlService::tunnel_remove(const ipc::Request& request) {
     if (!removed) {
         return removed.error();
     }
+    auto erased = repository_.tunnels().erase(tunnel->id, *transaction);
+    if (!erased) {
+        return erased.error();
+    }
     auto committed = transaction->commit();
     if (!committed) {
         return committed.error();
     }
-    return Json{{"removed", Json{{"id", tunnel->id.str()},
-                                  {"name", optional_json(tunnel->name)}}}};
+    auto checkpointed = repository_.checkpoint();
+    if (!checkpointed) {
+        return checkpointed.error();
+    }
+    return Json{{"removed", Json{{"id", tunnel->id.str()}, {"name", optional_json(tunnel->name)}}}};
 }
 
 Result<Json> ControlService::status(const ipc::Request& request) const {
@@ -758,14 +786,14 @@ Result<Json> ControlService::status(const ipc::Request& request) const {
     }
 
     std::map<std::string, std::size_t> server_states;
-    for (const std::string_view state : {"not_authenticated", "disconnected", "connecting",
-                                        "tls_handshake", "authenticating", "online", "backoff",
-                                        "disabled", "error"}) {
+    for (const std::string_view state :
+         {"not_authenticated", "disconnected", "connecting", "tls_handshake", "authenticating",
+          "online", "backoff", "disabled", "error"}) {
         server_states.emplace(state, 0U);
     }
     std::map<std::string, std::size_t> tunnel_states;
-    for (const std::string_view state : {"pending", "registering", "active", "failed",
-                                        "removing", "disabled"}) {
+    for (const std::string_view state :
+         {"pending", "registering", "active", "failed", "removing", "disabled"}) {
         tunnel_states.emplace(state, 0U);
     }
 

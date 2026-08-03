@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=minitun
-PKG_VERSION:=0.2.0
+PKG_VERSION:=0.2.1
 PKG_RELEASE:=1
 
 PKG_LICENSE:=MIT
@@ -155,6 +155,9 @@ define Package/minitun-server/install
 	$(INSTALL_DIR) $(1)/usr/bin
 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/minitun-server \
 		$(1)/usr/bin/minitun-server
+	$(INSTALL_DIR) $(1)/etc/capabilities
+	$(INSTALL_CONF) ./files/minitun-server.capabilities \
+		$(1)/etc/capabilities/minitun-server.json
 	$(INSTALL_DIR) $(1)/etc/config
 	$(INSTALL_CONF) ./files/minitun-server.config \
 		$(1)/etc/config/minitun-server

@@ -297,7 +297,7 @@ tar --zstd --extract --file "$MINITUN_SDK_ARCHIVE" \
 
 MINITUN_OPENWRT_JOBS=2 \
   packaging/openwrt/build-sdk.sh \
-    "$PWD/build/openwrt/x86_64/sdk" "$PWD" 0.2.0
+    "$PWD/build/openwrt/x86_64/sdk" "$PWD" 0.2.1
 ```
 
 `build-sdk.sh` 会按 SDK 内锁定的 feed 提交安装 OpenSSL、SQLite 与 CA 依赖，
@@ -319,7 +319,7 @@ find build/openwrt/x86_64/sdk/bin/packages -type f \
 packaging/tests/verify-openwrt.sh \
   "$PWD/build/openwrt/x86_64/sdk" \
   "$PWD/build/openwrt/x86_64/packages" \
-  0.2.0 x86_64 qemu-x86_64-static
+  0.2.1 x86_64 qemu-x86_64-static
 ```
 
 OpenWrt 包默认不启用服务。客户端和服务端分别使用
@@ -342,8 +342,8 @@ GitHub Actions 包含四条工作流：
 必须与 `CMakeLists.txt` 中的项目版本一致：
 
 ```bash
-git tag -a v0.2.0 -m "MiniTun v0.2.0"
-git push origin v0.2.0
+git tag -a v0.2.1 -m "MiniTun v0.2.1"
+git push origin v0.2.1
 ```
 
 发布工作流仅在全部软件包测试通过后创建 GitHub Release。每个版本
@@ -369,13 +369,19 @@ journalctl -u minitund.service -u minitun-server.service --since '-10 min'
 | CLI 退出码为 `3` | `minitund` 是否运行、套接字是否为 `0660`、当前用户是否属于 `minitun` 组 |
 | 服务端无法启动 | 证书与私钥是否匹配；Token 是否为服务账户所有、模式是否为 `0600` |
 | 认证失败 | 证书 SAN、CA 信任、两端 Token、系统时间和控制端口防火墙 |
-| 隧道长期为 `pending` | 服务器在线状态、认证、Worker、端口白名单与资源上限 |
+| 隧道长期为 `pending` | `minitun server inspect <name> --json` 的会话状态与 `last_error`、控制端口连通性、TLS 和 Token |
 | 隧道状态为 `failed` | `permission_denied`、`resource_exhausted` 或 `remote_port_in_use` 错误码 |
-| 公网端口无法访问 | 本地目标、云安全组、主机防火墙、隧道状态和连接配额 |
+| 公网端口无法访问 | 本地目标、映射端口的云安全组与主机防火墙、隧道状态和连接配额 |
 
 本地开发时，套接字与数据库必须位于当前用户所有、模式为 `0700` 的真实目录中。
 MiniTun 会拒绝符号链接、不安全父目录、错误权限、模式漂移或未来版本数据库。不要通过
 放宽文件权限或直接删除数据库绕过检查；应先备份文件，再根据日志定位原因。
+
+`state.db` 使用 WAL 模式，运行期间的最新事务可能位于 `state.db-wal`；
+`credentials.db` 使用带安全删除的 DELETE journal。检查或备份活动数据库时必须使用
+SQLite 在线备份接口或同时保留主文件及 `-wal`、`-shm`，不得在 `minitund` 运行时
+删除任何 sidecar 文件。`remove` 成功后的逻辑结果应通过 `minitun list/inspect` 或
+SQLite 连接查询，不应只比较主文件时间戳。
 
 请勿在 Issue、日志或测试数据中提交 Token、私钥、`credentials.db` 或未脱敏的生产
 数据。
