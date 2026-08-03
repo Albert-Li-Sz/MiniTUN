@@ -262,8 +262,22 @@ tunnel_counts(const std::vector<TunnelRecord>& tunnels) {
 } // namespace
 
 ControlService::ControlService(storage::StateRepository& repository,
-                               storage::CredentialStore& credentials) noexcept
-    : repository_(repository), credentials_(credentials) {}
+                               storage::CredentialStore& credentials,
+                               std::function<void()> state_changed) noexcept
+    : repository_(repository), credentials_(credentials), state_changed_(std::move(state_changed)) {
+}
+
+void ControlService::notify_state_changed() const noexcept {
+    if (!state_changed_) {
+        return;
+    }
+    try {
+        state_changed_();
+    } catch (...) {
+        common::log_error("failed to notify the remote session manager of committed state",
+                          {.component = "daemon.control", .error_code = ErrorCode::internal_error});
+    }
+}
 
 common::Result<void> ControlService::register_handlers(ipc::Dispatcher& dispatcher) {
     std::vector<std::string> registered;
@@ -373,6 +387,7 @@ Result<Json> ControlService::server_add(const ipc::Request& request) {
     if (!created) {
         return created.error();
     }
+    notify_state_changed();
     return Json{{"server", server_json(server, 0U)}};
 }
 
@@ -451,6 +466,7 @@ Result<Json> ControlService::server_login(const ipc::Request& request) {
                               .error_code = removed.error().code()});
         }
     }
+    notify_state_changed();
     return Json{{"server", server_json(*server, count)}};
 }
 
@@ -588,6 +604,7 @@ Result<Json> ControlService::server_remove(const ipc::Request& request) {
             }
         }
     }
+    notify_state_changed();
     return Json{{"removed", Json{{"id", server->id.str()}, {"name", optional_json(server->name)}}}};
 }
 
@@ -668,6 +685,7 @@ Result<Json> ControlService::tunnel_add(const ipc::Request& request) {
     if (!committed) {
         return committed.error();
     }
+    notify_state_changed();
     return Json{{"tunnel", tunnel_json(tunnel, server->name)}};
 }
 
@@ -795,6 +813,7 @@ Result<Json> ControlService::tunnel_remove(const ipc::Request& request) {
                           .tunnel_id = tunnel->id.str(),
                           .error_code = checkpointed.error().code()});
     }
+    notify_state_changed();
     return Json{{"removed", Json{{"id", tunnel->id.str()}, {"name", optional_json(tunnel->name)}}}};
 }
 

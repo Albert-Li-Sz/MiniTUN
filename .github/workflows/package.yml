@@ -41,12 +41,57 @@ defaults:
     shell: bash
 
 jobs:
+  resolve-version:
+    name: Resolve package version
+    runs-on: ubuntu-24.04
+    outputs:
+      package_version: ${{ steps.version.outputs.package_version }}
+      artifact_version: ${{ steps.version.outputs.artifact_version }}
+    env:
+      REQUESTED_VERSION: ${{ inputs.package_version || '' }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Resolve and validate version
+        id: version
+        run: |
+          project_version=$(awk '$1 == "VERSION" { print $2; exit }' CMakeLists.txt)
+          if [[ -z "${project_version}" ]]; then
+            echo "CMake project version is unavailable" >&2
+            exit 1
+          fi
+
+          package_version=${REQUESTED_VERSION}
+          if [[ -z "${package_version}" ]]; then
+            package_version="${project_version}_pre${GITHUB_RUN_NUMBER}~${GITHUB_SHA:0:12}"
+          fi
+          if [[ ! "${package_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+|_pre[0-9]+~[0-9a-f]{12})?$ ]]; then
+            echo "invalid package version: ${package_version}" >&2
+            exit 1
+          fi
+
+          base_version=${package_version%%-rc.*}
+          base_version=${base_version%%_pre*}
+          if [[ "${base_version}" != "${project_version}" ]]; then
+            echo "package version ${package_version} does not match CMake project version ${project_version}" >&2
+            exit 1
+          fi
+
+          artifact_version=${package_version//~/-}
+          echo "package_version=${package_version}" >>"${GITHUB_OUTPUT}"
+          echo "artifact_version=${artifact_version}" >>"${GITHUB_OUTPUT}"
+
   deb-amd64:
     name: DEB amd64
+    needs: resolve-version
     runs-on: ubuntu-22.04
     timeout-minutes: 60
     env:
-      PACKAGE_VERSION: ${{ inputs.package_version || '' }}
+      PACKAGE_VERSION: ${{ needs.resolve-version.outputs.package_version }}
+      ARTIFACT_VERSION: ${{ needs.resolve-version.outputs.artifact_version }}
 
     steps:
       - name: Check out source
@@ -56,18 +101,16 @@ jobs:
 
       - name: Validate package version
         run: |
-          if [[ -n "${PACKAGE_VERSION}" &&
-                ! "${PACKAGE_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
+          if [[ ! "${PACKAGE_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+|_pre[0-9]+~[0-9a-f]{12})?$ ]]; then
             echo "invalid package version: ${PACKAGE_VERSION}" >&2
             exit 1
           fi
-          if [[ -n "${PACKAGE_VERSION}" ]]; then
-            base_version=${PACKAGE_VERSION%%-rc.*}
-            project_version=$(awk '$1 == "VERSION" { print $2; exit }' CMakeLists.txt)
-            if [[ -z "${project_version}" || "${base_version}" != "${project_version}" ]]; then
-              echo "package version ${PACKAGE_VERSION} does not match CMake project version ${project_version:-unknown}" >&2
-              exit 1
-            fi
+          base_version=${PACKAGE_VERSION%%-rc.*}
+          base_version=${base_version%%_pre*}
+          project_version=$(awk '$1 == "VERSION" { print $2; exit }' CMakeLists.txt)
+          if [[ -z "${project_version}" || "${base_version}" != "${project_version}" ]]; then
+            echo "package version ${PACKAGE_VERSION} does not match CMake project version ${project_version:-unknown}" >&2
+            exit 1
           fi
 
       - name: Install DEB build dependencies
@@ -152,11 +195,7 @@ jobs:
           test -n "${client_package}"
           test -n "${server_package}"
 
-          artifact_version=${PACKAGE_VERSION}
-          if [[ -z "${artifact_version}" ]]; then
-            artifact_version=$(dpkg-deb -f "${client_package}" Version)
-            artifact_version=${artifact_version//~/-}
-          fi
+          artifact_version=${ARTIFACT_VERSION}
 
           install -d dist/deb
           install -m 0644 "${client_package}" \
@@ -186,10 +225,12 @@ jobs:
 
   rpm-x86-64:
     name: RPM x86_64
+    needs: resolve-version
     runs-on: ubuntu-24.04
     timeout-minutes: 75
     env:
-      PACKAGE_VERSION: ${{ inputs.package_version || '' }}
+      PACKAGE_VERSION: ${{ needs.resolve-version.outputs.package_version }}
+      ARTIFACT_VERSION: ${{ needs.resolve-version.outputs.artifact_version }}
 
     steps:
       - name: Check out source
@@ -199,18 +240,16 @@ jobs:
 
       - name: Validate package version
         run: |
-          if [[ -n "${PACKAGE_VERSION}" &&
-                ! "${PACKAGE_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
+          if [[ ! "${PACKAGE_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+|_pre[0-9]+~[0-9a-f]{12})?$ ]]; then
             echo "invalid package version: ${PACKAGE_VERSION}" >&2
             exit 1
           fi
-          if [[ -n "${PACKAGE_VERSION}" ]]; then
-            base_version=${PACKAGE_VERSION%%-rc.*}
-            project_version=$(awk '$1 == "VERSION" { print $2; exit }' CMakeLists.txt)
-            if [[ -z "${project_version}" || "${base_version}" != "${project_version}" ]]; then
-              echo "package version ${PACKAGE_VERSION} does not match CMake project version ${project_version:-unknown}" >&2
-              exit 1
-            fi
+          base_version=${PACKAGE_VERSION%%-rc.*}
+          base_version=${base_version%%_pre*}
+          project_version=$(awk '$1 == "VERSION" { print $2; exit }' CMakeLists.txt)
+          if [[ -z "${project_version}" || "${base_version}" != "${project_version}" ]]; then
+            echo "package version ${PACKAGE_VERSION} does not match CMake project version ${project_version:-unknown}" >&2
+            exit 1
           fi
 
       - name: Build, test, and inspect RPM packages in Fedora
@@ -276,11 +315,7 @@ jobs:
           test -n "${client_package}"
           test -n "${server_package}"
 
-          artifact_version=${PACKAGE_VERSION}
-          if [[ -z "${artifact_version}" ]]; then
-            native_name=${client_package##*/minitun-client-}
-            artifact_version=${native_name%-*.x86_64.rpm}
-          fi
+          artifact_version=${ARTIFACT_VERSION}
 
           install -d dist/rpm
           install -m 0644 "${client_package}" \
@@ -310,6 +345,7 @@ jobs:
 
   openwrt:
     name: OpenWrt 25.12.5 / ${{ matrix.package_arch }}
+    needs: resolve-version
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     strategy:
@@ -354,7 +390,8 @@ jobs:
             sdk_sha256: f5d7d584acd386883294011442b251c006a5a17ba68c990742efd8738931a70d
     env:
       OPENWRT_VERSION: 25.12.5
-      PACKAGE_VERSION: ${{ inputs.package_version || '' }}
+      PACKAGE_VERSION: ${{ needs.resolve-version.outputs.package_version }}
+      ARTIFACT_VERSION: ${{ needs.resolve-version.outputs.artifact_version }}
 
     steps:
       - name: Check out source
@@ -364,18 +401,16 @@ jobs:
 
       - name: Validate package version
         run: |
-          if [[ -n "${PACKAGE_VERSION}" &&
-                ! "${PACKAGE_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
+          if [[ ! "${PACKAGE_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+|_pre[0-9]+~[0-9a-f]{12})?$ ]]; then
             echo "invalid package version: ${PACKAGE_VERSION}" >&2
             exit 1
           fi
-          if [[ -n "${PACKAGE_VERSION}" ]]; then
-            base_version=${PACKAGE_VERSION%%-rc.*}
-            project_version=$(awk '$1 == "VERSION" { print $2; exit }' CMakeLists.txt)
-            if [[ -z "${project_version}" || "${base_version}" != "${project_version}" ]]; then
-              echo "package version ${PACKAGE_VERSION} does not match CMake project version ${project_version:-unknown}" >&2
-              exit 1
-            fi
+          base_version=${PACKAGE_VERSION%%-rc.*}
+          base_version=${base_version%%_pre*}
+          project_version=$(awk '$1 == "VERSION" { print $2; exit }' CMakeLists.txt)
+          if [[ -z "${project_version}" || "${base_version}" != "${project_version}" ]]; then
+            echo "package version ${PACKAGE_VERSION} does not match CMake project version ${project_version:-unknown}" >&2
+            exit 1
           fi
 
       - name: Install OpenWrt SDK dependencies
@@ -468,10 +503,7 @@ jobs:
           test -n "${client_package}"
           test -n "${server_package}"
 
-          artifact_version=${PACKAGE_VERSION}
-          if [[ -z "${artifact_version}" ]]; then
-            artifact_version=$(awk '$1 == "VERSION" { print $2; exit }' CMakeLists.txt)
-          fi
+          artifact_version=${ARTIFACT_VERSION}
 
           dist_dir="dist/openwrt/${{ matrix.package_arch }}"
           install -d "${dist_dir}"

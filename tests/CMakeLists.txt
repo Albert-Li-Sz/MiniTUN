@@ -1,4 +1,5 @@
 add_executable(minitun_unit_tests
+    unit/accept_recovery_test.cpp
     unit/common_test.cpp
     unit/connection_quota_test.cpp
     unit/credential_store_test.cpp
@@ -66,6 +67,17 @@ set_tests_properties(smoke.minitun-version PROPERTIES
     LABELS "smoke"
     PASS_REGULAR_EXPRESSION "protocol version: 1"
 )
+
+if(Git_FOUND AND EXISTS "${CMAKE_SOURCE_DIR}/.git")
+    add_test(NAME smoke.version-matches-git-head
+        COMMAND "${CMAKE_COMMAND}"
+            "-DMINITUN_EXECUTABLE=$<TARGET_FILE:minitun>"
+            "-DMINITUN_SOURCE_DIR=${CMAKE_SOURCE_DIR}"
+            "-DMINITUN_GIT_EXECUTABLE=${GIT_EXECUTABLE}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/integration/version_matches_git.cmake"
+    )
+    set_tests_properties(smoke.version-matches-git-head PROPERTIES LABELS "smoke;version")
+endif()
 
 add_test(NAME smoke.minitund-help
     COMMAND $<TARGET_FILE:minitund> --help

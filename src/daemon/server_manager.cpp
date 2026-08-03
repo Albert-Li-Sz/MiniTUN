@@ -26,6 +26,8 @@
 #include <asio/strand.hpp>
 #include <asio/use_awaitable.hpp>
 
+#include <openssl/ssl.h>
+
 #include <minitun/common/error.hpp>
 #include <minitun/common/logging.hpp>
 #include <minitun/common/secure_string.hpp>
@@ -98,7 +100,7 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
               tls_context_(std::move(tls_context)), worker_budget_(std::move(worker_budget)),
               connection_budget_(std::move(connection_budget)), options_(std::move(options)),
               strand_(asio::make_strand(io_context)), resolver_(strand_), reconnect_timer_(strand_),
-              operation_timer_(strand_) {}
+              idle_timer_(strand_), operation_timer_(strand_) {}
 
         ~ServerSession() {
             stop_worker_pool();
@@ -128,6 +130,29 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
         void stop() {
             auto self = shared_from_this();
             asio::dispatch(strand_, [self] { self->begin_stop(); });
+        }
+
+        void notify_changed() {
+            auto self = shared_from_this();
+            asio::dispatch(strand_, [self] {
+                if (self->stopping_) {
+                    return;
+                }
+                self->reconcile_requested_ = true;
+                if (self->idle_wait_active_) {
+                    try {
+                        static_cast<void>(self->idle_timer_.cancel());
+                    } catch (...) {
+                    }
+                }
+                if (self->reconnect_wait_active_) {
+                    self->retry_requested_ = true;
+                    try {
+                        static_cast<void>(self->reconnect_timer_.cancel());
+                    } catch (...) {
+                    }
+                }
+            });
         }
 
         void supersede() {
@@ -186,9 +211,19 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                                  log_context(result.error.code()));
                 reconnect_timer_.expires_after(delay);
                 asio::error_code timer_error;
+                reconnect_wait_active_ = true;
                 co_await reconnect_timer_.async_wait(
                     asio::redirect_error(asio::use_awaitable, timer_error));
-                if (timer_error || stopping_) {
+                reconnect_wait_active_ = false;
+                if (stopping_) {
+                    terminal_state_.store(TerminalState::stopped);
+                    co_return;
+                }
+                if (timer_error && retry_requested_) {
+                    retry_requested_ = false;
+                    continue;
+                }
+                if (timer_error) {
                     terminal_state_.store(TerminalState::stopped);
                     co_return;
                 }
@@ -350,13 +385,45 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
             const auto heartbeat_timeout =
                 std::clamp(heartbeat_interval * 3, std::chrono::milliseconds{3'000},
                            std::chrono::milliseconds{180'000});
+            // Reconcile once immediately after authentication. Later control-plane
+            // mutations wake the idle loop directly; heartbeats remain a fallback.
+            reconcile_requested_ = true;
             co_return co_await heartbeat_loop(state, heartbeat_timeout);
         }
+
+        enum class IdleWaitResult : std::uint8_t {
+            input,
+            changed,
+            timed_out,
+            stopped,
+        };
 
         [[nodiscard]] asio::awaitable<AttemptResult>
         heartbeat_loop(protocol::StateMachine& state,
                        const std::chrono::milliseconds heartbeat_timeout) {
             for (;;) {
+                if (reconcile_requested_) {
+                    auto reconciled = co_await reconcile_until_current(state, heartbeat_timeout);
+                    if (!reconciled) {
+                        co_return disconnected(reconciled.error().code(),
+                                               reconciled.error().message());
+                    }
+                }
+
+                const IdleWaitResult ready = co_await wait_for_input_or_change(heartbeat_timeout);
+                if (ready == IdleWaitResult::changed) {
+                    continue;
+                }
+                if (ready == IdleWaitResult::timed_out) {
+                    co_return disconnected(common::ErrorCode::connection_timeout,
+                                           "remote server heartbeat timed out");
+                }
+                if (ready == IdleWaitResult::stopped) {
+                    co_return AttemptResult{AttemptKind::stopped,
+                                            common::Error{common::ErrorCode::connection_failed,
+                                                          "remote server session stopped"}};
+                }
+
                 auto frame = co_await read_frame(state, heartbeat_timeout);
                 if (!frame) {
                     co_return disconnected(frame.error().code(), frame.error().message());
@@ -379,7 +446,8 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                     // Heartbeat liveness must never depend on the number of configured
                     // tunnels. Reconciliation may require one round trip per tunnel, so
                     // acknowledge the server's absolute heartbeat deadline first.
-                    auto reconciled = co_await reconcile_tunnels(state, heartbeat_timeout);
+                    reconcile_requested_ = true;
+                    auto reconciled = co_await reconcile_until_current(state, heartbeat_timeout);
                     if (!reconciled) {
                         co_return disconnected(reconciled.error().code(),
                                                reconciled.error().message());
@@ -402,6 +470,75 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                 co_return disconnected(common::ErrorCode::protocol_error,
                                        "remote server sent an unexpected control message");
             }
+        }
+
+        [[nodiscard]] asio::awaitable<IdleWaitResult>
+        wait_for_input_or_change(const std::chrono::milliseconds timeout) {
+            if (stream_ == nullptr || stopping_) {
+                co_return IdleWaitResult::stopped;
+            }
+            if (reconcile_requested_) {
+                co_return IdleWaitResult::changed;
+            }
+            if (SSL_pending(stream_->native_handle()) > 0) {
+                co_return IdleWaitResult::input;
+            }
+
+            struct WaitState final {
+                bool active{true};
+                bool readable{false};
+                bool failed{false};
+            };
+            auto state = std::make_shared<WaitState>();
+            auto self = shared_from_this();
+            idle_wait_active_ = true;
+            stream_->lowest_layer().async_wait(
+                asio::ip::tcp::socket::wait_read, [self, state](const asio::error_code& error) {
+                    if (!state->active) {
+                        return;
+                    }
+                    state->active = false;
+                    state->readable = !error;
+                    state->failed = static_cast<bool>(error);
+                    try {
+                        static_cast<void>(self->idle_timer_.cancel());
+                    } catch (...) {
+                    }
+                });
+
+            idle_timer_.expires_after(timeout);
+            asio::error_code timer_error;
+            co_await idle_timer_.async_wait(asio::redirect_error(asio::use_awaitable, timer_error));
+            idle_wait_active_ = false;
+            state->active = false;
+            if (state->readable) {
+                co_return IdleWaitResult::input;
+            }
+
+            // Only a readiness wait is outstanding here, so cancellation cannot
+            // discard a partially decoded protocol frame.
+            asio::error_code ignored;
+            stream_->lowest_layer().cancel(ignored);
+            if (stopping_ || state->failed) {
+                co_return IdleWaitResult::stopped;
+            }
+            if (reconcile_requested_) {
+                co_return IdleWaitResult::changed;
+            }
+            co_return timer_error ? IdleWaitResult::stopped : IdleWaitResult::timed_out;
+        }
+
+        [[nodiscard]] asio::awaitable<common::Result<void>>
+        reconcile_until_current(protocol::StateMachine& state,
+                                const std::chrono::milliseconds timeout) {
+            do {
+                reconcile_requested_ = false;
+                auto reconciled = co_await reconcile_tunnels(state, timeout);
+                if (!reconciled) {
+                    co_return reconciled;
+                }
+            } while (reconcile_requested_ && !stopping_);
+            co_return common::Result<void>::success();
         }
 
         [[nodiscard]] asio::awaitable<common::Result<void>>
@@ -694,6 +831,7 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
         void cancel_timers() noexcept {
             try {
                 static_cast<void>(reconnect_timer_.cancel());
+                static_cast<void>(idle_timer_.cancel());
                 static_cast<void>(operation_timer_.cancel());
             } catch (...) {
             }
@@ -885,6 +1023,7 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
         asio::strand<asio::io_context::executor_type> strand_;
         asio::ip::tcp::resolver resolver_;
         asio::steady_timer reconnect_timer_;
+        asio::steady_timer idle_timer_;
         asio::steady_timer operation_timer_;
         std::unique_ptr<protocol::TlsStream> stream_;
         std::unique_ptr<WorkerPool> worker_pool_;
@@ -897,6 +1036,10 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
         std::mutex persistence_mutex_;
         bool persistence_allowed_{true};
         bool stopping_{false};
+        bool reconcile_requested_{false};
+        bool retry_requested_{false};
+        bool reconnect_wait_active_{false};
+        bool idle_wait_active_{false};
         bool write_in_progress_{false};
         bool goaway_in_progress_{false};
     };
@@ -930,7 +1073,7 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
             return common::Result<void>::failure(common::ErrorCode::already_exists,
                                                  "server manager is already running");
         }
-        reconcile();
+        reconcile(false);
         return common::Result<void>::success();
     }
 
@@ -958,7 +1101,7 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
         auto self = shared_from_this();
         asio::dispatch(strand_, [self] {
             if (self->running_.load()) {
-                self->reconcile();
+                self->reconcile(true);
             }
         });
     }
@@ -1034,7 +1177,7 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
         return true;
     }
 
-    void reconcile() {
+    void reconcile(const bool notify_sessions) {
         if (!running_.load()) {
             return;
         }
@@ -1104,6 +1247,8 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                     sessions_.emplace(id, session);
                     session->start();
                 }
+            } else if (notify_sessions) {
+                existing->second->notify_changed();
             }
         }
 
@@ -1127,7 +1272,7 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
         auto self = shared_from_this();
         reconcile_timer_.async_wait([self](const asio::error_code& error) {
             if (!error && self->running_.load()) {
-                self->reconcile();
+                self->reconcile(false);
             }
         });
     }

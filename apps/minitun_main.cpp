@@ -548,9 +548,34 @@ read_token(const bool token_stdin) {
     std::string token;
     const StringScrubber token_scrubber{token};
     if (token_stdin) {
-        if (!std::getline(std::cin, token)) {
-            return minitun::common::Error{minitun::common::ErrorCode::invalid_argument,
-                                          "failed to read token from standard input"};
+        try {
+            // Read at most one byte beyond the accepted limit. std::getline would
+            // allocate for an arbitrarily large line before the length check below.
+            for (;;) {
+                const int value = std::cin.get();
+                if (value == std::char_traits<char>::eof()) {
+                    if (std::cin.eof() && !token.empty()) {
+                        break;
+                    }
+                    return minitun::common::Error{minitun::common::ErrorCode::invalid_argument,
+                                                  "failed to read token from standard input"};
+                }
+                const char character = static_cast<char>(value);
+                if (character == '\n' || character == '\r') {
+                    break;
+                }
+                if (token.size() == kMaxTokenBytes) {
+                    return minitun::common::Error{minitun::common::ErrorCode::invalid_argument,
+                                                  "token is outside its accepted byte-length"};
+                }
+                token.push_back(character);
+            }
+        } catch (const std::bad_alloc&) {
+            return minitun::common::Error{minitun::common::ErrorCode::resource_exhausted,
+                                          "insufficient memory while reading token"};
+        } catch (const std::length_error&) {
+            return minitun::common::Error{minitun::common::ErrorCode::resource_exhausted,
+                                          "insufficient memory while reading token"};
         }
     } else {
         if (::isatty(STDIN_FILENO) == 0) {

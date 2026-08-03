@@ -4,17 +4,23 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
 #include <utility>
 
+#include <asio/bind_executor.hpp>
 #include <asio/error.hpp>
 #include <asio/ip/address.hpp>
 #include <asio/ip/tcp.hpp>
+#include <asio/steady_timer.hpp>
+#include <asio/strand.hpp>
 
 #include <minitun/common/error.hpp>
 #include <minitun/common/id.hpp>
+#include <minitun/common/logging.hpp>
+#include <minitun/server/accept_recovery.hpp>
 
 namespace minitun::server {
 namespace {
@@ -56,10 +62,14 @@ class TunnelRegistry::Impl final {
   private:
     class Listener final : public std::enable_shared_from_this<Listener> {
       public:
-        Listener(asio::any_io_executor executor, TunnelBinding binding,
-                 PublicConnectionHandler connection_handler)
-            : binding_(std::move(binding)), acceptor_(std::move(executor)),
-              connection_handler_(std::move(connection_handler)) {}
+        Listener(asio::any_io_executor listener_executor, asio::any_io_executor connection_executor,
+                 TunnelBinding binding, PublicConnectionHandler connection_handler,
+                 std::shared_ptr<ReservedFileDescriptor> reserved_descriptor)
+            : binding_(std::move(binding)), acceptor_(std::move(listener_executor)),
+              retry_timer_(acceptor_.get_executor()),
+              connection_executor_(std::move(connection_executor)),
+              connection_handler_(std::move(connection_handler)),
+              reserved_descriptor_(std::move(reserved_descriptor)) {}
 
         ~Listener() noexcept { stop(); }
 
@@ -99,6 +109,10 @@ class TunnelRegistry::Impl final {
 
         void stop() noexcept {
             asio::error_code ignored;
+            try {
+                static_cast<void>(retry_timer_.cancel());
+            } catch (...) {
+            }
             acceptor_.cancel(ignored);
             acceptor_.close(ignored);
         }
@@ -107,39 +121,81 @@ class TunnelRegistry::Impl final {
 
       private:
         void accept_next() {
+            if (!acceptor_.is_open()) {
+                return;
+            }
             auto self = shared_from_this();
             acceptor_.async_accept(
-                [self](const asio::error_code& error, asio::ip::tcp::socket socket) mutable {
-                    if (!error) {
-                        if (self->connection_handler_) {
-                            try {
-                                self->connection_handler_(self->binding_, std::move(socket));
-                            } catch (...) {
+                asio::make_strand(connection_executor_),
+                asio::bind_executor(
+                    acceptor_.get_executor(),
+                    [self](const asio::error_code& error, asio::ip::tcp::socket socket) mutable {
+                        if (!error) {
+                            self->retry_policy_.reset();
+                            if (self->connection_handler_) {
+                                try {
+                                    self->connection_handler_(self->binding_, std::move(socket));
+                                } catch (...) {
+                                    asio::error_code ignored;
+                                    socket.close(ignored);
+                                }
+                            } else {
                                 asio::error_code ignored;
                                 socket.close(ignored);
                             }
-                        } else {
-                            asio::error_code ignored;
-                            socket.close(ignored);
+                        } else if (AcceptRetryPolicy::retryable(error)) {
+                            self->handle_accept_failure(error);
+                            return;
                         }
-                    }
-                    if (self->acceptor_.is_open()) {
-                        self->accept_next();
-                    }
-                });
+                        if (self->acceptor_.is_open()) {
+                            self->accept_next();
+                        }
+                    }));
+        }
+
+        void handle_accept_failure(const asio::error_code& error) {
+            if (AcceptRetryPolicy::descriptor_exhausted(error) && reserved_descriptor_) {
+                reserved_descriptor_->recover(acceptor_);
+            }
+            if (retry_policy_.should_log(AcceptRetryPolicy::Clock::now())) {
+                common::log_warn(
+                    "public tunnel accept failed; retrying with backoff",
+                    {.component = "server.tunnel-listener",
+                     .tunnel_id = binding_.tunnel_id,
+                     .error_code =
+                         AcceptRetryPolicy::resource_exhausted(error)
+                             ? std::optional<
+                                   common::ErrorCode>{common::ErrorCode::resource_exhausted}
+                             : std::optional<common::ErrorCode>{
+                                   common::ErrorCode::connection_failed}});
+            }
+            retry_timer_.expires_after(retry_policy_.next_delay());
+            auto self = shared_from_this();
+            retry_timer_.async_wait([self](const asio::error_code& timer_error) {
+                if (!timer_error && self->acceptor_.is_open()) {
+                    self->accept_next();
+                }
+            });
         }
 
         TunnelBinding binding_;
         asio::ip::tcp::acceptor acceptor_;
+        asio::steady_timer retry_timer_;
+        asio::any_io_executor connection_executor_;
         PublicConnectionHandler connection_handler_;
+        std::shared_ptr<ReservedFileDescriptor> reserved_descriptor_;
+        AcceptRetryPolicy retry_policy_;
     };
 
   public:
-    Impl(asio::any_io_executor executor, common::PortRange allowed_ports,
-         const std::size_t max_tunnels_per_client, PublicConnectionHandler connection_handler)
-        : executor_(std::move(executor)), allowed_ports_(std::move(allowed_ports)),
-          max_tunnels_per_client_(max_tunnels_per_client),
-          connection_handler_(std::move(connection_handler)) {}
+    Impl(asio::any_io_executor listener_executor, asio::any_io_executor connection_executor,
+         common::PortRange allowed_ports, const std::size_t max_tunnels_per_client,
+         PublicConnectionHandler connection_handler)
+        : listener_executor_(std::move(listener_executor)),
+          connection_executor_(std::move(connection_executor)),
+          allowed_ports_(std::move(allowed_ports)), max_tunnels_per_client_(max_tunnels_per_client),
+          connection_handler_(std::move(connection_handler)),
+          reserved_descriptor_(std::make_shared<ReservedFileDescriptor>()) {}
 
     [[nodiscard]] common::Result<void> register_tunnel(const TunnelBinding& binding) {
         auto valid = validate_binding(binding, allowed_ports_);
@@ -159,7 +215,9 @@ class TunnelRegistry::Impl final {
             return common::Result<void>::failure(common::ErrorCode::resource_exhausted,
                                                  "client tunnel limit has been reached");
         }
-        auto listener = std::make_shared<Listener>(executor_, binding, connection_handler_);
+        auto listener =
+            std::make_shared<Listener>(listener_executor_, connection_executor_, binding,
+                                       connection_handler_, reserved_descriptor_);
         auto started = listener->start();
         if (!started) {
             return started;
@@ -224,19 +282,29 @@ class TunnelRegistry::Impl final {
         }
     }
 
-    asio::any_io_executor executor_;
+    asio::any_io_executor listener_executor_;
+    asio::any_io_executor connection_executor_;
     common::PortRange allowed_ports_;
     std::size_t max_tunnels_per_client_;
     PublicConnectionHandler connection_handler_;
+    std::shared_ptr<ReservedFileDescriptor> reserved_descriptor_;
     std::unordered_map<std::string, std::shared_ptr<Listener>> listeners_;
 };
 
 TunnelRegistry::TunnelRegistry(asio::any_io_executor executor, common::PortRange allowed_ports,
                                const std::size_t max_tunnels_per_client,
                                PublicConnectionHandler connection_handler)
-    : implementation_(std::make_unique<Impl>(std::move(executor), std::move(allowed_ports),
-                                             max_tunnels_per_client,
-                                             std::move(connection_handler))) {}
+    : TunnelRegistry(executor, executor, std::move(allowed_ports), max_tunnels_per_client,
+                     std::move(connection_handler)) {}
+
+TunnelRegistry::TunnelRegistry(asio::any_io_executor listener_executor,
+                               asio::any_io_executor connection_executor,
+                               common::PortRange allowed_ports,
+                               const std::size_t max_tunnels_per_client,
+                               PublicConnectionHandler connection_handler)
+    : implementation_(std::make_unique<Impl>(
+          std::move(listener_executor), std::move(connection_executor), std::move(allowed_ports),
+          max_tunnels_per_client, std::move(connection_handler))) {}
 
 TunnelRegistry::~TunnelRegistry() noexcept = default;
 

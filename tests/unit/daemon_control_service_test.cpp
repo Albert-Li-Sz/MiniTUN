@@ -90,7 +90,9 @@ class DaemonControlServiceTest : public testing::Test {
         ASSERT_TRUE(opened_credentials) << opened_credentials.error();
         credentials_ = std::move(*opened_credentials);
 
-        service_ = std::make_unique<ControlService>(*repository_, *credentials_);
+        service_ = std::make_unique<ControlService>(*repository_, *credentials_, [this] {
+            notifications_.fetch_add(1U, std::memory_order_relaxed);
+        });
         const auto registered = service_->register_handlers(dispatcher_);
         ASSERT_TRUE(registered) << registered.error();
     }
@@ -101,7 +103,48 @@ class DaemonControlServiceTest : public testing::Test {
     std::unique_ptr<storage::SqliteCredentialStore> credentials_;
     std::unique_ptr<ControlService> service_;
     ipc::Dispatcher dispatcher_;
+    std::atomic_size_t notifications_{0U};
 };
+
+TEST_F(DaemonControlServiceTest, NotifiesOnlyAfterSuccessfulStateMutations) {
+    EXPECT_EQ(notifications_.load(std::memory_order_relaxed), 0U);
+    const auto added = dispatch(dispatcher_, "server.add",
+                                ipc::Json{{"endpoint", "example.com:2333"}, {"name", "primary"}});
+    ASSERT_TRUE(added.ok()) << *added.error();
+    EXPECT_EQ(notifications_.load(std::memory_order_relaxed), 1U);
+
+    const auto inspected =
+        dispatch(dispatcher_, "server.inspect", ipc::Json{{"identifier", "primary"}});
+    ASSERT_TRUE(inspected.ok()) << *inspected.error();
+    EXPECT_EQ(notifications_.load(std::memory_order_relaxed), 1U);
+
+    const auto logged_in = dispatch(dispatcher_, "server.login",
+                                    ipc::Json{{"identifier", "primary"}, {"token", "token"}});
+    ASSERT_TRUE(logged_in.ok()) << *logged_in.error();
+    EXPECT_EQ(notifications_.load(std::memory_order_relaxed), 2U);
+
+    const auto tunnel_added = dispatch(
+        dispatcher_, "tun.add",
+        ipc::Json{
+            {"server", "primary"}, {"local_port", 22}, {"remote_port", 6000}, {"name", "ssh"}});
+    ASSERT_TRUE(tunnel_added.ok()) << *tunnel_added.error();
+    EXPECT_EQ(notifications_.load(std::memory_order_relaxed), 3U);
+
+    const auto tunnel_removed =
+        dispatch(dispatcher_, "tun.remove", ipc::Json{{"identifier", "ssh"}});
+    ASSERT_TRUE(tunnel_removed.ok()) << *tunnel_removed.error();
+    EXPECT_EQ(notifications_.load(std::memory_order_relaxed), 4U);
+
+    const auto server_removed =
+        dispatch(dispatcher_, "server.remove", ipc::Json{{"identifier", "primary"}});
+    ASSERT_TRUE(server_removed.ok()) << *server_removed.error();
+    EXPECT_EQ(notifications_.load(std::memory_order_relaxed), 5U);
+
+    const auto duplicate_remove =
+        dispatch(dispatcher_, "server.remove", ipc::Json{{"identifier", "primary"}});
+    EXPECT_FALSE(duplicate_remove.ok());
+    EXPECT_EQ(notifications_.load(std::memory_order_relaxed), 5U);
+}
 
 TEST_F(DaemonControlServiceTest, RegistersCompleteStageFourMethodSet) {
     EXPECT_EQ(dispatcher_.size(), 11U);

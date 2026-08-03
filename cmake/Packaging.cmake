@@ -17,6 +17,13 @@ if(MINITUN_PACKAGE_VERSION MATCHES
     set(minitun_debian_version "${CMAKE_MATCH_1}~rc.${CMAKE_MATCH_2}")
     set(minitun_rpm_version "${CMAKE_MATCH_1}")
     set(minitun_rpm_release "0.rc.${CMAKE_MATCH_2}")
+elseif(MINITUN_PACKAGE_VERSION MATCHES
+       "^([0-9]+\\.[0-9]+\\.[0-9]+)_pre([0-9]+)~([0-9a-f]+)$")
+    set(minitun_debian_version
+        "${CMAKE_MATCH_1}~pre.${CMAKE_MATCH_2}+git.${CMAKE_MATCH_3}"
+    )
+    set(minitun_rpm_version "${CMAKE_MATCH_1}")
+    set(minitun_rpm_release "0.pre.${CMAKE_MATCH_2}.git.${CMAKE_MATCH_3}")
 endif()
 
 set(CPACK_PACKAGE_VERSION "${MINITUN_PACKAGE_VERSION}")

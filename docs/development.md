@@ -297,7 +297,7 @@ tar --zstd --extract --file "$MINITUN_SDK_ARCHIVE" \
 
 MINITUN_OPENWRT_JOBS=2 \
   packaging/openwrt/build-sdk.sh \
-    "$PWD/build/openwrt/x86_64/sdk" "$PWD" 0.2.2
+    "$PWD/build/openwrt/x86_64/sdk" "$PWD" 0.2.3
 ```
 
 `build-sdk.sh` 会按 SDK 内锁定的 feed 提交安装 OpenSSL、SQLite 与 CA 依赖，
@@ -319,7 +319,7 @@ find build/openwrt/x86_64/sdk/bin/packages -type f \
 packaging/tests/verify-openwrt.sh \
   "$PWD/build/openwrt/x86_64/sdk" \
   "$PWD/build/openwrt/x86_64/packages" \
-  0.2.2 x86_64 qemu-x86_64-static
+  0.2.3 x86_64 qemu-x86_64-static
 ```
 
 OpenWrt 包默认不启用服务。客户端和服务端分别使用
@@ -338,12 +338,15 @@ GitHub Actions 包含四条工作流：
 | `package.yml` | DEB/RPM 验收，以及 OpenWrt 六架构交叉编译、APK 检查与 QEMU 启动测试 |
 | `release.yml` | 校验版本 tag，复用打包工作流并创建 GitHub Release |
 
+`main` 分支触发的包使用 `MAJOR.MINOR.PATCH_pre<运行号>~<提交号>` 开发版本；
+文件名中的 `~` 会替换为 `-`。这些产物只用于持续验收，不与正式 Release 共用包版本。
+
 发布 tag 必须是 `vMAJOR.MINOR.PATCH` 或 `vMAJOR.MINOR.PATCH-rc.NUMBER`，且基础版本
 必须与 `CMakeLists.txt` 中的项目版本一致：
 
 ```bash
-git tag -a v0.2.2 -m "MiniTun v0.2.2"
-git push origin v0.2.2
+git tag -a v0.2.3 -m "MiniTun v0.2.3"
+git push origin v0.2.3
 ```
 
 发布工作流仅在全部软件包测试通过后创建 GitHub Release。每个版本

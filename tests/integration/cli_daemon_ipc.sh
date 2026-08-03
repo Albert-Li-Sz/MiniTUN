@@ -154,6 +154,19 @@ if ! grep -q 'Status.*disconnected' "$runtime_dir/login-stdin.out" ||
 fi
 
 set +e
+python3 -c 'import sys; sys.stdout.write("x" * 65537 + "\n")' |
+    "$minitun_bin" --socket "$socket_path" server login primary --token-stdin \
+        >"$runtime_dir/login-oversized.out" 2>"$runtime_dir/login-oversized.err"
+oversized_token_status=${PIPESTATUS[1]}
+set -e
+if [[ $oversized_token_status -ne 2 ]] ||
+    ! grep -q 'outside its accepted byte-length' "$runtime_dir/login-oversized.err" ||
+    [[ -s "$runtime_dir/login-oversized.out" ]]; then
+    printf 'oversized token-stdin input was not rejected safely\n' >&2
+    exit 1
+fi
+
+set +e
 printf '%s\n' "$stdin_token" |
     "$minitun_bin" --socket "$socket_path" server login primary \
         >"$runtime_dir/login-no-flag.out" 2>"$runtime_dir/login-no-flag.err"

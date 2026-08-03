@@ -169,6 +169,7 @@ import time
 port = int(sys.argv[1])
 size = int(sys.argv[2])
 concurrency = int(sys.argv[3])
+started = time.monotonic()
 
 def transfer(index):
     seed = bytes(((offset + index) % 251 for offset in range(251)))
@@ -197,6 +198,16 @@ def transfer(index):
 
 with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
     list(executor.map(transfer, range(concurrency)))
+
+elapsed = time.monotonic() - started
+transferred_mib = (size * concurrency * 2) / (1024 * 1024)
+throughput = transferred_mib / max(elapsed, 0.001)
+print(
+    f"relay benchmark: {concurrency} connections, {elapsed:.3f}s, "
+    f"{throughput:.1f} MiB/s aggregate duplex"
+)
+if elapsed > 15:
+    raise SystemExit("concurrent relay latency exceeded the 15-second regression limit")
 PY
 }
 
@@ -214,7 +225,7 @@ wait_tunnel relay active
 wait_tunnel unavailable active
 
 round_trip 2097152 1
-round_trip 65536 8
+round_trip 1048576 8
 
 python3 - "$remote_port" <<'PY'
 import socket

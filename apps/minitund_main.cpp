@@ -197,14 +197,6 @@ int run_daemon_impl(const std::string& socket_path, const std::string& database_
         return kInternalErrorExitCode;
     }
 
-    minitun::daemon::ControlService control_service{**repository, **credentials};
-    auto dispatcher = std::make_shared<minitun::ipc::Dispatcher>();
-    auto registered = control_service.register_handlers(*dispatcher);
-    if (!registered) {
-        std::cerr << "minitund: failed to register IPC methods: " << registered.error() << '\n';
-        return kInternalErrorExitCode;
-    }
-
     asio::io_context io_context;
     auto server_manager = minitun::daemon::ServerManager::create(
         io_context, **repository, **credentials, std::move(*client_id),
@@ -215,6 +207,16 @@ int run_daemon_impl(const std::string& socket_path, const std::string& database_
         return server_manager.error().code() == minitun::common::ErrorCode::invalid_argument
                    ? kInvalidArgumentsExitCode
                    : kInternalErrorExitCode;
+    }
+
+    minitun::daemon::ControlService control_service{
+        **repository, **credentials,
+        [manager = server_manager->get()] { manager->notify_changed(); }};
+    auto dispatcher = std::make_shared<minitun::ipc::Dispatcher>();
+    auto registered = control_service.register_handlers(*dispatcher);
+    if (!registered) {
+        std::cerr << "minitund: failed to register IPC methods: " << registered.error() << '\n';
+        return kInternalErrorExitCode;
     }
 
     minitun::ipc::LocalServer ipc_server{

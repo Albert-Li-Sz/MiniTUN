@@ -48,13 +48,14 @@ esac
 
 if [ -n "$package_version" ]; then
 	printf '%s\n' "$package_version" | \
-		grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$' || {
+		grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+|_pre[0-9]+~[0-9a-f]{12})?$' || {
 		echo "invalid package version: $package_version" >&2
 		exit 2
 	}
 	project_version=$(awk '$1 == "VERSION" { print $2; exit }' \
 		"$source_dir/CMakeLists.txt")
 	base_version=${package_version%%-rc.*}
+	base_version=${base_version%%_pre*}
 	[ "$base_version" = "$project_version" ] || {
 		echo "package version $package_version does not match project version $project_version" >&2
 		exit 2

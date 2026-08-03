@@ -11,8 +11,10 @@
 #include <exception>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <minitun/common/error.hpp>
@@ -86,12 +88,24 @@ int run_server(const minitun::server::ServerOptions& options,
 
     std::vector<std::jthread> workers;
     workers.reserve(io_threads > 0U ? io_threads - 1U : 0U);
+    std::mutex failure_mutex;
+    std::exception_ptr worker_failure;
+    const auto record_failure = [&io_context, &failure_mutex,
+                                 &worker_failure](std::exception_ptr failure) {
+        {
+            const std::scoped_lock lock{failure_mutex};
+            if (!worker_failure) {
+                worker_failure = std::move(failure);
+            }
+        }
+        io_context.stop();
+    };
     for (std::size_t index = 1U; index < io_threads; ++index) {
-        workers.emplace_back([&io_context] {
+        workers.emplace_back([&io_context, &record_failure] {
             try {
                 io_context.run();
             } catch (...) {
-                io_context.stop();
+                record_failure(std::current_exception());
             }
         });
     }
@@ -99,13 +113,31 @@ int run_server(const minitun::server::ServerOptions& options,
     try {
         io_context.run();
     } catch (...) {
-        io_context.stop();
-        return kInternalErrorExitCode;
+        record_failure(std::current_exception());
     }
     for (auto& worker : workers) {
         worker.join();
     }
     (*server)->stop();
+    {
+        const std::scoped_lock lock{failure_mutex};
+        if (worker_failure) {
+            try {
+                std::rethrow_exception(worker_failure);
+            } catch (const std::exception& exception) {
+                minitun::common::log_error(
+                    std::string{"server I/O worker failed: "} + exception.what(),
+                    {.component = "server",
+                     .error_code = minitun::common::ErrorCode::internal_error});
+            } catch (...) {
+                minitun::common::log_error(
+                    "server I/O worker failed with a non-standard exception",
+                    {.component = "server",
+                     .error_code = minitun::common::ErrorCode::internal_error});
+            }
+            return kInternalErrorExitCode;
+        }
+    }
     minitun::common::log_info("TLS server stopped");
     return kSuccessExitCode;
 }

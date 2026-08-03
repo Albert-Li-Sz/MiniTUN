@@ -91,8 +91,8 @@ start_server() {
             --tls-key "$runtime_dir/server.key" \
             --token-file "$runtime_dir/token" \
             --allow-ports 1024-65535 \
-            --heartbeat-interval 1 \
-            --heartbeat-timeout 3 \
+            --heartbeat-interval 60 \
+            --heartbeat-timeout 180 \
             --io-threads 2 \
             >>"$runtime_dir/server.log" 2>&1 &
         server_pid=$!
@@ -223,6 +223,9 @@ wait_port_open "$active_port"
 kill -TERM "$conflict_pid"
 wait "$conflict_pid"
 conflict_pid=
+# With a 60-second heartbeat, this committed removal must wake the control
+# session immediately. The same reconciliation pass retries the failed port.
+"$minitun_bin" --socket "$socket_path" tun remove denied >/dev/null
 wait_tunnel_state conflict active
 wait_port_open "$conflict_port"
 

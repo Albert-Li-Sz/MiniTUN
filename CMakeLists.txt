@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.22)
 
 project(
     MiniTun
-    VERSION 0.2.2
+    VERSION 0.2.3
     DESCRIPTION "A small, high-performance TCP reverse-tunnelling system"
     HOMEPAGE_URL "https://github.com/LMTINSUZHOU/MiniTUN"
     LANGUAGES CXX
@@ -20,20 +20,20 @@ option(MINITUN_ENABLE_TSAN "Enable ThreadSanitizer" OFF)
 option(MINITUN_ENABLE_LTO "Enable interprocedural optimization" OFF)
 option(MINITUN_BUILD_PACKAGES "Enable package-generation support" OFF)
 set(MINITUN_PACKAGE_VERSION "" CACHE STRING
-    "Optional package version override (MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH-rc.NUMBER)"
+    "Optional release or CI development package version override"
 )
 if(MINITUN_PACKAGE_VERSION STREQUAL "")
     set(MINITUN_PACKAGE_VERSION "${PROJECT_VERSION}")
 endif()
 
 if(NOT MINITUN_PACKAGE_VERSION MATCHES
-   "^[0-9]+\\.[0-9]+\\.[0-9]+(-rc\\.[0-9]+)?$")
+   "^[0-9]+\\.[0-9]+\\.[0-9]+(-rc\\.[0-9]+|_pre[0-9]+~[0-9a-f]+)?$")
     message(FATAL_ERROR
-        "MINITUN_PACKAGE_VERSION must be MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH-rc.NUMBER"
+        "MINITUN_PACKAGE_VERSION must be a release, release candidate, or CI development version"
     )
 endif()
 
-string(REGEX REPLACE "-rc\\.[0-9]+$" ""
+string(REGEX REPLACE "(-rc\\.[0-9]+|_pre[0-9]+~[0-9a-f]+)$" ""
     MINITUN_PACKAGE_BASE_VERSION "${MINITUN_PACKAGE_VERSION}"
 )
 if(NOT "${MINITUN_PACKAGE_BASE_VERSION}" STREQUAL "${PROJECT_VERSION}")
@@ -201,6 +201,7 @@ minitun_apply_sanitizers(minitun_daemon)
 minitun_apply_lto(minitun_daemon)
 
 add_library(minitun_server_core STATIC
+    src/server/accept_recovery.cpp
     src/server/connection_quota.cpp
     src/server/server.cpp
     src/server/session_registry.cpp
