@@ -22,6 +22,8 @@
 #include <utility>
 #include <vector>
 
+#include <asio/associated_executor.hpp>
+#include <asio/async_result.hpp>
 #include <asio/bind_executor.hpp>
 #include <asio/co_spawn.hpp>
 #include <asio/detached.hpp>
@@ -295,73 +297,87 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
     [[nodiscard]] const std::string& server_id() const noexcept { return server_id_; }
 
   private:
-    template <typename Function>
-    [[nodiscard]] asio::awaitable<std::invoke_result_t<Function>>
-    run_on_control_strand(Function function) {
+    template <typename Function, typename CompletionToken>
+    auto async_run_on_control_strand(Function function, CompletionToken&& token) {
         using Return = std::invoke_result_t<Function>;
-        auto result = co_await asio::co_spawn(
-            strand_,
-            [function = std::move(function)]() mutable -> asio::awaitable<std::optional<Return>> {
-                co_return std::optional<Return>{std::invoke(function)};
+        // Keep owning operation state outside Asio's coroutine frame. GCC 11
+        // may otherwise duplicate moved lambda state while adapting use_awaitable.
+        auto operation = std::make_shared<Function>(std::move(function));
+        return asio::async_initiate<CompletionToken, void(Return)>(
+            [this, operation](auto handler) mutable {
+                auto completion_executor = asio::get_associated_executor(handler);
+                asio::post(strand_,
+                           [operation, handler = std::move(handler),
+                            completion_executor = std::move(completion_executor)]() mutable {
+                               auto result = std::make_shared<Return>(std::invoke(*operation));
+                               asio::post(std::move(completion_executor),
+                                          [handler = std::move(handler),
+                                           result = std::move(result)]() mutable {
+                                              handler(std::move(*result));
+                                          });
+                           });
             },
-            asio::use_awaitable);
-        co_return std::move(*result);
+            std::forward<CompletionToken>(token));
     }
 
     [[nodiscard]] asio::awaitable<common::Result<std::uint64_t>>
     open_client_session(std::string client_id) {
-        co_return co_await run_on_control_strand(
-            [this, client_id = std::move(client_id)]() mutable {
+        return async_run_on_control_strand(
+            [this, client_id]() mutable {
                 auto generation = session_registry_.open(client_id);
                 if (generation) {
                     worker_pool_.remove_client(client_id);
                     tunnel_registry_.remove_client(client_id);
                 }
                 return generation;
-            });
+            },
+            asio::use_awaitable);
     }
 
     [[nodiscard]] asio::awaitable<common::Result<void>>
     register_worker(WorkerRegistration registration, WorkerAssignmentHandler assignment_handler,
                     WorkerRemovalHandler removal_handler) {
-        co_return co_await run_on_control_strand(
-            [this, registration = std::move(registration),
-             assignment_handler = std::move(assignment_handler),
-             removal_handler = std::move(removal_handler)]() mutable {
+        return async_run_on_control_strand(
+            [this, registration, assignment_handler, removal_handler]() mutable {
                 return worker_pool_.add(std::move(registration), std::move(assignment_handler),
                                         std::move(removal_handler));
-            });
+            },
+            asio::use_awaitable);
     }
 
     [[nodiscard]] asio::awaitable<bool> remove_worker(std::string worker_id) {
-        co_return co_await run_on_control_strand([this, worker_id = std::move(worker_id)] {
-            worker_pool_.remove(worker_id);
-            return true;
-        });
+        return async_run_on_control_strand(
+            [this, worker_id] {
+                worker_pool_.remove(worker_id);
+                return true;
+            },
+            asio::use_awaitable);
     }
 
     [[nodiscard]] asio::awaitable<std::size_t> idle_worker_count(std::string client_id,
                                                                  const std::uint64_t generation) {
-        co_return co_await run_on_control_strand(
-            [this, client_id = std::move(client_id), generation] {
+        return async_run_on_control_strand(
+            [this, client_id, generation] {
                 return worker_pool_.idle_count(client_id, generation);
-            });
+            },
+            asio::use_awaitable);
     }
 
     [[nodiscard]] asio::awaitable<common::Result<void>> register_tunnel(TunnelBinding binding) {
-        co_return co_await run_on_control_strand([this, binding = std::move(binding)] {
-            return tunnel_registry_.register_tunnel(binding);
-        });
+        return async_run_on_control_strand(
+            [this, binding] { return tunnel_registry_.register_tunnel(binding); },
+            asio::use_awaitable);
     }
 
     [[nodiscard]] asio::awaitable<bool> unregister_tunnel(std::string client_id,
                                                           const std::uint64_t generation,
                                                           std::string tunnel_id) {
-        co_return co_await run_on_control_strand(
-            [this, client_id = std::move(client_id), generation, tunnel_id = std::move(tunnel_id)] {
+        return async_run_on_control_strand(
+            [this, client_id, generation, tunnel_id] {
                 tunnel_registry_.unregister_tunnel(client_id, generation, tunnel_id);
                 return true;
-            });
+            },
+            asio::use_awaitable);
     }
 
     class ControlSession final : public std::enable_shared_from_this<ControlSession> {
@@ -408,6 +424,8 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
         }
 
         [[nodiscard]] bool relay_active() const noexcept { return relay_active_.load(); }
+
+        [[nodiscard]] asio::any_io_executor executor() noexcept { return stream_.get_executor(); }
 
         void cleanup_on_control_strand() noexcept {
             if (cleanup_complete_) {
@@ -630,9 +648,11 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
                 co_return;
             }
 
-            auto weak = weak_from_this();
-            auto registered = co_await server_->register_worker(
-                {client_id_, generation_, worker_id_},
+            // Named lvalues force independent ownership before this coroutine
+            // suspends, including with GCC 11 and Asio 1.18.
+            const auto weak = weak_from_this();
+            const WorkerRegistration registration{client_id_, generation_, worker_id_};
+            const WorkerAssignmentHandler assignment_handler =
                 [weak](TunnelBinding binding, asio::ip::tcp::socket public_socket,
                        ConnectionQuota::Lease connection_lease) mutable {
                     if (auto self = weak.lock()) {
@@ -659,15 +679,17 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
                         asio::error_code ignored;
                         public_socket.close(ignored);
                     }
-                },
-                [weak] {
-                    if (auto self = weak.lock()) {
-                        asio::post(self->stream_.get_executor(), [self] {
-                            self->worker_registered_ = false;
-                            self->force_stop_on_executor();
-                        });
-                    }
-                });
+                };
+            const WorkerRemovalHandler removal_handler = [weak] {
+                if (auto self = weak.lock()) {
+                    asio::post(self->stream_.get_executor(), [self] {
+                        self->worker_registered_ = false;
+                        self->force_stop_on_executor();
+                    });
+                }
+            };
+            auto registered = co_await server_->register_worker(registration, assignment_handler,
+                                                                removal_handler);
             if (!registered) {
                 co_return;
             }
@@ -892,13 +914,16 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
             if (!registration) {
                 co_return false;
             }
-            auto registered = co_await server_->register_tunnel({
+            // Keep this aggregate out of the co_await expression so its strings
+            // have unambiguous ownership across older coroutine implementations.
+            const TunnelBinding binding{
                 .client_id = client_id_,
                 .session_generation = generation_,
                 .tunnel_id = registration->tunnel_id,
                 .bind_host = registration->bind_host,
                 .bind_port = registration->bind_port,
-            });
+            };
+            auto registered = co_await server_->register_tunnel(binding);
             if (!registered) {
                 auto payload = protocol::encode_register_tunnel_error(
                     {registration->tunnel_id, registered.error().code()});
@@ -1013,7 +1038,7 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
                 return;
             }
             finished_notified_ = true;
-            server_->session_finished(this);
+            server_->session_finished(shared_from_this());
         }
 
         void arm_operation_timeout(const std::chrono::seconds timeout) {
@@ -1258,21 +1283,26 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
         return key;
     }
 
-    void session_finished(ControlSession* session) noexcept {
+    void session_finished(std::shared_ptr<ControlSession> session) noexcept {
         auto self = shared_from_this();
-        asio::post(strand_, [self, session] {
-            const auto owned = self->sessions_.find(session);
-            if (owned == self->sessions_.end()) {
-                return;
-            }
-            owned->second->cleanup_on_control_strand();
-            self->sessions_.erase(owned);
-            if (self->shutting_down_ && self->sessions_.empty()) {
-                try {
-                    static_cast<void>(self->shutdown_timer_.cancel());
-                } catch (...) {
+        asio::post(strand_, [self, session = std::move(session)]() mutable {
+            const auto owned = self->sessions_.find(session.get());
+            if (owned != self->sessions_.end()) {
+                session->cleanup_on_control_strand();
+                self->sessions_.erase(owned);
+                if (self->shutting_down_ && self->sessions_.empty()) {
+                    try {
+                        static_cast<void>(self->shutdown_timer_.cancel());
+                    } catch (...) {
+                    }
                 }
             }
+
+            // The TLS stream and its timers belong to the session strand. Keep
+            // one owner alive until that strand runs again so their final
+            // destruction cannot race a completion handler on another worker.
+            auto session_executor = session->executor();
+            asio::post(std::move(session_executor), [session = std::move(session)] {});
         });
     }
 
