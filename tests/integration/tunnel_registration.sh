@@ -37,14 +37,26 @@ printf '%s\n' "$token" >"$runtime_dir/token"
 chmod 0600 "$runtime_dir/token"
 
 python3 - "$runtime_dir/conflict-port" <<'PY' &
+import random
 import signal
 import socket
 import sys
 import time
 
-listener = socket.socket()
-listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-listener.bind(("0.0.0.0", 0))
+listener = None
+candidates = list(range(10000, 24000))
+random.SystemRandom().shuffle(candidates)
+for candidate in candidates:
+    probe = socket.socket()
+    try:
+        probe.bind(("0.0.0.0", candidate))
+    except OSError:
+        probe.close()
+        continue
+    listener = probe
+    break
+if listener is None:
+    raise SystemExit("unable to reserve a non-ephemeral conflict port")
 listener.listen()
 with open(sys.argv[1], "w", encoding="ascii") as stream:
     stream.write(str(listener.getsockname()[1]))
@@ -65,13 +77,31 @@ for _ in $(seq 1 100); do
     sleep 0.02
 done
 conflict_port=$(<"$runtime_dir/conflict-port")
-active_port=$(python3 - <<'PY'
+active_port=$(python3 - "$conflict_port" <<'PY'
+import random
 import socket
+import sys
 
-probe = socket.socket()
-probe.bind(("127.0.0.1", 0))
-print(probe.getsockname()[1])
-probe.close()
+# Public tunnel listeners must stay outside Linux's usual ephemeral source-port
+# range. Readiness connections could otherwise claim a just-released listener
+# port before the asynchronous unregister check observes that it is reusable.
+conflict_port = int(sys.argv[1])
+candidates = list(range(10000, 24000))
+random.SystemRandom().shuffle(candidates)
+for candidate in candidates:
+    if candidate == conflict_port:
+        continue
+    probe = socket.socket()
+    try:
+        probe.bind(("0.0.0.0", candidate))
+    except OSError:
+        probe.close()
+        continue
+    print(candidate)
+    probe.close()
+    break
+else:
+    raise SystemExit("unable to select a non-ephemeral tunnel port")
 PY
 )
 
