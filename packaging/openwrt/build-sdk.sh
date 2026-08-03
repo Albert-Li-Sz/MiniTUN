@@ -107,5 +107,9 @@ sed -i \
 } >>.config
 
 make defconfig
-make -j"$jobs" package/minitun/compile \
-	MINITUN_SOURCE_DIR="$source_dir"
+if ! make -j"$jobs" package/minitun/compile \
+	MINITUN_SOURCE_DIR="$source_dir"; then
+	echo "OpenWrt parallel build failed; retrying once with -j1 V=sc" >&2
+	make -j1 V=sc package/minitun/compile \
+		MINITUN_SOURCE_DIR="$source_dir"
+fi

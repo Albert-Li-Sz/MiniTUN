@@ -350,6 +350,10 @@ jobs:
     timeout-minutes: 120
     strategy:
       fail-fast: false
+      # Each SDK fetches the same pinned third-party source archives. Keeping
+      # only two jobs active avoids upstream throttling while retaining useful
+      # cross-architecture parallelism.
+      max-parallel: 2
       matrix:
         include:
           - target: x86
