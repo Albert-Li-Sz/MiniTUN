@@ -145,13 +145,9 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                     } catch (...) {
                     }
                 }
-                if (self->reconnect_wait_active_) {
-                    self->retry_requested_ = true;
-                    try {
-                        static_cast<void>(self->reconnect_timer_.cancel());
-                    } catch (...) {
-                    }
-                }
+                // Keep an offline session's existing reconnect deadline. A burst
+                // of tunnel mutations must not turn each notification into a
+                // failed connection attempt and drive the backoff to its maximum.
             });
         }
 
@@ -211,19 +207,9 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                                  log_context(result.error.code()));
                 reconnect_timer_.expires_after(delay);
                 asio::error_code timer_error;
-                reconnect_wait_active_ = true;
                 co_await reconnect_timer_.async_wait(
                     asio::redirect_error(asio::use_awaitable, timer_error));
-                reconnect_wait_active_ = false;
-                if (stopping_) {
-                    terminal_state_.store(TerminalState::stopped);
-                    co_return;
-                }
-                if (timer_error && retry_requested_) {
-                    retry_requested_ = false;
-                    continue;
-                }
-                if (timer_error) {
+                if (timer_error || stopping_) {
                     terminal_state_.store(TerminalState::stopped);
                     co_return;
                 }
@@ -1037,8 +1023,6 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
         bool persistence_allowed_{true};
         bool stopping_{false};
         bool reconcile_requested_{false};
-        bool retry_requested_{false};
-        bool reconnect_wait_active_{false};
         bool idle_wait_active_{false};
         bool write_in_progress_{false};
         bool goaway_in_progress_{false};

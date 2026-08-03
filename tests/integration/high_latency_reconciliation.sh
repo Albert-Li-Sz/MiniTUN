@@ -36,13 +36,32 @@ printf '%s\n' "$token" >"$runtime_dir/token"
 chmod 0600 "$runtime_dir/token"
 
 read -r -a ports < <(python3 - <<'PY'
+import random
 import socket
 
 sockets = []
-for _ in range(26):
+for _ in range(2):
     probe = socket.socket()
     probe.bind(("127.0.0.1", 0))
     sockets.append(probe)
+
+# Tunnel listeners must not use the host ephemeral client-port range. The
+# proxy and readiness connections created later could otherwise claim one of
+# the just-released probe ports and make registration fail spuriously.
+candidates = list(range(10000, 30000))
+random.SystemRandom().shuffle(candidates)
+for port in candidates:
+    if len(sockets) == 26:
+        break
+    probe = socket.socket()
+    try:
+        probe.bind(("127.0.0.1", port))
+    except OSError:
+        probe.close()
+        continue
+    sockets.append(probe)
+if len(sockets) != 26:
+    raise SystemExit("unable to reserve non-ephemeral integration-test ports")
 print(*(probe.getsockname()[1] for probe in sockets))
 for probe in sockets:
     probe.close()
@@ -208,6 +227,13 @@ if [[ "$all_active" != true ]]; then
 fi
 if grep -q 'heartbeat timed out' "$runtime_dir/server.log"; then
     sed -n '1,260p' "$runtime_dir/server.log" >&2
+    exit 1
+fi
+backoff_count=$(grep -c 'remote server connection entered backoff' \
+    "$runtime_dir/minitund.log" || true)
+if ((backoff_count > 8)); then
+    echo "tunnel changes caused $backoff_count connection backoffs" >&2
+    sed -n '1,260p' "$runtime_dir/minitund.log" >&2
     exit 1
 fi
 
