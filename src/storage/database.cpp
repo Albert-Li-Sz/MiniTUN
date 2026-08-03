@@ -909,7 +909,7 @@ common::Result<void> Database::checkpoint() {
 
     int log_frames = -1;
     int checkpointed_frames = -1;
-    const int result = sqlite3_wal_checkpoint_v2(handle_, nullptr, SQLITE_CHECKPOINT_FULL,
+    const int result = sqlite3_wal_checkpoint_v2(handle_, nullptr, SQLITE_CHECKPOINT_PASSIVE,
                                                  &log_frames, &checkpointed_frames);
     if (result != SQLITE_OK) {
         return internal::sqlite_error(handle_, result, "checkpoint SQLite state database");

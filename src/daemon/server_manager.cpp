@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <exception>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -29,6 +30,7 @@
 #include <minitun/common/logging.hpp>
 #include <minitun/common/secure_string.hpp>
 #include <minitun/common/time.hpp>
+#include <minitun/daemon/credential_keys.hpp>
 #include <minitun/daemon/reconnect_backoff.hpp>
 #include <minitun/daemon/worker_pool.hpp>
 #include <minitun/protocol/auth.hpp>
@@ -126,6 +128,14 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
         void stop() {
             auto self = shared_from_this();
             asio::dispatch(strand_, [self] { self->begin_stop(); });
+        }
+
+        void supersede() {
+            {
+                const std::scoped_lock lock{persistence_mutex_};
+                persistence_allowed_ = false;
+            }
+            stop();
         }
 
         [[nodiscard]] bool matches(const storage::ServerRecord& server) const {
@@ -360,16 +370,19 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                     if (!payload) {
                         co_return disconnected(payload.error().code(), payload.error().message());
                     }
-                    auto reconciled = co_await reconcile_tunnels(state, heartbeat_timeout);
-                    if (!reconciled) {
-                        co_return disconnected(reconciled.error().code(),
-                                               reconciled.error().message());
-                    }
                     const protocol::Frame pong_frame{protocol::MessageType::pong, 0U,
                                                      frame->request_id, std::move(*payload)};
                     auto written = co_await write_frame(state, pong_frame, heartbeat_timeout);
                     if (!written) {
                         co_return disconnected(written.error().code(), written.error().message());
+                    }
+                    // Heartbeat liveness must never depend on the number of configured
+                    // tunnels. Reconciliation may require one round trip per tunnel, so
+                    // acknowledge the server's absolute heartbeat deadline first.
+                    auto reconciled = co_await reconcile_tunnels(state, heartbeat_timeout);
+                    if (!reconciled) {
+                        co_return disconnected(reconciled.error().code(),
+                                               reconciled.error().message());
                     }
                     continue;
                 }
@@ -745,6 +758,10 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
         persist_tunnel_state(const common::Id& tunnel_id, const storage::TunnelActualState state,
                              const std::optional<common::Error>& error) noexcept {
             try {
+                const std::scoped_lock lock{persistence_mutex_};
+                if (!persistence_allowed_) {
+                    return common::Result<void>::success();
+                }
                 auto current = repository_.tunnels().get_by_id(tunnel_id);
                 if (!current) {
                     return common::Result<void>::failure(current.error());
@@ -794,6 +811,10 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                       const std::optional<std::int64_t> latency_ms = std::nullopt,
                       const std::optional<std::string> remote_server_id = std::nullopt) noexcept {
             try {
+                const std::scoped_lock lock{persistence_mutex_};
+                if (!persistence_allowed_) {
+                    return;
+                }
                 auto transaction = repository_.begin_transaction();
                 if (!transaction) {
                     return;
@@ -873,6 +894,8 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
         std::uint64_t next_request_id_{3U};
         std::unordered_set<std::string> registered_tunnels_;
         std::atomic<TerminalState> terminal_state_{TerminalState::running};
+        std::mutex persistence_mutex_;
+        bool persistence_allowed_{true};
         bool stopping_{false};
         bool write_in_progress_{false};
         bool goaway_in_progress_{false};
@@ -976,13 +999,27 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
     }
 
     [[nodiscard]] bool purge_removed_server(const storage::ServerRecord& server) {
-        if (server.credential_ref.has_value()) {
-            auto removed = credentials_.remove(*server.credential_ref);
+        const auto remove_credential = [this, &server](const std::string_view key) {
+            auto removed = credentials_.remove(key);
             if (!removed) {
                 common::log_error("failed to purge credentials for removed server",
                                   {.component = "daemon.server-manager",
                                    .server_id = server.id.str(),
                                    .error_code = removed.error().code()});
+                return false;
+            }
+            return true;
+        };
+        if (server.credential_ref.has_value()) {
+            if (!remove_credential(*server.credential_ref)) {
+                return false;
+            }
+        }
+        for (const auto& key : managed_credential_keys(server.id)) {
+            if (server.credential_ref.has_value() && *server.credential_ref == key) {
+                continue;
+            }
+            if (!remove_credential(key)) {
                 return false;
             }
         }
@@ -1016,7 +1053,7 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
             if (record.desired_state == storage::ServerDesiredState::removed) {
                 const auto existing = sessions_.find(id);
                 if (existing != sessions_.end()) {
-                    existing->second->stop();
+                    existing->second->supersede();
                     sessions_.erase(existing);
                 }
                 static_cast<void>(purge_removed_server(record));
@@ -1028,7 +1065,7 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                 !record.credential_ref.has_value()) {
                 const auto existing = sessions_.find(id);
                 if (existing != sessions_.end()) {
-                    existing->second->stop();
+                    existing->second->supersede();
                     sessions_.erase(existing);
                 }
                 continue;
@@ -1036,18 +1073,20 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
 
             retained.insert(id);
             const auto existing = sessions_.find(id);
+            const bool configuration_changed =
+                existing != sessions_.end() && !existing->second->matches(record);
             const bool restart_authentication =
                 existing != sessions_.end() &&
                 existing->second->terminal_state() ==
                     ServerSession::TerminalState::authentication_failed &&
                 record.actual_state == storage::ServerActualState::disconnected;
-            if (existing == sessions_.end() || !existing->second->matches(record) ||
-                restart_authentication) {
+            if (existing == sessions_.end() || configuration_changed || restart_authentication) {
                 if (existing != sessions_.end()) {
-                    existing->second->stop();
+                    existing->second->supersede();
                     sessions_.erase(existing);
                 }
-                if (record.actual_state != storage::ServerActualState::not_authenticated) {
+                if (configuration_changed ||
+                    record.actual_state != storage::ServerActualState::not_authenticated) {
                     auto tls_context = protocol::make_client_tls_context(
                         {.ca_certificate_path = options_.ca_certificate_path});
                     if (!tls_context) {
@@ -1070,7 +1109,7 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
 
         for (auto iterator = sessions_.begin(); iterator != sessions_.end();) {
             if (!retained.contains(iterator->first)) {
-                iterator->second->stop();
+                iterator->second->supersede();
                 iterator = sessions_.erase(iterator);
             } else {
                 ++iterator;

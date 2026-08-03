@@ -23,7 +23,39 @@
 namespace minitun::daemon {
 namespace {
 
+using storage::test::NativeSqliteDatabase;
 using storage::test::TemporaryDatabaseFile;
+
+class FailingCredentialStore final : public storage::CredentialStore {
+  public:
+    explicit FailingCredentialStore(storage::CredentialStore& delegate) noexcept
+        : delegate_(delegate) {}
+
+    void fail_next_remove() noexcept { fail_remove_ = true; }
+
+    [[nodiscard]] common::Result<void> put(const std::string_view key,
+                                           const std::string_view secret) override {
+        return delegate_.put(key, secret);
+    }
+
+    [[nodiscard]] common::Result<common::SecureString>
+    get(const std::string_view key) const override {
+        return delegate_.get(key);
+    }
+
+    [[nodiscard]] common::Result<void> remove(const std::string_view key) override {
+        if (fail_remove_) {
+            fail_remove_ = false;
+            return common::Error{common::ErrorCode::database_error,
+                                 "injected credential cleanup failure"};
+        }
+        return delegate_.remove(key);
+    }
+
+  private:
+    storage::CredentialStore& delegate_;
+    bool fail_remove_{false};
+};
 
 [[nodiscard]] ipc::Response dispatch(ipc::Dispatcher& dispatcher, std::string method,
                                      ipc::Json params) {
@@ -129,6 +161,100 @@ TEST_F(DaemonControlServiceTest, PersistsServerLoginAndOfflineTunnelWithoutLeaki
     EXPECT_EQ(require_result(status).at("tunnels").at("active"), 0);
 }
 
+TEST_F(DaemonControlServiceTest, RotatesCredentialSlotsWithoutExposingThePreviousToken) {
+    const auto added = dispatch(dispatcher_, "server.add",
+                                ipc::Json{{"endpoint", "example.com:2333"}, {"name", "primary"}});
+    ASSERT_TRUE(added.ok()) << *added.error();
+    auto server_id = common::Id::parse(
+        require_result(added).at("server").at("id").get<std::string>(), common::IdKind::server);
+    ASSERT_TRUE(server_id) << server_id.error();
+
+    const auto first = dispatch(dispatcher_, "server.login",
+                                ipc::Json{{"identifier", "primary"}, {"token", "first-token"}});
+    ASSERT_TRUE(first.ok()) << *first.error();
+    auto first_server = repository_->servers().get_by_id(*server_id);
+    ASSERT_TRUE(first_server) << first_server.error();
+    ASSERT_TRUE(first_server->credential_ref.has_value());
+    const std::string first_key = *first_server->credential_ref;
+
+    const auto second = dispatch(dispatcher_, "server.login",
+                                 ipc::Json{{"identifier", "primary"}, {"token", "second-token"}});
+    ASSERT_TRUE(second.ok()) << *second.error();
+    auto second_server = repository_->servers().get_by_id(*server_id);
+    ASSERT_TRUE(second_server) << second_server.error();
+    ASSERT_TRUE(second_server->credential_ref.has_value());
+    const std::string second_key = *second_server->credential_ref;
+    EXPECT_NE(second_key, first_key);
+    auto second_token = credentials_->get(second_key);
+    ASSERT_TRUE(second_token) << second_token.error();
+    EXPECT_EQ(second_token->view(), "second-token");
+    const auto removed_first = credentials_->get(first_key);
+    ASSERT_FALSE(removed_first);
+    EXPECT_EQ(removed_first.error().code(), common::ErrorCode::not_found);
+
+    const auto third = dispatch(dispatcher_, "server.login",
+                                ipc::Json{{"identifier", "primary"}, {"token", "third-token"}});
+    ASSERT_TRUE(third.ok()) << *third.error();
+    auto third_server = repository_->servers().get_by_id(*server_id);
+    ASSERT_TRUE(third_server) << third_server.error();
+    ASSERT_TRUE(third_server->credential_ref.has_value());
+    EXPECT_EQ(*third_server->credential_ref, first_key);
+    auto third_token = credentials_->get(first_key);
+    ASSERT_TRUE(third_token) << third_token.error();
+    EXPECT_EQ(third_token->view(), "third-token");
+    const auto removed_second = credentials_->get(second_key);
+    ASSERT_FALSE(removed_second);
+    EXPECT_EQ(removed_second.error().code(), common::ErrorCode::not_found);
+}
+
+TEST_F(DaemonControlServiceTest, KeepsCommittedLoginWhenOldCredentialCleanupIsDeferred) {
+    const auto added = dispatch(dispatcher_, "server.add",
+                                ipc::Json{{"endpoint", "example.com:2333"}, {"name", "primary"}});
+    ASSERT_TRUE(added.ok()) << *added.error();
+    auto server_id = common::Id::parse(
+        require_result(added).at("server").at("id").get<std::string>(), common::IdKind::server);
+    ASSERT_TRUE(server_id) << server_id.error();
+    ASSERT_TRUE(dispatch(dispatcher_, "server.login",
+                         ipc::Json{{"identifier", "primary"}, {"token", "first-token"}})
+                    .ok());
+    auto before = repository_->servers().get_by_id(*server_id);
+    ASSERT_TRUE(before) << before.error();
+    ASSERT_TRUE(before->credential_ref.has_value());
+    const std::string previous_key = *before->credential_ref;
+
+    FailingCredentialStore failing_store{*credentials_};
+    failing_store.fail_next_remove();
+    ControlService failing_service{*repository_, failing_store};
+    ipc::Dispatcher failing_dispatcher;
+    ASSERT_TRUE(failing_service.register_handlers(failing_dispatcher));
+    const auto updated =
+        dispatch(failing_dispatcher, "server.login",
+                 ipc::Json{{"identifier", "primary"}, {"token", "replacement-token"}});
+    ASSERT_TRUE(updated.ok()) << *updated.error();
+
+    auto after = repository_->servers().get_by_id(*server_id);
+    ASSERT_TRUE(after) << after.error();
+    ASSERT_TRUE(after->credential_ref.has_value());
+    EXPECT_NE(*after->credential_ref, previous_key);
+    auto replacement = credentials_->get(*after->credential_ref);
+    ASSERT_TRUE(replacement) << replacement.error();
+    EXPECT_EQ(replacement->view(), "replacement-token");
+    auto retained_previous = credentials_->get(previous_key);
+    ASSERT_TRUE(retained_previous) << retained_previous.error();
+    EXPECT_EQ(retained_previous->view(), "first-token");
+
+    const auto healed = dispatch(dispatcher_, "server.login",
+                                 ipc::Json{{"identifier", "primary"}, {"token", "final-token"}});
+    ASSERT_TRUE(healed.ok()) << *healed.error();
+    auto final_server = repository_->servers().get_by_id(*server_id);
+    ASSERT_TRUE(final_server) << final_server.error();
+    ASSERT_TRUE(final_server->credential_ref.has_value());
+    EXPECT_EQ(*final_server->credential_ref, previous_key);
+    auto final_token = credentials_->get(previous_key);
+    ASSERT_TRUE(final_token) << final_token.error();
+    EXPECT_EQ(final_token->view(), "final-token");
+}
+
 TEST_F(DaemonControlServiceTest, PendingTunnelExplainsMissingServerAuthentication) {
     const auto added = dispatch(dispatcher_, "server.add",
                                 ipc::Json{{"endpoint", "example.com:2333"}, {"name", "primary"}});
@@ -199,6 +325,45 @@ TEST_F(DaemonControlServiceTest, ServerRemovalDeletesStateAndCredentialImmediate
                                  ipc::Json{{"endpoint", "example.com:2333"}, {"name", "primary"}});
     ASSERT_TRUE(reused.ok()) << *reused.error();
     EXPECT_NE(require_result(reused).at("server").at("id").get<std::string>(), server_id_text);
+}
+
+TEST_F(DaemonControlServiceTest, ServerRemovalSucceedsWhileExternalReaderPinsTheWal) {
+    const auto added = dispatch(dispatcher_, "server.add",
+                                ipc::Json{{"endpoint", "example.com:2333"}, {"name", "primary"}});
+    ASSERT_TRUE(added.ok()) << *added.error();
+    const std::string server_id_text =
+        require_result(added).at("server").at("id").get<std::string>();
+    auto server_id = common::Id::parse(server_id_text, common::IdKind::server);
+    ASSERT_TRUE(server_id) << server_id.error();
+    ASSERT_TRUE(dispatch(dispatcher_, "server.login",
+                         ipc::Json{{"identifier", "primary"}, {"token", "token"}})
+                    .ok());
+    auto server = repository_->servers().get_by_id(*server_id);
+    ASSERT_TRUE(server) << server.error();
+    ASSERT_TRUE(server->credential_ref.has_value());
+    const std::string credential_key = *server->credential_ref;
+
+    ASSERT_TRUE(repository_->checkpoint());
+    NativeSqliteDatabase external_reader{state_file_.path(),
+                                         SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX};
+    external_reader.execute("BEGIN");
+    EXPECT_EQ(external_reader.query_int64("SELECT COUNT(*) FROM servers"), 1);
+
+    const auto removed =
+        dispatch(dispatcher_, "server.remove", ipc::Json{{"identifier", "primary"}});
+    ASSERT_TRUE(removed.ok()) << *removed.error();
+    const auto missing_server = repository_->servers().get_by_id(*server_id);
+    ASSERT_FALSE(missing_server);
+    EXPECT_EQ(missing_server.error().code(), common::ErrorCode::not_found);
+    const auto missing_credential = credentials_->get(credential_key);
+    ASSERT_FALSE(missing_credential);
+    EXPECT_EQ(missing_credential.error().code(), common::ErrorCode::not_found);
+
+    // The reader keeps its pre-removal snapshot, while canonical WAL-aware reads
+    // already observe the committed deletion.
+    EXPECT_EQ(external_reader.query_int64("SELECT COUNT(*) FROM servers"), 1);
+    external_reader.execute("COMMIT");
+    EXPECT_TRUE(repository_->checkpoint());
 }
 
 TEST_F(DaemonControlServiceTest, TunnelRemovalDeletesStateAndAllowsImmediateReuse) {

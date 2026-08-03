@@ -11,6 +11,7 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -22,6 +23,7 @@
 #include <minitun/common/time.hpp>
 #include <minitun/common/version.hpp>
 #include <minitun/daemon/control_service.hpp>
+#include <minitun/daemon/credential_keys.hpp>
 #include <minitun/daemon/server_manager.hpp>
 #include <minitun/ipc/dispatcher.hpp>
 #include <minitun/ipc/local_server.hpp>
@@ -56,12 +58,6 @@ class LoggingLifetime final {
     return std::min<std::size_t>(std::max<std::size_t>(detected, 1U), 16U);
 }
 
-[[nodiscard]] std::string credential_key(const minitun::storage::ServerRecord& server) {
-    std::string key{"server/"};
-    key.append(server.id.str());
-    return key;
-}
-
 [[nodiscard]] minitun::common::Result<void>
 remove_credential_if_present(minitun::storage::CredentialStore& credentials,
                              const std::string_view key) {
@@ -76,28 +72,36 @@ remove_credential_if_present(minitun::storage::CredentialStore& credentials,
 }
 
 [[nodiscard]] minitun::common::Result<void>
+remove_unused_managed_credentials(minitun::storage::CredentialStore& credentials,
+                                  const minitun::common::Id& server_id,
+                                  const std::optional<std::string_view> retained = std::nullopt) {
+    for (const auto& key : minitun::daemon::managed_credential_keys(server_id)) {
+        if (retained.has_value() && *retained == key) {
+            continue;
+        }
+        auto removed = remove_credential_if_present(credentials, key);
+        if (!removed) {
+            return removed;
+        }
+    }
+    return minitun::common::Result<void>::success();
+}
+
+[[nodiscard]] minitun::common::Result<void>
 validate_recovered_credentials(minitun::storage::StateRepository& repository,
                                minitun::storage::CredentialStore& credentials,
                                const minitun::storage::RecoverySnapshot& snapshot) {
     for (auto server : snapshot.servers) {
-        const std::string stable_key = credential_key(server);
         if (server.desired_state == minitun::storage::ServerDesiredState::removed) {
             if (server.credential_ref.has_value()) {
-                auto removed = credentials.remove(*server.credential_ref);
+                auto removed = remove_credential_if_present(credentials, *server.credential_ref);
                 if (!removed) {
                     return removed;
                 }
-                if (*server.credential_ref != stable_key) {
-                    removed = remove_credential_if_present(credentials, stable_key);
-                    if (!removed) {
-                        return removed;
-                    }
-                }
-            } else {
-                auto removed = remove_credential_if_present(credentials, stable_key);
-                if (!removed) {
-                    return removed;
-                }
+            }
+            auto removed = remove_unused_managed_credentials(credentials, server.id);
+            if (!removed) {
+                return removed;
             }
             auto erased = repository.servers().erase(server.id);
             if (!erased && erased.error().code() != minitun::common::ErrorCode::not_found) {
@@ -106,7 +110,7 @@ validate_recovered_credentials(minitun::storage::StateRepository& repository,
             continue;
         }
         if (!server.credential_ref.has_value()) {
-            auto removed = remove_credential_if_present(credentials, stable_key);
+            auto removed = remove_unused_managed_credentials(credentials, server.id);
             if (!removed) {
                 return removed;
             }
@@ -115,22 +119,19 @@ validate_recovered_credentials(minitun::storage::StateRepository& repository,
 
         auto credential = credentials.get(*server.credential_ref);
         if (credential) {
-            if (*server.credential_ref != stable_key) {
-                auto removed = remove_credential_if_present(credentials, stable_key);
-                if (!removed) {
-                    return removed;
-                }
+            auto removed = remove_unused_managed_credentials(
+                credentials, server.id, std::string_view{*server.credential_ref});
+            if (!removed) {
+                return removed;
             }
             continue;
         }
         if (credential.error().code() != minitun::common::ErrorCode::not_found) {
             return credential.error();
         }
-        if (*server.credential_ref != stable_key) {
-            auto removed = remove_credential_if_present(credentials, stable_key);
-            if (!removed) {
-                return removed;
-            }
+        auto removed = remove_unused_managed_credentials(credentials, server.id);
+        if (!removed) {
+            return removed;
         }
         server.credential_ref.reset();
         server.actual_state = server.desired_state == minitun::storage::ServerDesiredState::enabled

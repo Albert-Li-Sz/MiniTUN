@@ -134,6 +134,32 @@ if(UNIX)
         PASS_REGULAR_EXPRESSION "tunnel registration integration passed"
     )
 
+    add_test(NAME integration.high-latency-reconciliation
+        COMMAND
+            "${CMAKE_CURRENT_SOURCE_DIR}/integration/high_latency_reconciliation.sh"
+            $<TARGET_FILE:minitun>
+            $<TARGET_FILE:minitund>
+            $<TARGET_FILE:minitun-server>
+    )
+    set_tests_properties(integration.high-latency-reconciliation PROPERTIES
+        LABELS "integration;tls;tunnel;latency"
+        TIMEOUT 60
+        PASS_REGULAR_EXPRESSION "high-latency tunnel reconciliation integration passed"
+    )
+
+    add_test(NAME integration.credential-rotation
+        COMMAND
+            "${CMAKE_CURRENT_SOURCE_DIR}/integration/credential_rotation.sh"
+            $<TARGET_FILE:minitun>
+            $<TARGET_FILE:minitund>
+            $<TARGET_FILE:minitun-server>
+    )
+    set_tests_properties(integration.credential-rotation PROPERTIES
+        LABELS "integration;tls;auth"
+        TIMEOUT 60
+        PASS_REGULAR_EXPRESSION "credential rotation integration passed"
+    )
+
     add_test(NAME integration.worker-pool
         COMMAND
             "${CMAKE_CURRENT_SOURCE_DIR}/integration/worker_pool.sh"

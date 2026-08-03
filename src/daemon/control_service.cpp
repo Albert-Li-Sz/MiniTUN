@@ -15,8 +15,10 @@
 #include <minitun/common/endpoint.hpp>
 #include <minitun/common/error.hpp>
 #include <minitun/common/id.hpp>
+#include <minitun/common/logging.hpp>
 #include <minitun/common/secure_string.hpp>
 #include <minitun/common/time.hpp>
+#include <minitun/daemon/credential_keys.hpp>
 #include <minitun/ipc/dispatcher.hpp>
 #include <minitun/storage/credential_store.hpp>
 #include <minitun/storage/models.hpp>
@@ -257,12 +259,6 @@ tunnel_counts(const std::vector<TunnelRecord>& tunnels) {
     return std::max(previous, common::unix_milliseconds_now());
 }
 
-[[nodiscard]] std::string credential_key(const ServerRecord& server) {
-    std::string key{"server/"};
-    key.append(server.id.str());
-    return key;
-}
-
 } // namespace
 
 ControlService::ControlService(storage::StateRepository& repository,
@@ -408,7 +404,7 @@ Result<Json> ControlService::server_login(const ipc::Request& request) {
         return server.error();
     }
     const std::optional<std::string> previous_key = server->credential_ref;
-    const std::string key = credential_key(*server);
+    const std::string key = next_credential_key(*server);
     server->credential_ref = key;
     server->actual_state = server->desired_state == ServerDesiredState::enabled
                                ? ServerActualState::disconnected
@@ -432,19 +428,28 @@ Result<Json> ControlService::server_login(const ipc::Request& request) {
     if (!stored) {
         return stored.error();
     }
-    if (previous_key.has_value() && *previous_key != key) {
-        auto removed = credentials_.remove(*previous_key);
-        if (!removed) {
-            static_cast<void>(credentials_.remove(key));
-            return removed.error();
-        }
-    }
     auto committed = transaction->commit();
     if (!committed) {
-        if (!previous_key.has_value() || *previous_key != key) {
-            static_cast<void>(credentials_.remove(key));
+        auto cleaned = credentials_.remove(key);
+        if (!cleaned) {
+            common::log_error("failed to clean an uncommitted server credential",
+                              {.component = "daemon.control",
+                               .server_id = server->id.str(),
+                               .error_code = cleaned.error().code()});
         }
         return committed.error();
+    }
+    if (previous_key.has_value()) {
+        auto removed = credentials_.remove(*previous_key);
+        if (!removed) {
+            // The committed state references the new credential. Retaining the old
+            // slot is safe and the next alternating login or startup recovery will
+            // retry its removal.
+            common::log_warn("deferred cleanup of the previous server credential",
+                             {.component = "daemon.control",
+                              .server_id = server->id.str(),
+                              .error_code = removed.error().code()});
+        }
     }
     return Json{{"server", server_json(*server, count)}};
 }
@@ -535,28 +540,53 @@ Result<Json> ControlService::server_remove(const ipc::Request& request) {
         return committed.error();
     }
 
-    // The two databases cannot participate in one SQLite transaction. Persist the
-    // state tombstone into the main database file first so a crash can never leave
-    // an enabled server pointing at a credential that has already been deleted.
-    // Startup reconciliation can finish this small removal saga if a later step is
-    // interrupted.
+    // The committed tombstone is the logical deletion boundary. It is durable as
+    // part of the SQLite WAL even when a long-lived external reader prevents an
+    // immediate checkpoint. Cleanup below is an idempotent saga that startup and
+    // ServerManager reconciliation can finish after interruption.
     auto checkpointed = repository_.checkpoint();
     if (!checkpointed) {
-        return checkpointed.error();
+        common::log_warn("deferred state checkpoint after server removal",
+                         {.component = "daemon.control",
+                          .server_id = server->id.str(),
+                          .error_code = checkpointed.error().code()});
     }
+    bool credentials_removed = true;
+    const auto remove_credential = [this, &server,
+                                    &credentials_removed](const std::string_view key) {
+        auto result = credentials_.remove(key);
+        if (!result) {
+            credentials_removed = false;
+            common::log_warn("deferred credential cleanup after server removal",
+                             {.component = "daemon.control",
+                              .server_id = server->id.str(),
+                              .error_code = result.error().code()});
+        }
+    };
     if (server->credential_ref.has_value()) {
-        removed = credentials_.remove(*server->credential_ref);
-        if (!removed) {
-            return removed.error();
+        remove_credential(*server->credential_ref);
+    }
+    for (const auto& key : managed_credential_keys(server->id)) {
+        if (!server->credential_ref.has_value() || *server->credential_ref != key) {
+            remove_credential(key);
         }
     }
-    auto erased = repository_.servers().erase(server->id);
-    if (!erased && erased.error().code() != ErrorCode::not_found) {
-        return erased.error();
-    }
-    checkpointed = repository_.checkpoint();
-    if (!checkpointed) {
-        return checkpointed.error();
+    if (credentials_removed) {
+        auto erased = repository_.servers().erase(server->id);
+        if (!erased && erased.error().code() != ErrorCode::not_found) {
+            common::log_warn("deferred state cleanup after server removal",
+                             {.component = "daemon.control",
+                              .server_id = server->id.str(),
+                              .error_code = erased.error().code()});
+        } else {
+            checkpointed = repository_.checkpoint();
+            if (!checkpointed) {
+                common::log_warn("deferred final state checkpoint after server removal",
+                                 {.component = "daemon.control",
+                                  .server_id = server->id.str(),
+                                  .error_code = checkpointed.error().code()});
+            }
+        }
     }
     return Json{{"removed", Json{{"id", server->id.str()}, {"name", optional_json(server->name)}}}};
 }
@@ -759,7 +789,11 @@ Result<Json> ControlService::tunnel_remove(const ipc::Request& request) {
     }
     auto checkpointed = repository_.checkpoint();
     if (!checkpointed) {
-        return checkpointed.error();
+        common::log_warn("deferred state checkpoint after tunnel removal",
+                         {.component = "daemon.control",
+                          .server_id = tunnel->server_id.str(),
+                          .tunnel_id = tunnel->id.str(),
+                          .error_code = checkpointed.error().code()});
     }
     return Json{{"removed", Json{{"id", tunnel->id.str()}, {"name", optional_json(tunnel->name)}}}};
 }
