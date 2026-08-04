@@ -184,6 +184,20 @@ expected_error = sys.argv[3]
 if expected_error and (not tunnel["last_error"] or
                        tunnel["last_error"]["code"] != expected_error):
     raise SystemExit(1)
+if tunnel["actual_state"] in {"active", "failed"}:
+    if tunnel["server_actual_state"] != "online":
+        raise SystemExit(1)
+    if tunnel["pending_reason"] is not None:
+        raise SystemExit(1)
+    if not isinstance(tunnel["last_synced_at"], int):
+        raise SystemExit(1)
+if tunnel["actual_state"] == "pending":
+    if not isinstance(tunnel["server_actual_state"], str):
+        raise SystemExit(1)
+    if not isinstance(tunnel["pending_reason"], str):
+        raise SystemExit(1)
+    if not isinstance(tunnel["last_synced_at"], int):
+        raise SystemExit(1)
 PY
         then
             return
@@ -271,6 +285,48 @@ stop_daemon
 start_daemon
 wait_tunnel_state active active
 wait_tunnel_state conflict active
+
+python3 - "$state_path" <<'PY'
+import sqlite3
+import sys
+
+database = sqlite3.connect(sys.argv[1])
+database.execute(
+    "CREATE TRIGGER reject_pending_persistence "
+    "BEFORE UPDATE OF actual_state ON tunnels "
+    "WHEN NEW.actual_state = 'pending' BEGIN "
+    "SELECT RAISE(ABORT, 'injected pending persistence failure'); END"
+)
+database.commit()
+database.close()
+PY
+
+kill -TERM "$server_pid"
+wait "$server_pid"
+server_pid=
+persistence_error_logged=false
+for _ in $(seq 1 100); do
+    if grep -F 'failed to persist pending tunnel states after disconnect' \
+            "$runtime_dir/minitund.log" >/dev/null; then
+        persistence_error_logged=true
+        break
+    fi
+    sleep 0.05
+done
+if [[ "$persistence_error_logged" != true ]]; then
+    sed -n '1,280p' "$runtime_dir/minitund.log" >&2
+    exit 1
+fi
+
+python3 - "$state_path" <<'PY'
+import sqlite3
+import sys
+
+database = sqlite3.connect(sys.argv[1])
+database.execute("DROP TRIGGER reject_pending_persistence")
+database.commit()
+database.close()
+PY
 
 "$minitun_bin" --socket "$socket_path" tun remove active >/dev/null
 "$minitun_bin" --socket "$socket_path" tun remove conflict >/dev/null

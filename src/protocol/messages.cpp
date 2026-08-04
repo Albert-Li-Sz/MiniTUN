@@ -10,6 +10,12 @@
 namespace minitun::protocol {
 namespace {
 
+// Tagged heartbeat layout: 16-bit "MT" marker, 9-bit timeout, 39-bit sequence.
+inline constexpr std::uint64_t kHeartbeatMetadataTag = 0x4d54ULL << 48U;
+inline constexpr std::uint64_t kHeartbeatMetadataTagMask = 0xffffULL << 48U;
+inline constexpr std::uint64_t kHeartbeatTimeoutMask = 0x1ffULL;
+inline constexpr unsigned int kHeartbeatTimeoutShift = 39U;
+
 [[nodiscard]] common::Result<void> validate_client_id(const std::string_view value) {
     const auto parsed = common::Id::parse(value, common::IdKind::client);
     if (!parsed) {
@@ -113,6 +119,34 @@ read_fixed_bytes(PayloadReader& reader) {
 }
 
 } // namespace
+
+common::Result<std::uint64_t>
+encode_worker_timeout_heartbeat_sequence(const std::uint64_t sequence,
+                                         const std::uint16_t worker_idle_timeout_seconds) {
+    if (sequence == 0U || sequence > kMaximumNegotiatedHeartbeatSequence ||
+        worker_idle_timeout_seconds < kMinimumWorkerIdleTimeoutSeconds ||
+        worker_idle_timeout_seconds > kMaximumWorkerIdleTimeoutSeconds) {
+        return common::Error{common::ErrorCode::invalid_argument,
+                             "heartbeat sequence or Worker idle timeout is outside its limit"};
+    }
+    return kHeartbeatMetadataTag |
+           (static_cast<std::uint64_t>(worker_idle_timeout_seconds) << kHeartbeatTimeoutShift) |
+           sequence;
+}
+
+std::optional<std::uint16_t>
+decode_worker_idle_timeout_seconds(const std::uint64_t sequence) noexcept {
+    if ((sequence & kHeartbeatMetadataTagMask) != kHeartbeatMetadataTag ||
+        (sequence & kMaximumNegotiatedHeartbeatSequence) == 0U) {
+        return std::nullopt;
+    }
+    const auto timeout =
+        static_cast<std::uint16_t>((sequence >> kHeartbeatTimeoutShift) & kHeartbeatTimeoutMask);
+    if (timeout < kMinimumWorkerIdleTimeoutSeconds || timeout > kMaximumWorkerIdleTimeoutSeconds) {
+        return std::nullopt;
+    }
+    return timeout;
+}
 
 common::Result<std::vector<std::uint8_t>> encode_hello(const HelloMessage& message) {
     auto valid = validate_client_id(message.client_id);

@@ -337,7 +337,9 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                     .max_idle_workers = max_idle_workers,
                     .connect_timeout = options_.connect_timeout,
                     .handshake_timeout = options_.handshake_timeout,
-                    .idle_timeout = std::chrono::seconds{65},
+                    .idle_timeout =
+                        std::chrono::seconds{protocol::kMaximumWorkerIdleTimeoutSeconds +
+                                             protocol::kWorkerIdleTimeoutGraceSeconds},
                     .relay_inactivity_timeout = options_.relay_inactivity_timeout,
                     .graceful_shutdown_timeout = options_.graceful_shutdown_timeout,
                     .insecure_skip_verify = options_.insecure_skip_verify,
@@ -418,6 +420,11 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                     auto ping = protocol::decode_heartbeat(frame->payload);
                     if (!ping) {
                         co_return disconnected(ping.error().code(), ping.error().message());
+                    }
+                    auto timeout_updated = apply_worker_idle_timeout(*ping);
+                    if (!timeout_updated) {
+                        co_return disconnected(timeout_updated.error().code(),
+                                               timeout_updated.error().message());
                     }
                     auto payload = protocol::encode_heartbeat(*ping);
                     if (!payload) {
@@ -587,7 +594,7 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                             }
                         } else {
                             auto updated = persist_tunnel_state(
-                                *parsed, storage::TunnelActualState::disabled, std::nullopt);
+                                *parsed, storage::TunnelActualState::disabled, std::nullopt, true);
                             if (!updated) {
                                 co_return updated;
                             }
@@ -615,7 +622,7 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                 if (registered_tunnels_.contains(tunnel_id)) {
                     if (tunnel.actual_state != storage::TunnelActualState::active) {
                         auto updated = persist_tunnel_state(
-                            tunnel.id, storage::TunnelActualState::active, std::nullopt);
+                            tunnel.id, storage::TunnelActualState::active, std::nullopt, true);
                         if (!updated) {
                             co_return updated;
                         }
@@ -656,7 +663,7 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                     }
                     registered_tunnels_.insert(tunnel_id);
                     auto updated = persist_tunnel_state(
-                        tunnel.id, storage::TunnelActualState::active, std::nullopt);
+                        tunnel.id, storage::TunnelActualState::active, std::nullopt, true);
                     if (!updated) {
                         co_return updated;
                     }
@@ -671,7 +678,8 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                     }
                     auto updated = persist_tunnel_state(
                         tunnel.id, storage::TunnelActualState::failed,
-                        common::Error{rejected->code, "remote tunnel registration was rejected"});
+                        common::Error{rejected->code, "remote tunnel registration was rejected"},
+                        true);
                     if (!updated) {
                         co_return updated;
                     }
@@ -696,6 +704,10 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                     auto ping = protocol::decode_heartbeat(frame->payload);
                     if (!ping) {
                         co_return common::Result<protocol::Frame>::failure(ping.error());
+                    }
+                    auto timeout_updated = apply_worker_idle_timeout(*ping);
+                    if (!timeout_updated) {
+                        co_return common::Result<protocol::Frame>::failure(timeout_updated.error());
                     }
                     auto payload = protocol::encode_heartbeat(*ping);
                     if (!payload) {
@@ -850,6 +862,17 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
             return common::Result<void>::success();
         }
 
+        [[nodiscard]] common::Result<void>
+        apply_worker_idle_timeout(const protocol::HeartbeatMessage& heartbeat) {
+            const auto negotiated =
+                protocol::decode_worker_idle_timeout_seconds(heartbeat.sequence);
+            if (!negotiated.has_value() || worker_pool_ == nullptr) {
+                return common::Result<void>::success();
+            }
+            return worker_pool_->set_idle_timeout(
+                std::chrono::seconds{*negotiated + protocol::kWorkerIdleTimeoutGraceSeconds});
+        }
+
         [[nodiscard]] common::Result<common::Endpoint>
         resolve_local_endpoint(const std::string_view tunnel_id) const {
             auto parsed = common::Id::parse(tunnel_id, common::IdKind::tunnel);
@@ -880,7 +903,8 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
 
         [[nodiscard]] common::Result<void>
         persist_tunnel_state(const common::Id& tunnel_id, const storage::TunnelActualState state,
-                             const std::optional<common::Error>& error) noexcept {
+                             const std::optional<common::Error>& error,
+                             const bool synchronized = false) noexcept {
             try {
                 const std::scoped_lock lock{persistence_mutex_};
                 if (!persistence_allowed_) {
@@ -902,8 +926,12 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                     current->last_error_code.reset();
                     current->last_error_message.reset();
                 }
-                current->updated_at_unix_ms =
+                const std::int64_t now =
                     std::max(current->updated_at_unix_ms, common::unix_milliseconds_now());
+                current->updated_at_unix_ms = now;
+                if (synchronized) {
+                    current->last_synced_at_unix_ms = now;
+                }
                 return repository_.tunnels().update(*current);
             } catch (...) {
                 return common::Result<void>::failure(common::ErrorCode::internal_error,
@@ -914,17 +942,19 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
         void mark_tunnels_pending(const std::optional<common::Error>& error) noexcept {
             registered_tunnels_.clear();
             try {
-                auto tunnels = repository_.tunnels().list_by_server(server_.id);
-                if (!tunnels) {
+                const std::scoped_lock lock{persistence_mutex_};
+                if (!persistence_allowed_) {
                     return;
                 }
-                for (const auto& tunnel : *tunnels) {
-                    if (tunnel.desired_state == storage::TunnelDesiredState::active) {
-                        static_cast<void>(persist_tunnel_state(
-                            tunnel.id, storage::TunnelActualState::pending, error));
-                    }
+                auto updated = repository_.tunnels().mark_active_pending_by_server(
+                    server_.id, error, common::unix_milliseconds_now());
+                if (!updated) {
+                    common::log_error("failed to persist pending tunnel states after disconnect",
+                                      log_context(updated.error().code()));
                 }
             } catch (...) {
+                common::log_error("failed to persist pending tunnel states after disconnect",
+                                  log_context(common::ErrorCode::internal_error));
             }
         }
 
@@ -1126,29 +1156,17 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
     }
 
     [[nodiscard]] bool purge_removed_server(const storage::ServerRecord& server) {
-        const auto remove_credential = [this, &server](const std::string_view key) {
-            auto removed = credentials_.remove(key);
-            if (!removed) {
-                common::log_error("failed to purge credentials for removed server",
-                                  {.component = "daemon.server-manager",
-                                   .server_id = server.id.str(),
-                                   .error_code = removed.error().code()});
-                return false;
-            }
-            return true;
-        };
-        if (server.credential_ref.has_value()) {
-            if (!remove_credential(*server.credential_ref)) {
-                return false;
-            }
-        }
-        for (const auto& key : managed_credential_keys(server.id)) {
-            if (server.credential_ref.has_value() && *server.credential_ref == key) {
-                continue;
-            }
-            if (!remove_credential(key)) {
-                return false;
-            }
+        auto credentials_removed =
+            cleanup_server_credentials(credentials_, server.id,
+                                       server.credential_ref.has_value()
+                                           ? std::optional<std::string_view>{*server.credential_ref}
+                                           : std::nullopt);
+        if (!credentials_removed) {
+            common::log_error("failed to purge credentials for removed server",
+                              {.component = "daemon.server-manager",
+                               .server_id = server.id.str(),
+                               .error_code = credentials_removed.error().code()});
+            return false;
         }
         auto erased = repository_.servers().erase(server.id);
         if (!erased && erased.error().code() != common::ErrorCode::not_found) {

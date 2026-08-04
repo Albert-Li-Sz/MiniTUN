@@ -31,7 +31,8 @@ MiniTun 使用 C++20 开发，可将公网服务器上的 TCP 端口转发到内
 - **多平台交付**：提供独立 Client/Server DEB 与 RPM，以及集成
   UCI 和 procd 的 OpenWrt APK；OpenWrt 产物覆盖 x86_64、ARM、MIPS 与 RISC-V。
 - **持续验证**：CI 覆盖 GCC、Clang、完整 CTest、ASan、UBSan、TSan、libFuzzer，
-  DEB/RPM 的干净容器安装测试，以及 OpenWrt 多架构交叉编译与 QEMU 启动验证。
+  DEB/RPM 的干净容器安装测试，以及 OpenWrt 多架构交叉编译与 QEMU 运行验证；
+  AArch64 额外覆盖 TLS、SQLite 和真实 TCP 隧道端到端测试。
 
 ## 工作原理
 
@@ -233,10 +234,11 @@ minitun tun inspect web --json
 curl http://tunnel.example.com:6000/
 ```
 
-如果隧道持续为 `pending`，先执行 `minitun server inspect primary --json` 检查父级
-会话。`2333/tcp` 只承载控制和 Worker 连接；云安全组与主机防火墙还必须放行实际的
-公网映射端口（本例为 `6000/tcp`）。TLS SAN、CA、Token 或系统时间异常会记录在
-服务器与隧道的 `last_error` 中。
+如果隧道持续为 `pending`，检查 `tun inspect --json` 返回的
+`server_actual_state`、`pending_reason` 与 `last_error`；`last_synced_at` 表示最近一次
+收到远端注册或注销结果的 Unix 毫秒时间戳。`2333/tcp` 只承载控制和 Worker 连接；
+云安全组与主机防火墙还必须放行实际的公网映射端口（本例为 `6000/tcp`）。TLS SAN、CA、Token
+或系统时间异常会记录在服务器与隧道的 `last_error` 中。
 
 本地目标不在回环地址时，使用 `--local-host`：
 

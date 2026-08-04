@@ -35,6 +35,14 @@ minitun help
 只包含 `credential_configured`，绝不暴露凭据引用或 Token。列表和详情命令不会
 返回已经删除的墓碑记录。
 
+隧道 JSON 还包含以下诊断字段：
+
+| 字段 | 含义 |
+| --- | --- |
+| `server_actual_state` | 关联服务器当前状态；关联记录不存在时为 `null` |
+| `pending_reason` | 隧道为 `pending` 时的稳定原因标识，否则为 `null` |
+| `last_synced_at` | 最近一次远端注册或注销响应的 Unix 毫秒时间戳；从未同步时为 `null` |
+
 ## Token 输入
 
 未指定 `--token-stdin` 时，`server login` 要求交互式终端，并在读取一行 Token
@@ -79,7 +87,7 @@ minitun tun add primary 8080 6001 \
 ```
 
 `tun remove` 会在返回成功前物理删除本地状态行，因此名称和端口可以立即重新创建。
-已连接公网服务端上的旧监听器会在下一个控制面同步周期注销（默认不超过 5 秒）；删除
+控制面提交后会立即唤醒对应服务器会话并注销公网监听器，心跳同步只作为兜底；删除
 完成后到注销之间的新连接不会再转发到本地目标。`server remove` 同样先提交状态删除，
 再清理独立凭据库，避免活动状态引用已经删除的 Token。
 

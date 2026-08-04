@@ -281,7 +281,7 @@ target/subtarget 交叉编译，因此不应仅根据 CPU 名称交换不同 Ope
 sudo apt-get update
 sudo apt-get install --no-install-recommends --yes \
   build-essential ca-certificates cmake curl file gawk gettext git jq \
-  libncurses-dev ninja-build python3 qemu-user-static rsync unzip wget zstd
+  libncurses-dev ninja-build openssl python3 qemu-user-static rsync unzip wget zstd
 ```
 
 从 [OpenWrt 25.12.5 官方目录](https://downloads.openwrt.org/releases/25.12.5/targets/)
@@ -335,7 +335,7 @@ GitHub Actions 包含四条工作流：
 | --- | --- |
 | `ci.yml` | GCC/Clang 构建、完整 CTest 与 CLI 冒烟测试 |
 | `sanitizers.yml` | ASan、UBSan、TSan 与有界 fuzz 测试 |
-| `package.yml` | DEB/RPM 验收，以及 OpenWrt 六架构交叉编译、APK 检查与 QEMU 启动测试 |
+| `package.yml` | DEB/RPM 验收，以及 OpenWrt 六架构交叉编译、APK 检查与 QEMU 运行测试；AArch64 额外执行 TLS、SQLite 与真实 TCP 隧道端到端验证 |
 | `release.yml` | 校验版本 tag，复用打包工作流并创建 GitHub Release |
 
 `main` 分支触发的包使用 `MAJOR.MINOR.PATCH_pre<运行号>~<提交号>` 开发版本；
@@ -372,7 +372,7 @@ journalctl -u minitund.service -u minitun-server.service --since '-10 min'
 | CLI 退出码为 `3` | `minitund` 是否运行、套接字是否为 `0660`、当前用户是否属于 `minitun` 组 |
 | 服务端无法启动 | 证书与私钥是否匹配；Token 是否为服务账户所有、模式是否为 `0600` |
 | 认证失败 | 证书 SAN、CA 信任、两端 Token、系统时间和控制端口防火墙 |
-| 隧道长期为 `pending` | `minitun server inspect <name> --json` 的会话状态与 `last_error`、控制端口连通性、TLS 和 Token |
+| 隧道长期为 `pending` | `minitun tun inspect <name> --json` 的 `server_actual_state`、`pending_reason`、`last_synced_at` 与 `last_error`，以及控制端口连通性、TLS 和 Token |
 | 隧道状态为 `failed` | `permission_denied`、`resource_exhausted` 或 `remote_port_in_use` 错误码 |
 | 公网端口无法访问 | 本地目标、映射端口的云安全组与主机防火墙、隧道状态和连接配额 |
 

@@ -44,7 +44,9 @@ struct WorkerPoolOptions final {
     std::uint16_t max_idle_workers{32U};
     std::chrono::seconds connect_timeout{10};
     std::chrono::seconds handshake_timeout{10};
-    std::chrono::seconds idle_timeout{65};
+    // Until negotiation, let the server own Worker expiry for every supported
+    // timeout (300 seconds plus a five-second client grace period).
+    std::chrono::seconds idle_timeout{305};
     std::chrono::seconds relay_inactivity_timeout{300};
     std::chrono::seconds graceful_shutdown_timeout{10};
     bool insecure_skip_verify{false};
@@ -66,6 +68,7 @@ class WorkerPool final {
     WorkerPool& operator=(WorkerPool&&) = delete;
 
     [[nodiscard]] common::Result<void> start();
+    [[nodiscard]] common::Result<void> set_idle_timeout(std::chrono::seconds timeout);
     void request_workers(std::uint16_t count);
     void stop() noexcept;
 

@@ -12,6 +12,7 @@
 #include <minitun/common/error.hpp>
 #include <minitun/common/id.hpp>
 #include <minitun/daemon/control_service.hpp>
+#include <minitun/daemon/credential_keys.hpp>
 #include <minitun/ipc/dispatcher.hpp>
 #include <minitun/ipc/protocol.hpp>
 #include <minitun/storage/credential_store.hpp>
@@ -195,6 +196,7 @@ TEST_F(DaemonControlServiceTest, PersistsServerLoginAndOfflineTunnelWithoutLeaki
     const auto& tunnel = require_result(tunnel_added).at("tunnel");
     EXPECT_EQ(tunnel.at("desired_state"), "active");
     EXPECT_EQ(tunnel.at("actual_state"), "pending");
+    EXPECT_TRUE(tunnel.at("last_synced_at").is_null());
     EXPECT_EQ(tunnel.at("server_id"), server_id_text);
 
     const auto status = dispatch(dispatcher_, "status", ipc::Json::object());
@@ -202,6 +204,35 @@ TEST_F(DaemonControlServiceTest, PersistsServerLoginAndOfflineTunnelWithoutLeaki
     EXPECT_EQ(require_result(status).at("servers").at("total"), 1);
     EXPECT_EQ(require_result(status).at("tunnels").at("total"), 1);
     EXPECT_EQ(require_result(status).at("tunnels").at("active"), 0);
+}
+
+TEST_F(DaemonControlServiceTest, ServerRemovalCleansLegacyAndManagedCredentialKeys) {
+    const auto added = dispatch(dispatcher_, "server.add",
+                                ipc::Json{{"endpoint", "example.com:2333"}, {"name", "primary"}});
+    ASSERT_TRUE(added.ok()) << *added.error();
+    auto server_id = common::Id::parse(
+        require_result(added).at("server").at("id").get<std::string>(), common::IdKind::server);
+    ASSERT_TRUE(server_id) << server_id.error();
+
+    constexpr std::string_view legacy_key = "legacy/server-token";
+    ASSERT_TRUE(credentials_->put(legacy_key, "legacy-token"));
+    const auto managed_keys = managed_credential_keys(*server_id);
+    ASSERT_TRUE(credentials_->put(managed_keys[0], "primary-orphan"));
+    ASSERT_TRUE(credentials_->put(managed_keys[1], "secondary-orphan"));
+    auto server = repository_->servers().get_by_id(*server_id);
+    ASSERT_TRUE(server) << server.error();
+    server->credential_ref = std::string{legacy_key};
+    ++server->updated_at_unix_ms;
+    ASSERT_TRUE(repository_->servers().update(*server));
+
+    const auto removed =
+        dispatch(dispatcher_, "server.remove", ipc::Json{{"identifier", "primary"}});
+    ASSERT_TRUE(removed.ok()) << *removed.error();
+    for (const auto& key : {std::string{legacy_key}, managed_keys[0], managed_keys[1]}) {
+        const auto missing = credentials_->get(key);
+        ASSERT_FALSE(missing);
+        EXPECT_EQ(missing.error().code(), common::ErrorCode::not_found);
+    }
 }
 
 TEST_F(DaemonControlServiceTest, RotatesCredentialSlotsWithoutExposingThePreviousToken) {
@@ -298,6 +329,50 @@ TEST_F(DaemonControlServiceTest, KeepsCommittedLoginWhenOldCredentialCleanupIsDe
     EXPECT_EQ(final_token->view(), "final-token");
 }
 
+TEST_F(DaemonControlServiceTest, ConcurrentLoginsKeepTheCommittedCredentialSlot) {
+    const auto added = dispatch(dispatcher_, "server.add",
+                                ipc::Json{{"endpoint", "example.com:2333"}, {"name", "primary"}});
+    ASSERT_TRUE(added.ok()) << *added.error();
+    auto server_id = common::Id::parse(
+        require_result(added).at("server").at("id").get<std::string>(), common::IdKind::server);
+    ASSERT_TRUE(server_id) << server_id.error();
+
+    constexpr std::size_t kLoginCount = 12U;
+    std::atomic_size_t success_count{0U};
+    std::vector<std::thread> workers;
+    workers.reserve(kLoginCount);
+    for (std::size_t index = 0; index < kLoginCount; ++index) {
+        workers.emplace_back([this, index, &success_count] {
+            const auto response =
+                dispatch(dispatcher_, "server.login",
+                         ipc::Json{{"identifier", "primary"},
+                                   {"token", "concurrent-token-" + std::to_string(index)}});
+            if (response.ok()) {
+                success_count.fetch_add(1U, std::memory_order_relaxed);
+            }
+        });
+    }
+    for (auto& worker : workers) {
+        worker.join();
+    }
+    EXPECT_EQ(success_count.load(std::memory_order_relaxed), kLoginCount);
+
+    const auto server = repository_->servers().get_by_id(*server_id);
+    ASSERT_TRUE(server) << server.error();
+    ASSERT_TRUE(server->credential_ref.has_value());
+    const auto keys = managed_credential_keys(*server_id);
+    ASSERT_TRUE(*server->credential_ref == keys[0] || *server->credential_ref == keys[1]);
+    for (const auto& key : keys) {
+        const auto credential = credentials_->get(key);
+        if (key == *server->credential_ref) {
+            EXPECT_TRUE(credential) << credential.error();
+        } else {
+            ASSERT_FALSE(credential);
+            EXPECT_EQ(credential.error().code(), common::ErrorCode::not_found);
+        }
+    }
+}
+
 TEST_F(DaemonControlServiceTest, PendingTunnelExplainsMissingServerAuthentication) {
     const auto added = dispatch(dispatcher_, "server.add",
                                 ipc::Json{{"endpoint", "example.com:2333"}, {"name", "primary"}});
@@ -310,6 +385,9 @@ TEST_F(DaemonControlServiceTest, PendingTunnelExplainsMissingServerAuthenticatio
     ASSERT_TRUE(tunnel_added.ok()) << *tunnel_added.error();
     const auto& tunnel = require_result(tunnel_added).at("tunnel");
     EXPECT_EQ(tunnel.at("actual_state"), "pending");
+    EXPECT_EQ(tunnel.at("server_actual_state"), "not_authenticated");
+    EXPECT_EQ(tunnel.at("pending_reason"), "server_not_authenticated");
+    EXPECT_TRUE(tunnel.at("last_synced_at").is_null());
     ASSERT_TRUE(tunnel.at("last_error").is_object());
     EXPECT_EQ(tunnel.at("last_error").at("code"), "not_authenticated");
     EXPECT_EQ(tunnel.at("last_error").at("message"), "server credentials are not configured");

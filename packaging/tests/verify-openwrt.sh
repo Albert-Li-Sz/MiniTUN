@@ -13,6 +13,7 @@ expected_version=$3
 expected_arch=$4
 qemu_binary=${5:-}
 apk_tool="$sdk_dir/staging_dir/host/bin/apk"
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 
 [ -x "$apk_tool" ] || {
 	echo "OpenWrt SDK apk tool not found: $apk_tool" >&2
@@ -152,6 +153,15 @@ if [ -n "$qemu_binary" ]; then
 	"$qemu_binary" -L "$runtime_root" \
 		"$server_root/usr/bin/minitun-server" --version | \
 		grep -F "$expected_version"
+
+	if [ "$expected_arch" = aarch64_generic ]; then
+		"$script_dir/openwrt-aarch64-e2e.sh" \
+			"$qemu_binary" \
+			"$runtime_root" \
+			"$client_root/usr/bin/minitun" \
+			"$client_root/usr/libexec/minitun/minitund" \
+			"$server_root/usr/bin/minitun-server"
+	fi
 fi
 
 printf 'verified OpenWrt %s packages for %s\n' \

@@ -796,12 +796,18 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
                     }
                 }
 
-                auto ping_payload = protocol::encode_heartbeat({sequence});
+                auto heartbeat_sequence = protocol::encode_worker_timeout_heartbeat_sequence(
+                    sequence,
+                    static_cast<std::uint16_t>(server_->options_.worker_idle_timeout.count()));
+                if (!heartbeat_sequence) {
+                    co_return;
+                }
+                auto ping_payload = protocol::encode_heartbeat({*heartbeat_sequence});
                 if (!ping_payload) {
                     co_return;
                 }
-                const protocol::Frame ping_frame{protocol::MessageType::ping, 0U, sequence,
-                                                 std::move(*ping_payload)};
+                const protocol::Frame ping_frame{protocol::MessageType::ping, 0U,
+                                                 *heartbeat_sequence, std::move(*ping_payload)};
                 if (!co_await write_frame(ping_frame, server_->options_.heartbeat_timeout)) {
                     co_return;
                 }
@@ -826,7 +832,8 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
                     }
                     if (frame->type == protocol::MessageType::pong) {
                         auto pong = protocol::decode_heartbeat(frame->payload);
-                        if (!pong || pong->sequence != sequence || frame->request_id != sequence) {
+                        if (!pong || pong->sequence != *heartbeat_sequence ||
+                            frame->request_id != *heartbeat_sequence) {
                             co_return;
                         }
                         received_pong = true;
@@ -837,7 +844,7 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
                     }
                 }
                 ++sequence;
-                if (sequence == 0U) {
+                if (sequence == 0U || sequence > protocol::kMaximumNegotiatedHeartbeatSequence) {
                     sequence = 1U;
                 }
             }

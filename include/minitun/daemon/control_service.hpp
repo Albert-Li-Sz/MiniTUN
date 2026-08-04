@@ -1,6 +1,7 @@
 #pragma once
 
 #include <functional>
+#include <mutex>
 
 #include <minitun/common/result.hpp>
 #include <minitun/ipc/protocol.hpp>
@@ -43,6 +44,9 @@ class ControlService final {
     storage::StateRepository& repository_;
     storage::CredentialStore& credentials_;
     std::function<void()> state_changed_;
+    // Login and removal cross the state and credential databases; keep their
+    // post-commit cleanup sagas ordered so one request cannot erase a newer key.
+    std::mutex credential_operation_mutex_;
 };
 
 } // namespace minitun::daemon

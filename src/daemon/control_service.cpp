@@ -199,6 +199,42 @@ validate_params(const Json& params, const std::initializer_list<std::string_view
     return value.has_value() ? Json(*value) : Json(nullptr);
 }
 
+struct TunnelServerContext final {
+    std::optional<std::string> name;
+    ServerActualState actual_state;
+};
+
+[[nodiscard]] std::optional<std::string_view>
+pending_reason(const TunnelRecord& tunnel, const TunnelServerContext* const server) noexcept {
+    if (tunnel.actual_state != TunnelActualState::pending) {
+        return std::nullopt;
+    }
+    if (server == nullptr) {
+        return "server_not_found";
+    }
+    switch (server->actual_state) {
+    case ServerActualState::not_authenticated:
+        return "server_not_authenticated";
+    case ServerActualState::disconnected:
+        return "server_disconnected";
+    case ServerActualState::connecting:
+        return "server_connecting";
+    case ServerActualState::tls_handshake:
+        return "server_tls_handshake";
+    case ServerActualState::authenticating:
+        return "server_authenticating";
+    case ServerActualState::online:
+        return "awaiting_remote_sync";
+    case ServerActualState::backoff:
+        return "server_backoff";
+    case ServerActualState::disabled:
+        return "server_disabled";
+    case ServerActualState::error:
+        return "server_error";
+    }
+    return "server_state_unknown";
+}
+
 [[nodiscard]] Json last_error_json(const std::optional<ErrorCode> code,
                                    const std::optional<std::string>& message) {
     if (!code.has_value()) {
@@ -227,20 +263,26 @@ validate_params(const Json& params, const std::initializer_list<std::string_view
 }
 
 [[nodiscard]] Json tunnel_json(const TunnelRecord& tunnel,
-                               const std::optional<std::string>& server_name) {
+                               const TunnelServerContext* const server) {
+    const auto reason = pending_reason(tunnel, server);
     return Json{
         {"id", tunnel.id.str()},
         {"name", optional_json(tunnel.name)},
         {"server_id", tunnel.server_id.str()},
-        {"server_name", optional_json(server_name)},
+        {"server_name", server == nullptr ? Json(nullptr) : optional_json(server->name)},
+        {"server_actual_state", server == nullptr
+                                    ? Json(nullptr)
+                                    : Json(std::string{storage::to_string(server->actual_state)})},
         {"protocol", std::string{storage::to_string(tunnel.protocol)}},
         {"local_endpoint", tunnel.local_endpoint.to_string()},
         {"remote_endpoint", tunnel.remote_endpoint.to_string()},
         {"desired_state", std::string{storage::to_string(tunnel.desired_state)}},
         {"actual_state", std::string{storage::to_string(tunnel.actual_state)}},
+        {"pending_reason", reason.has_value() ? Json(std::string{*reason}) : Json(nullptr)},
         {"last_error", last_error_json(tunnel.last_error_code, tunnel.last_error_message)},
         {"created_at", tunnel.created_at_unix_ms},
         {"updated_at", tunnel.updated_at_unix_ms},
+        {"last_synced_at", optional_json(tunnel.last_synced_at_unix_ms)},
     };
 }
 
@@ -409,6 +451,7 @@ Result<Json> ControlService::server_login(const ipc::Request& request) {
         return Error{ErrorCode::invalid_argument, "token is outside its accepted byte-length"};
     }
     common::SecureString token{*token_text};
+    std::unique_lock credential_operation_lock{credential_operation_mutex_};
 
     auto transaction = repository_.begin_transaction();
     if (!transaction) {
@@ -454,18 +497,19 @@ Result<Json> ControlService::server_login(const ipc::Request& request) {
         }
         return committed.error();
     }
-    if (previous_key.has_value()) {
-        auto removed = credentials_.remove(*previous_key);
-        if (!removed) {
-            // The committed state references the new credential. Retaining the old
-            // slot is safe and the next alternating login or startup recovery will
-            // retry its removal.
-            common::log_warn("deferred cleanup of the previous server credential",
-                             {.component = "daemon.control",
-                              .server_id = server->id.str(),
-                              .error_code = removed.error().code()});
-        }
+    auto cleaned = cleanup_server_credentials(
+        credentials_, server->id,
+        previous_key.has_value() ? std::optional<std::string_view>{*previous_key} : std::nullopt,
+        std::string_view{key});
+    if (!cleaned) {
+        // The committed state references the new credential. Retaining an old
+        // slot is safe and the next login or startup recovery will retry it.
+        common::log_warn("deferred cleanup of previous or orphaned server credentials",
+                         {.component = "daemon.control",
+                          .server_id = server->id.str(),
+                          .error_code = cleaned.error().code()});
     }
+    credential_operation_lock.unlock();
     notify_state_changed();
     return Json{{"server", server_json(*server, count)}};
 }
@@ -538,6 +582,7 @@ Result<Json> ControlService::server_remove(const ipc::Request& request) {
     if (!identifier) {
         return identifier.error();
     }
+    std::unique_lock credential_operation_lock{credential_operation_mutex_};
     auto transaction = repository_.begin_transaction();
     if (!transaction) {
         return transaction.error();
@@ -567,27 +612,17 @@ Result<Json> ControlService::server_remove(const ipc::Request& request) {
                           .server_id = server->id.str(),
                           .error_code = checkpointed.error().code()});
     }
-    bool credentials_removed = true;
-    const auto remove_credential = [this, &server,
-                                    &credentials_removed](const std::string_view key) {
-        auto result = credentials_.remove(key);
-        if (!result) {
-            credentials_removed = false;
-            common::log_warn("deferred credential cleanup after server removal",
-                             {.component = "daemon.control",
-                              .server_id = server->id.str(),
-                              .error_code = result.error().code()});
-        }
-    };
-    if (server->credential_ref.has_value()) {
-        remove_credential(*server->credential_ref);
-    }
-    for (const auto& key : managed_credential_keys(server->id)) {
-        if (!server->credential_ref.has_value() || *server->credential_ref != key) {
-            remove_credential(key);
-        }
-    }
-    if (credentials_removed) {
+    auto credentials_removed =
+        cleanup_server_credentials(credentials_, server->id,
+                                   server->credential_ref.has_value()
+                                       ? std::optional<std::string_view>{*server->credential_ref}
+                                       : std::nullopt);
+    if (!credentials_removed) {
+        common::log_warn("deferred credential cleanup after server removal",
+                         {.component = "daemon.control",
+                          .server_id = server->id.str(),
+                          .error_code = credentials_removed.error().code()});
+    } else {
         auto erased = repository_.servers().erase(server->id);
         if (!erased && erased.error().code() != ErrorCode::not_found) {
             common::log_warn("deferred state cleanup after server removal",
@@ -604,6 +639,7 @@ Result<Json> ControlService::server_remove(const ipc::Request& request) {
             }
         }
     }
+    credential_operation_lock.unlock();
     notify_state_changed();
     return Json{{"removed", Json{{"id", server->id.str()}, {"name", optional_json(server->name)}}}};
 }
@@ -676,6 +712,7 @@ Result<Json> ControlService::tunnel_add(const ipc::Request& request) {
         .last_error_message = std::move(initial_error_message),
         .created_at_unix_ms = now,
         .updated_at_unix_ms = now,
+        .last_synced_at_unix_ms = std::nullopt,
     };
     auto created = repository_.tunnels().create(tunnel, *transaction);
     if (!created) {
@@ -686,7 +723,8 @@ Result<Json> ControlService::tunnel_add(const ipc::Request& request) {
         return committed.error();
     }
     notify_state_changed();
-    return Json{{"tunnel", tunnel_json(tunnel, server->name)}};
+    const TunnelServerContext server_context{server->name, server->actual_state};
+    return Json{{"tunnel", tunnel_json(tunnel, &server_context)}};
 }
 
 Result<Json> ControlService::tunnel_list(const ipc::Request& request) const {
@@ -716,9 +754,11 @@ Result<Json> ControlService::tunnel_list(const ipc::Request& request) const {
         return tunnels.error();
     }
 
-    std::unordered_map<std::string, std::optional<std::string>> server_names;
+    std::unordered_map<std::string, TunnelServerContext> server_contexts;
     if (selected_server.has_value()) {
-        server_names.emplace(selected_server->id.str(), selected_server->name);
+        server_contexts.emplace(
+            selected_server->id.str(),
+            TunnelServerContext{selected_server->name, selected_server->actual_state});
     } else {
         auto servers = repository_.servers().list();
         if (!servers) {
@@ -726,7 +766,8 @@ Result<Json> ControlService::tunnel_list(const ipc::Request& request) const {
         }
         for (const auto& server : *servers) {
             if (server.desired_state != ServerDesiredState::removed) {
-                server_names.emplace(server.id.str(), server.name);
+                server_contexts.emplace(server.id.str(),
+                                        TunnelServerContext{server.name, server.actual_state});
             }
         }
     }
@@ -741,10 +782,9 @@ Result<Json> ControlService::tunnel_list(const ipc::Request& request) const {
         if (tunnel.desired_state == TunnelDesiredState::removed) {
             continue;
         }
-        const auto server_name = server_names.find(tunnel.server_id.str());
-        result.push_back(tunnel_json(tunnel, server_name == server_names.end()
-                                                 ? std::optional<std::string>{}
-                                                 : server_name->second));
+        const auto server = server_contexts.find(tunnel.server_id.str());
+        result.push_back(
+            tunnel_json(tunnel, server == server_contexts.end() ? nullptr : &server->second));
     }
     return Json{{"tunnels", std::move(result)}};
 }
@@ -773,7 +813,8 @@ Result<Json> ControlService::tunnel_inspect(const ipc::Request& request) const {
     if (!committed) {
         return committed.error();
     }
-    return Json{{"tunnel", tunnel_json(*tunnel, server->name)}};
+    const TunnelServerContext server_context{server->name, server->actual_state};
+    return Json{{"tunnel", tunnel_json(*tunnel, &server_context)}};
 }
 
 Result<Json> ControlService::tunnel_remove(const ipc::Request& request) {

@@ -312,16 +312,23 @@ request_daemon(const std::string& socket_path, std::string method, minitun::ipc:
     const auto name = tunnel.find("name");
     const auto server_id = tunnel.find("server_id");
     const auto server_name = tunnel.find("server_name");
+    const auto server_actual_state = tunnel.find("server_actual_state");
     const auto local = tunnel.find("local_endpoint");
     const auto remote = tunnel.find("remote_endpoint");
     const auto actual_state = tunnel.find("actual_state");
     const auto desired_state = tunnel.find("desired_state");
+    const auto pending_reason = tunnel.find("pending_reason");
+    const auto last_synced_at = tunnel.find("last_synced_at");
     return id != tunnel.end() && id->is_string() && name != tunnel.end() &&
            nullable_string(*name) && server_id != tunnel.end() && server_id->is_string() &&
            server_name != tunnel.end() && nullable_string(*server_name) && local != tunnel.end() &&
            local->is_string() && remote != tunnel.end() && remote->is_string() &&
            actual_state != tunnel.end() && actual_state->is_string() &&
-           desired_state != tunnel.end() && desired_state->is_string();
+           desired_state != tunnel.end() && desired_state->is_string() &&
+           server_actual_state != tunnel.end() && nullable_string(*server_actual_state) &&
+           pending_reason != tunnel.end() && nullable_string(*pending_reason) &&
+           last_synced_at != tunnel.end() &&
+           (last_synced_at->is_null() || nonnegative_integer(*last_synced_at));
 }
 
 [[nodiscard]] std::string nullable_text(const minitun::ipc::Json& object,
@@ -475,6 +482,7 @@ void print_table(const std::vector<std::vector<std::string>>& rows) {
         std::cout << tunnel->dump(2) << '\n';
         return true;
     }
+    const auto last_synced_at = json_count(*tunnel, "last_synced_at");
     std::cout << "Tunnel:\n"
               << "  ID             " << tunnel->at("id").get<std::string>() << '\n'
               << "  Name           " << nullable_text(*tunnel, "name") << '\n'
@@ -482,7 +490,11 @@ void print_table(const std::vector<std::vector<std::string>>& rows) {
               << "  Local          " << tunnel->at("local_endpoint").get<std::string>() << '\n'
               << "  Remote         " << tunnel->at("remote_endpoint").get<std::string>() << '\n'
               << "  Desired state  " << tunnel->at("desired_state").get<std::string>() << '\n'
-              << "  Actual state   " << tunnel->at("actual_state").get<std::string>() << '\n';
+              << "  Actual state   " << tunnel->at("actual_state").get<std::string>() << '\n'
+              << "  Server state   " << nullable_text(*tunnel, "server_actual_state") << '\n'
+              << "  Pending reason " << nullable_text(*tunnel, "pending_reason") << '\n'
+              << "  Last sync (ms) "
+              << (last_synced_at.has_value() ? std::to_string(*last_synced_at) : "-") << '\n';
     return true;
 }
 

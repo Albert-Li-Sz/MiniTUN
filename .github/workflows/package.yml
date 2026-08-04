@@ -432,6 +432,7 @@ jobs:
             jq \
             libncurses-dev \
             ninja-build \
+            openssl \
             python3 \
             qemu-user-static \
             rsync \

@@ -78,6 +78,7 @@ namespace {
         .last_error_message = "historical local failure",
         .created_at_unix_ms = static_cast<std::int64_t>(30'000 + number),
         .updated_at_unix_ms = static_cast<std::int64_t>(40'000 + number),
+        .last_synced_at_unix_ms = static_cast<std::int64_t>(35'000 + number),
     };
 }
 

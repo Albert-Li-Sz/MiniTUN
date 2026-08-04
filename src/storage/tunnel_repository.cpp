@@ -21,7 +21,7 @@ namespace {
 constexpr std::string_view kTunnelColumns =
     "id, name, server_id, protocol, local_host, local_port, "
     "remote_host, remote_port, desired_state, actual_state, "
-    "last_error_code, last_error_message, created_at, updated_at";
+    "last_error_code, last_error_message, created_at, updated_at, last_synced_at";
 
 [[nodiscard]] common::Result<void> bind_optional_text(internal::Statement& statement,
                                                       const int index,
@@ -87,8 +87,8 @@ common::Result<void> TunnelRepository::create(const TunnelRecord& record,
         "INSERT INTO tunnels("
         "id, name, server_id, protocol, local_host, local_port, "
         "remote_host, remote_port, desired_state, actual_state, "
-        "last_error_code, last_error_message, created_at, updated_at"
-        ") VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+        "last_error_code, last_error_message, created_at, updated_at, last_synced_at"
+        ") VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
         "insert tunnel record");
     if (!statement) {
         return fail(statement.error());
@@ -109,6 +109,9 @@ common::Result<void> TunnelRepository::create(const TunnelRecord& record,
         bind_optional_text(*statement, 12, record.last_error_message),
         statement->bind_int64(13, record.created_at_unix_ms),
         statement->bind_int64(14, record.updated_at_unix_ms),
+        record.last_synced_at_unix_ms.has_value()
+            ? statement->bind_int64(15, *record.last_synced_at_unix_ms)
+            : statement->bind_null(15),
     };
     for (auto& binding : bindings) {
         if (!binding) {
@@ -334,8 +337,8 @@ common::Result<void> TunnelRepository::update(const TunnelRecord& record,
         "UPDATE tunnels SET "
         "name = ?1, server_id = ?2, protocol = ?3, local_host = ?4, local_port = ?5, "
         "remote_host = ?6, remote_port = ?7, desired_state = ?8, actual_state = ?9, "
-        "last_error_code = ?10, last_error_message = ?11, updated_at = ?12 "
-        "WHERE id = ?13",
+        "last_error_code = ?10, last_error_message = ?11, updated_at = ?12, "
+        "last_synced_at = ?13 WHERE id = ?14",
         "update tunnel record");
     if (!statement) {
         return fail(statement.error());
@@ -354,7 +357,10 @@ common::Result<void> TunnelRepository::update(const TunnelRecord& record,
         bind_optional_error(*statement, 10, record.last_error_code),
         bind_optional_text(*statement, 11, record.last_error_message),
         statement->bind_int64(12, record.updated_at_unix_ms),
-        statement->bind_text(13, record.id.str()),
+        record.last_synced_at_unix_ms.has_value()
+            ? statement->bind_int64(13, *record.last_synced_at_unix_ms)
+            : statement->bind_null(13),
+        statement->bind_text(14, record.id.str()),
     };
     for (auto& binding : bindings) {
         if (!binding) {
@@ -373,6 +379,73 @@ common::Result<void> TunnelRepository::update(const TunnelRecord& record,
         return fail(common::Error{common::ErrorCode::not_found, "tunnel record was not found"});
     }
     return common::Result<void>::success();
+}
+
+common::Result<std::size_t>
+TunnelRepository::mark_active_pending_by_server(const common::Id& server_id,
+                                                const std::optional<common::Error>& error,
+                                                const std::int64_t updated_at) {
+    if (server_id.kind() != common::IdKind::server || updated_at < 0) {
+        return common::Error{common::ErrorCode::invalid_argument,
+                             "batch tunnel update requires a server ID and non-negative time"};
+    }
+    if (error.has_value()) {
+        const auto parsed = common::error_code_from_string(common::to_string(error->code()));
+        if (error->code() == common::ErrorCode::ok || !parsed.has_value() ||
+            *parsed != error->code()) {
+            return common::Error{common::ErrorCode::invalid_argument,
+                                 "batch tunnel update requires a known non-ok error code"};
+        }
+        if (auto validated = internal::validate_text(error->message(), 0U, kMaxErrorMessageBytes,
+                                                     "last_error_message");
+            !validated) {
+            return validated.error();
+        }
+    }
+
+    auto transaction = database_.begin_transaction();
+    if (!transaction) {
+        return std::move(transaction).error();
+    }
+    auto statement = internal::Statement::prepare(
+        database_.handle_,
+        "UPDATE tunnels SET actual_state = 'pending', last_error_code = ?1, "
+        "last_error_message = ?2, updated_at = MAX(updated_at, ?3) "
+        "WHERE server_id = ?4 AND desired_state = 'active'",
+        "mark active server tunnels pending");
+    if (!statement) {
+        return statement.error();
+    }
+    common::Result<void> bindings[]{
+        error.has_value() ? statement->bind_text(1, common::to_string(error->code()))
+                          : statement->bind_null(1),
+        error.has_value() ? statement->bind_text(2, error->message()) : statement->bind_null(2),
+        statement->bind_int64(3, updated_at),
+        statement->bind_text(4, server_id.str()),
+    };
+    for (auto& binding : bindings) {
+        if (!binding) {
+            return binding.error();
+        }
+    }
+    auto step = statement->step();
+    if (!step) {
+        return step.error();
+    }
+    if (*step != internal::StepResult::done) {
+        return common::Error{common::ErrorCode::database_error,
+                             "batch tunnel update unexpectedly returned a row"};
+    }
+    const int changed = sqlite3_changes(database_.handle_);
+    if (changed < 0) {
+        return common::Error{common::ErrorCode::database_error,
+                             "batch tunnel update returned an invalid change count"};
+    }
+    auto committed = transaction->commit();
+    if (!committed) {
+        return committed.error();
+    }
+    return static_cast<std::size_t>(changed);
 }
 
 common::Result<void> TunnelRepository::mark_removed(const common::Id& id,

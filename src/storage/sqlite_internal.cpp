@@ -450,7 +450,10 @@ common::Result<void> validate_tunnel_record(const TunnelRecord& record) {
         !result) {
         return result;
     }
-    if (record.created_at_unix_ms < 0 || record.updated_at_unix_ms < record.created_at_unix_ms) {
+    if (record.created_at_unix_ms < 0 || record.updated_at_unix_ms < record.created_at_unix_ms ||
+        (record.last_synced_at_unix_ms.has_value() &&
+         (*record.last_synced_at_unix_ms < record.created_at_unix_ms ||
+          *record.last_synced_at_unix_ms > record.updated_at_unix_ms))) {
         return common::Error{common::ErrorCode::invalid_argument,
                              "tunnel timestamps must be non-negative and monotonic"};
     }
@@ -537,10 +540,11 @@ common::Result<TunnelRecord> read_tunnel(sqlite3_stmt* statement) {
     auto error_message = optional_text(statement, 11, "tunnels.last_error_message");
     auto created_at = required_int64(statement, 12, "tunnels.created_at");
     auto updated_at = required_int64(statement, 13, "tunnels.updated_at");
+    auto last_synced_at = optional_int64(statement, 14, "tunnels.last_synced_at");
 
     if (!id_text || !name || !server_id_text || !protocol_text || !local_host || !local_port ||
         !remote_host || !remote_port || !desired_text || !actual_text || !error_text ||
-        !error_message || !created_at || !updated_at) {
+        !error_message || !created_at || !updated_at || !last_synced_at) {
         return common::Error{common::ErrorCode::database_error,
                              "database contains a malformed tunnel row"};
     }
@@ -580,6 +584,7 @@ common::Result<TunnelRecord> read_tunnel(sqlite3_stmt* statement) {
         .last_error_message = std::move(*error_message),
         .created_at_unix_ms = *created_at,
         .updated_at_unix_ms = *updated_at,
+        .last_synced_at_unix_ms = std::move(*last_synced_at),
     };
     auto validated = validate_tunnel_record(record);
     if (!validated) {

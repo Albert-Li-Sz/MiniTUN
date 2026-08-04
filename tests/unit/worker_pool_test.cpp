@@ -1,8 +1,11 @@
+#include <chrono>
 #include <cstdint>
+#include <memory>
 #include <string>
 
 #include <asio/io_context.hpp>
 #include <asio/ip/tcp.hpp>
+#include <asio/ssl/context.hpp>
 #include <gtest/gtest.h>
 
 #include <minitun/common/error.hpp>
@@ -101,6 +104,34 @@ TEST(WorkerBudgetTest, EnforcesAndReleasesGlobalLimit) {
     EXPECT_EQ(budget.in_use(), 1U);
     EXPECT_TRUE(budget.try_acquire());
     EXPECT_EQ(budget.maximum(), 2U);
+}
+
+TEST(DaemonWorkerPoolTest, AcceptsNegotiatedIdleTimeoutIncludingMaximumGrace) {
+    asio::io_context io_context;
+    auto endpoint = common::Endpoint::parse("127.0.0.1:2333");
+    ASSERT_TRUE(endpoint) << endpoint.error();
+    auto tls_context = std::make_shared<asio::ssl::context>(asio::ssl::context::tls_client);
+    auto idle_budget = std::make_shared<daemon::WorkerBudget>(4U);
+    auto connection_budget = std::make_shared<daemon::WorkerBudget>(8U);
+    auto pool =
+        daemon::WorkerPool::create(io_context.get_executor(), std::move(tls_context),
+                                   std::move(idle_budget), std::move(connection_budget),
+                                   daemon::WorkerPoolOptions{
+                                       .endpoint = std::move(*endpoint),
+                                       .server_id = generated_id(common::IdKind::server),
+                                       .client_id = generated_id(common::IdKind::client),
+                                       .session_generation = 1U,
+                                       .min_idle_workers = 0U,
+                                       .max_idle_workers = 0U,
+                                   },
+                                   [](const std::string_view) {
+                                       return common::Result<common::Endpoint>::failure(
+                                           common::ErrorCode::not_found, "unused test resolver");
+                                   });
+    ASSERT_TRUE(pool) << pool.error();
+    EXPECT_TRUE((*pool)->set_idle_timeout(std::chrono::seconds{305}));
+    EXPECT_FALSE((*pool)->set_idle_timeout(std::chrono::seconds{306}));
+    EXPECT_FALSE((*pool)->set_idle_timeout(std::chrono::seconds{0}));
 }
 
 } // namespace

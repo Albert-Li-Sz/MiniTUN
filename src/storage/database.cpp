@@ -195,6 +195,13 @@ CREATE TABLE tunnels (
             typeof(updated_at) = 'integer'
             AND updated_at >= created_at
         ),
+    last_synced_at INTEGER
+        CHECK(
+            last_synced_at IS NULL OR (
+                typeof(last_synced_at) = 'integer'
+                AND last_synced_at BETWEEN created_at AND updated_at
+            )
+        ),
 
     FOREIGN KEY(server_id)
         REFERENCES servers(id)
@@ -324,6 +331,39 @@ CREATE TABLE daemon_identity (
     return exists;
 }
 
+[[nodiscard]] common::Result<bool> column_exists(sqlite3* database,
+                                                 const std::string_view table_name,
+                                                 const std::string_view column_name) {
+    auto statement = internal::Statement::prepare(
+        database, "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2",
+        "inspect SQLite table columns");
+    if (!statement) {
+        return std::move(statement).error();
+    }
+    if (auto result = statement->bind_text(1, table_name); !result) {
+        return result.error();
+    }
+    if (auto result = statement->bind_text(2, column_name); !result) {
+        return result.error();
+    }
+    auto step = statement->step();
+    if (!step) {
+        return std::move(step).error();
+    }
+    if (*step != internal::StepResult::row ||
+        sqlite3_column_type(statement->handle(), 0) != SQLITE_INTEGER) {
+        return common::Error{common::ErrorCode::database_error,
+                             "SQLite column inspection returned an invalid row"};
+    }
+    const std::int64_t count = sqlite3_column_int64(statement->handle(), 0);
+    step = statement->step();
+    if (!step || *step != internal::StepResult::done || count < 0 || count > 1) {
+        return common::Error{common::ErrorCode::database_error,
+                             "SQLite column inspection returned an invalid result"};
+    }
+    return count == 1;
+}
+
 [[nodiscard]] common::Result<std::int64_t> user_schema_object_count(sqlite3* database) {
     return internal::query_single_int64(database,
                                         "SELECT COUNT(*) FROM sqlite_master "
@@ -427,7 +467,7 @@ CREATE TABLE daemon_identity (
         database,
         "SELECT id, name, server_id, protocol, local_host, local_port, "
         "remote_host, remote_port, desired_state, actual_state, "
-        "last_error_code, last_error_message, created_at, updated_at "
+        "last_error_code, last_error_message, created_at, updated_at, last_synced_at "
         "FROM tunnels LIMIT 0",
         "validate tunnels schema");
     if (!tunnels) {
@@ -560,6 +600,42 @@ CREATE TABLE daemon_identity (
 
     auto insert = internal::Statement::prepare(
         database, "INSERT INTO schema_version(version, applied_at) VALUES(2, ?1)",
+        "record schema migration");
+    if (!insert) {
+        return migration_error(insert.error());
+    }
+    if (auto result = insert->bind_int64(1, common::unix_milliseconds_now()); !result) {
+        return migration_error(result.error());
+    }
+    auto step = insert->step();
+    if (!step || *step != internal::StepResult::done) {
+        return !step ? migration_error(step.error())
+                     : common::Error{common::ErrorCode::database_error,
+                                     "schema migration did not complete"};
+    }
+    return common::Result<void>::success();
+}
+
+[[nodiscard]] common::Result<void> apply_version_three(sqlite3* database) {
+    auto has_last_synced_at = column_exists(database, "tunnels", "last_synced_at");
+    if (!has_last_synced_at) {
+        return migration_error(has_last_synced_at.error());
+    }
+    if (!*has_last_synced_at) {
+        auto added = internal::execute(database,
+                                       "ALTER TABLE tunnels ADD COLUMN last_synced_at INTEGER "
+                                       "CHECK( last_synced_at IS NULL OR ( "
+                                       "typeof(last_synced_at) = 'integer' AND "
+                                       "last_synced_at BETWEEN created_at AND updated_at "
+                                       ") )",
+                                       "add tunnel synchronization timestamp");
+        if (!added) {
+            return migration_error(added.error());
+        }
+    }
+
+    auto insert = internal::Statement::prepare(
+        database, "INSERT INTO schema_version(version, applied_at) VALUES(3, ?1)",
         "record schema migration");
     if (!insert) {
         return migration_error(insert.error());
@@ -858,6 +934,12 @@ common::Result<void> Database::migrate() {
             return fail(applied.error());
         }
         version = 2;
+    }
+    if (version == 2) {
+        if (auto applied = apply_version_three(handle_); !applied) {
+            return fail(applied.error());
+        }
+        version = 3;
     }
     if (version != kCurrentSchemaVersion) {
         return fail(common::Error{

@@ -35,6 +35,7 @@ namespace minitun::daemon {
 namespace {
 
 inline constexpr std::chrono::seconds kMaximumWorkerTimeout{300};
+inline constexpr std::chrono::seconds kMaximumWorkerIdleTimeout{305};
 inline constexpr std::chrono::hours kMaximumRelayTimeout{24};
 
 [[nodiscard]] common::Result<void> validate_options(const WorkerPoolOptions& options) {
@@ -53,7 +54,7 @@ inline constexpr std::chrono::hours kMaximumRelayTimeout{24};
         options.handshake_timeout <= std::chrono::seconds::zero() ||
         options.handshake_timeout > kMaximumWorkerTimeout ||
         options.idle_timeout <= std::chrono::seconds::zero() ||
-        options.idle_timeout > kMaximumWorkerTimeout ||
+        options.idle_timeout > kMaximumWorkerIdleTimeout ||
         options.relay_inactivity_timeout <= std::chrono::seconds::zero() ||
         options.relay_inactivity_timeout > kMaximumRelayTimeout ||
         options.graceful_shutdown_timeout <= std::chrono::seconds::zero() ||
@@ -179,7 +180,7 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
                 co_return;
             }
 
-            auto relay_frame = co_await read_frame(pool->options_.idle_timeout);
+            auto relay_frame = co_await read_frame(pool->idle_timeout());
             if (!relay_frame || relay_frame->type != protocol::MessageType::start_relay) {
                 co_return;
             }
@@ -411,6 +412,15 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
 
     [[nodiscard]] std::size_t size() const noexcept { return size_.load(); }
 
+    [[nodiscard]] common::Result<void> set_idle_timeout(const std::chrono::seconds timeout) {
+        if (timeout <= std::chrono::seconds::zero() || timeout > kMaximumWorkerIdleTimeout) {
+            return common::Error{common::ErrorCode::invalid_argument,
+                                 "Worker idle timeout is outside its limit"};
+        }
+        idle_timeout_seconds_.store(timeout.count());
+        return common::Result<void>::success();
+    }
+
   private:
     Impl(asio::any_io_executor executor, std::shared_ptr<asio::ssl::context> tls_context,
          std::shared_ptr<WorkerBudget> idle_budget, std::shared_ptr<WorkerBudget> connection_budget,
@@ -419,7 +429,11 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
           budget_(std::move(idle_budget)), connection_budget_(std::move(connection_budget)),
           options_(std::move(options)),
           local_endpoint_resolver_(std::move(local_endpoint_resolver)), replenish_timer_(executor_),
-          shutdown_timer_(executor_) {}
+          shutdown_timer_(executor_), idle_timeout_seconds_(options_.idle_timeout.count()) {}
+
+    [[nodiscard]] std::chrono::seconds idle_timeout() const noexcept {
+        return std::chrono::seconds{idle_timeout_seconds_.load()};
+    }
 
     void ensure_minimum() {
         const std::size_t current = available_workers_.size();
@@ -533,6 +547,7 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
     std::unordered_set<std::string> available_workers_;
     std::atomic<std::size_t> size_{0U};
     std::atomic<bool> running_{false};
+    std::atomic<std::int64_t> idle_timeout_seconds_{305};
 };
 
 common::Result<std::unique_ptr<WorkerPool>>
@@ -555,6 +570,10 @@ WorkerPool::WorkerPool(std::shared_ptr<Impl> implementation) noexcept
 WorkerPool::~WorkerPool() noexcept { stop(); }
 
 common::Result<void> WorkerPool::start() { return implementation_->start(); }
+
+common::Result<void> WorkerPool::set_idle_timeout(const std::chrono::seconds timeout) {
+    return implementation_->set_idle_timeout(timeout);
+}
 
 void WorkerPool::request_workers(const std::uint16_t count) {
     implementation_->request_workers(count);

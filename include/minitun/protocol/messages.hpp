@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -18,6 +19,10 @@ inline constexpr std::size_t kMaxTunnelBindHostBytes = 253U;
 inline constexpr std::uint32_t kDefaultHeartbeatIntervalMilliseconds = 5'000U;
 inline constexpr std::uint16_t kDefaultMinIdleWorkers = 2U;
 inline constexpr std::uint16_t kDefaultMaxIdleWorkers = 32U;
+inline constexpr std::uint16_t kMinimumWorkerIdleTimeoutSeconds = 1U;
+inline constexpr std::uint16_t kMaximumWorkerIdleTimeoutSeconds = 300U;
+inline constexpr std::uint16_t kWorkerIdleTimeoutGraceSeconds = 5U;
+inline constexpr std::uint64_t kMaximumNegotiatedHeartbeatSequence = (1ULL << 39U) - 1U;
 
 using AuthenticationNonce = std::array<std::uint8_t, kAuthenticationNonceSize>;
 using AuthenticationData = std::array<std::uint8_t, kAuthenticationDataSize>;
@@ -164,6 +169,15 @@ decode_auth_error(const std::vector<std::uint8_t>& payload);
 encode_heartbeat(const HeartbeatMessage& message);
 [[nodiscard]] common::Result<HeartbeatMessage>
 decode_heartbeat(const std::vector<std::uint8_t>& payload);
+
+/// Adds backward-compatible Worker timeout metadata to a heartbeat sequence.
+/// Legacy peers treat the returned value as opaque and echo it unchanged,
+/// while newer peers can recover the configured timeout.
+[[nodiscard]] common::Result<std::uint64_t>
+encode_worker_timeout_heartbeat_sequence(std::uint64_t sequence,
+                                         std::uint16_t worker_idle_timeout_seconds);
+[[nodiscard]] std::optional<std::uint16_t>
+decode_worker_idle_timeout_seconds(std::uint64_t sequence) noexcept;
 
 [[nodiscard]] common::Result<std::vector<std::uint8_t>>
 encode_register_tunnel(const RegisterTunnelMessage& message);

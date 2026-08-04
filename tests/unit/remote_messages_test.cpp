@@ -83,6 +83,20 @@ TEST(RemoteMessagesTest, EnforcesAuthOkBoundsAndFailureCodes) {
     EXPECT_FALSE(encode_auth_error({common::ErrorCode::ok}));
 }
 
+TEST(RemoteMessagesTest, NegotiatesWorkerIdleTimeoutThroughOpaqueHeartbeatSequence) {
+    const auto encoded = encode_worker_timeout_heartbeat_sequence(42U, 300U);
+    ASSERT_TRUE(encoded) << encoded.error();
+    EXPECT_NE(*encoded, 42U);
+    EXPECT_EQ(decode_worker_idle_timeout_seconds(*encoded), 300U);
+    EXPECT_FALSE(decode_worker_idle_timeout_seconds(42U).has_value());
+
+    EXPECT_FALSE(encode_worker_timeout_heartbeat_sequence(0U, 60U));
+    EXPECT_FALSE(
+        encode_worker_timeout_heartbeat_sequence(kMaximumNegotiatedHeartbeatSequence + 1U, 60U));
+    EXPECT_FALSE(encode_worker_timeout_heartbeat_sequence(1U, 0U));
+    EXPECT_FALSE(encode_worker_timeout_heartbeat_sequence(1U, 301U));
+}
+
 TEST(RemoteMessagesTest, RoundTripsTunnelRegistrationPayloads) {
     const std::string tunnel_id = generated_id(common::IdKind::tunnel);
     const RegisterTunnelMessage registration{tunnel_id, "0.0.0.0", 6'000U};

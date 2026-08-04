@@ -129,6 +129,7 @@ struct TunnelRecord final {
 
     std::int64_t created_at_unix_ms;
     std::int64_t updated_at_unix_ms;
+    std::optional<std::int64_t> last_synced_at_unix_ms;
 
     friend bool operator==(const TunnelRecord&, const TunnelRecord&) = default;
 };

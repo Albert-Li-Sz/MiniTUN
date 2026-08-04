@@ -15,7 +15,7 @@ struct sqlite3;
 namespace minitun::storage {
 
 inline constexpr std::string_view kDefaultDatabasePath{"/var/lib/minitun/state.db"};
-inline constexpr int kCurrentSchemaVersion = 2;
+inline constexpr int kCurrentSchemaVersion = 3;
 inline constexpr int kDatabaseBusyTimeoutMilliseconds = 5'000;
 inline constexpr int kWalAutoCheckpointPages = 1'000;
 inline constexpr std::int64_t kWalJournalSizeLimitBytes = 16 * 1024 * 1024;

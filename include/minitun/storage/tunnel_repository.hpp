@@ -1,8 +1,12 @@
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
+#include <optional>
 #include <string_view>
 #include <vector>
 
+#include <minitun/common/error.hpp>
 #include <minitun/common/id.hpp>
 #include <minitun/common/result.hpp>
 #include <minitun/storage/database.hpp>
@@ -30,6 +34,15 @@ class TunnelRepository final {
 
     [[nodiscard]] common::Result<void> update(const TunnelRecord& record);
     [[nodiscard]] common::Result<void> update(const TunnelRecord& record, Transaction& transaction);
+
+    /// Marks every active tunnel for one server pending in one SQLite
+    /// transaction. The most recent successful synchronization timestamp is
+    /// preserved so diagnostics can distinguish stale state from never-synced
+    /// state.
+    [[nodiscard]] common::Result<std::size_t>
+    mark_active_pending_by_server(const common::Id& server_id,
+                                  const std::optional<common::Error>& error,
+                                  std::int64_t updated_at);
 
     [[nodiscard]] common::Result<void> mark_removed(const common::Id& id, std::int64_t updated_at);
     [[nodiscard]] common::Result<void> mark_removed(const common::Id& id, std::int64_t updated_at,

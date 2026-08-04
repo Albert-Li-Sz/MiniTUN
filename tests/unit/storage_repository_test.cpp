@@ -78,6 +78,7 @@ namespace {
         .last_error_message = std::string{"previous local failure"},
         .created_at_unix_ms = static_cast<std::int64_t>(3'000 + number),
         .updated_at_unix_ms = static_cast<std::int64_t>(4'000 + number),
+        .last_synced_at_unix_ms = static_cast<std::int64_t>(3'500 + number),
     };
 }
 
@@ -282,6 +283,77 @@ TEST(TunnelRepositoryTest, RoundTripsUpdatesTombstonesAndCascadingErase) {
     const auto cascaded = (*repository)->tunnels().get_by_id(second.id);
     ASSERT_FALSE(cascaded);
     EXPECT_EQ(cascaded.error().code(), common::ErrorCode::not_found);
+}
+
+TEST(TunnelRepositoryTest, BatchMarksOnlyActiveServerTunnelsPending) {
+    test::TemporaryDatabaseFile temporary;
+    auto repository = StateRepository::open(temporary.path_string());
+    ASSERT_TRUE(repository) << repository.error();
+
+    const ServerRecord server = make_server(43, "batch");
+    const ServerRecord other_server = make_server(44, "other");
+    ASSERT_TRUE((*repository)->servers().create(server));
+    ASSERT_TRUE((*repository)->servers().create(other_server));
+
+    const TunnelRecord first = make_tunnel(43, server.id, 6'130, "first");
+    const TunnelRecord second = make_tunnel(44, server.id, 6'131, "second");
+    TunnelRecord disabled = make_tunnel(45, server.id, 6'132, "disabled");
+    disabled.desired_state = TunnelDesiredState::disabled;
+    disabled.actual_state = TunnelActualState::disabled;
+    const TunnelRecord unrelated = make_tunnel(46, other_server.id, 6'133, "unrelated");
+    ASSERT_TRUE((*repository)->tunnels().create(first));
+    ASSERT_TRUE((*repository)->tunnels().create(second));
+    ASSERT_TRUE((*repository)->tunnels().create(disabled));
+    ASSERT_TRUE((*repository)->tunnels().create(unrelated));
+
+    const common::Error disconnect{common::ErrorCode::connection_failed,
+                                   "remote control session closed"};
+    auto updated =
+        (*repository)->tunnels().mark_active_pending_by_server(server.id, disconnect, 9'000);
+    ASSERT_TRUE(updated) << updated.error();
+    EXPECT_EQ(*updated, 2U);
+
+    for (const auto& id : {first.id, second.id}) {
+        const auto tunnel = (*repository)->tunnels().get_by_id(id);
+        ASSERT_TRUE(tunnel) << tunnel.error();
+        EXPECT_EQ(tunnel->actual_state, TunnelActualState::pending);
+        EXPECT_EQ(tunnel->last_error_code, common::ErrorCode::connection_failed);
+        EXPECT_EQ(tunnel->last_error_message, "remote control session closed");
+        EXPECT_EQ(tunnel->updated_at_unix_ms, 9'000);
+        EXPECT_EQ(tunnel->last_synced_at_unix_ms,
+                  id == first.id ? first.last_synced_at_unix_ms : second.last_synced_at_unix_ms);
+    }
+    EXPECT_EQ(*(*repository)->tunnels().get_by_id(disabled.id), disabled);
+    EXPECT_EQ(*(*repository)->tunnels().get_by_id(unrelated.id), unrelated);
+}
+
+TEST(TunnelRepositoryTest, BatchPendingFailureIsReturnedWithoutPartialUpdates) {
+    test::TemporaryDatabaseFile temporary;
+    auto repository = StateRepository::open(temporary.path_string());
+    ASSERT_TRUE(repository) << repository.error();
+
+    const ServerRecord server = make_server(47, "batch-failure");
+    const TunnelRecord first = make_tunnel(47, server.id, 6'140, "first");
+    const TunnelRecord second = make_tunnel(48, server.id, 6'141, "second");
+    ASSERT_TRUE((*repository)->servers().create(server));
+    ASSERT_TRUE((*repository)->tunnels().create(first));
+    ASSERT_TRUE((*repository)->tunnels().create(second));
+
+    test::NativeSqliteDatabase injector{temporary.path()};
+    injector.execute("CREATE TRIGGER reject_batch_pending BEFORE UPDATE OF actual_state ON tunnels "
+                     "WHEN NEW.actual_state = 'pending' BEGIN "
+                     "SELECT RAISE(ABORT, 'injected batch failure'); END");
+    const auto updated =
+        (*repository)
+            ->tunnels()
+            .mark_active_pending_by_server(server.id,
+                                           common::Error{common::ErrorCode::connection_failed,
+                                                         "remote control session closed"},
+                                           9'000);
+    ASSERT_FALSE(updated);
+    EXPECT_EQ(updated.error().code(), common::ErrorCode::invalid_argument);
+    EXPECT_EQ(*(*repository)->tunnels().get_by_id(first.id), first);
+    EXPECT_EQ(*(*repository)->tunnels().get_by_id(second.id), second);
 }
 
 TEST(StorageRepositoryInvariantTest, RejectsTimeRegressionAndPrematurePhysicalErase) {
