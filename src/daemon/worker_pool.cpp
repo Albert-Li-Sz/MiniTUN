@@ -417,7 +417,7 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
             return common::Error{common::ErrorCode::invalid_argument,
                                  "Worker idle timeout is outside its limit"};
         }
-        idle_timeout_seconds_.store(timeout.count());
+        idle_timeout_seconds_.store(static_cast<std::uint32_t>(timeout.count()));
         return common::Result<void>::success();
     }
 
@@ -429,7 +429,8 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
           budget_(std::move(idle_budget)), connection_budget_(std::move(connection_budget)),
           options_(std::move(options)),
           local_endpoint_resolver_(std::move(local_endpoint_resolver)), replenish_timer_(executor_),
-          shutdown_timer_(executor_), idle_timeout_seconds_(options_.idle_timeout.count()) {}
+          shutdown_timer_(executor_),
+          idle_timeout_seconds_(static_cast<std::uint32_t>(options_.idle_timeout.count())) {}
 
     [[nodiscard]] std::chrono::seconds idle_timeout() const noexcept {
         return std::chrono::seconds{idle_timeout_seconds_.load()};
@@ -547,7 +548,7 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
     std::unordered_set<std::string> available_workers_;
     std::atomic<std::size_t> size_{0U};
     std::atomic<bool> running_{false};
-    std::atomic<std::int64_t> idle_timeout_seconds_{305};
+    std::atomic<std::uint32_t> idle_timeout_seconds_{305U};
 };
 
 common::Result<std::unique_ptr<WorkerPool>>
