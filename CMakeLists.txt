@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.22)
 
 project(
     MiniTun
-    VERSION 0.2.3
+    VERSION 0.2.4
     DESCRIPTION "A small, high-performance TCP reverse-tunnelling system"
     HOMEPAGE_URL "https://github.com/LMTINSUZHOU/MiniTUN"
     LANGUAGES CXX
