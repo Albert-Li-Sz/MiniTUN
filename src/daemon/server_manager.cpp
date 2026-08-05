@@ -18,6 +18,7 @@
 #include <utility>
 #include <vector>
 
+#include <asio/associated_executor.hpp>
 #include <asio/co_spawn.hpp>
 #include <asio/connect.hpp>
 #include <asio/dispatch.hpp>
@@ -194,21 +195,31 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
         [[nodiscard]] asio::awaitable<std::invoke_result_t<Operation&>>
         run_db(Operation operation) {
             using ReturnT = std::invoke_result_t<Operation&>;
-            std::optional<ReturnT> result;
-            std::exception_ptr failure;
-
-            co_await asio::post(db_pool_->get_executor(), asio::use_awaitable);
-            try {
-                result.emplace(std::invoke(operation));
-            } catch (...) {
-                failure = std::current_exception();
-            }
-            co_await asio::post(strand_, asio::use_awaitable);
-
-            if (failure) {
-                std::rethrow_exception(failure);
-            }
-            co_return std::move(*result);
+            auto db_pool = db_pool_;
+            auto operation_state = std::make_shared<Operation>(std::move(operation));
+            return asio::async_initiate<decltype(asio::use_awaitable), void(ReturnT)>(
+                [db_pool, operation_state](auto handler) mutable {
+                    auto completion_executor = asio::get_associated_executor(handler);
+                    asio::post(db_pool->get_executor(),
+                               [operation_state, handler = std::move(handler),
+                                completion_executor = std::move(completion_executor)]() mutable {
+                                   std::shared_ptr<ReturnT> result;
+                                   try {
+                                       result =
+                                           std::make_shared<ReturnT>(std::invoke(*operation_state));
+                                   } catch (...) {
+                                       result = std::make_shared<ReturnT>(
+                                           ReturnT::failure(common::ErrorCode::internal_error,
+                                                            "database operation failed"));
+                                   }
+                                   asio::post(std::move(completion_executor),
+                                              [handler = std::move(handler),
+                                               result = std::move(result)]() mutable {
+                                                  handler(std::move(*result));
+                                              });
+                               });
+                },
+                asio::use_awaitable);
         }
 
         enum class AttemptKind : std::uint8_t {
