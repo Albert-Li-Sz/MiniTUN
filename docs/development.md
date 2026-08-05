@@ -278,6 +278,11 @@ MiniTun 同时发布 OpenWrt 24.10.8（opkg，`.ipk`）与 25.12.5（apk v3，`.
 包由标准 feed 机制构建：`packaging/openwrt/Makefile` 声明
 `PKG_SOURCE`/`PKG_SOURCE_URL`/`PKG_HASH`，指向随 GitHub Release 发布的
 `minitun-<版本>.tar.gz` 源 tarball（用 `git archive --format=tar.gz` 确定性生成）。
+源 tarball 排除 `packaging/openwrt/Makefile` 本身，避免 `PKG_HASH` 自引用；
+并用 `packaging/openwrt/strip-tar-pax.py` 剥离 `git archive` 写入的
+`pax_global_header`（含提交 ID），使哈希只取决于归档内容与提交时间；
+生成统一走 `packaging/openwrt/make-source-tarball.sh`，与 `release.yml`、
+`build-sdk.sh` 保持一致。
 CLI11、nlohmann/json、spdlog 与 Asio 四个固定版本依赖仍由 OpenWrt `Download/`
 下载并解包到 `third_party/`，与 CMake FetchContent 的版本一致。
 
@@ -304,7 +309,7 @@ tar --zstd --extract --file "$MINITUN_SDK_ARCHIVE" \
 
 MINITUN_OPENWRT_JOBS=2 \
   packaging/openwrt/build-sdk.sh \
-    "$PWD/build/openwrt/x86_64/sdk" "$PWD" 0.3.0
+    "$PWD/build/openwrt/x86_64/sdk" "$PWD" 0.3.1
 ```
 
 `build-sdk.sh` 会按 SDK 内锁定的 feed 提交安装 OpenSSL、SQLite 与 CA 依赖，
@@ -331,7 +336,7 @@ find build/openwrt/x86_64/sdk/bin/packages -type f \
 packaging/tests/verify-openwrt.sh \
   "$PWD/build/openwrt/x86_64/sdk" \
   "$PWD/build/openwrt/x86_64/packages" \
-  0.3.0 x86_64 qemu-x86_64-static apk
+  0.3.1 x86_64 qemu-x86_64-static apk
 ```
 
 OpenWrt 包默认不启用服务。客户端和服务端分别使用
@@ -404,8 +409,8 @@ GitHub Actions 包含四条工作流：
 必须与 `CMakeLists.txt` 中的项目版本一致：
 
 ```bash
-git tag -a v0.3.0 -m "MiniTun v0.3.0"
-git push origin v0.3.0
+git tag -a v0.3.1 -m "MiniTun v0.3.1"
+git push origin v0.3.1
 ```
 
 发布工作流仅在全部软件包测试通过后创建 GitHub Release。每个版本包含

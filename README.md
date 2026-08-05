@@ -82,10 +82,10 @@ Debian/Ubuntu：
 ```bash
 # 公网服务器；以下示例为 amd64，其他架构替换文件名中的 amd64 为
 # arm64 / armhf / riscv64
-sudo apt install ./minitun-server-0.3.0-linux-amd64.deb
+sudo apt install ./minitun-server-0.3.1-linux-amd64.deb
 
 # 内网客户端
-sudo apt install ./minitun-client-0.3.0-linux-amd64.deb
+sudo apt install ./minitun-client-0.3.1-linux-amd64.deb
 ```
 
 Fedora/RHEL 系：
@@ -93,10 +93,10 @@ Fedora/RHEL 系：
 ```bash
 # 公网服务器；以下示例为 x86_64，其他架构替换文件名中的 x86_64 为
 # aarch64 / armv7hl / riscv64
-sudo dnf install ./minitun-server-0.3.0-linux-x86_64.rpm
+sudo dnf install ./minitun-server-0.3.1-linux-x86_64.rpm
 
 # 内网客户端
-sudo dnf install ./minitun-client-0.3.0-linux-x86_64.rpm
+sudo dnf install ./minitun-client-0.3.1-linux-x86_64.rpm
 ```
 
 OpenWrt 的推荐安装方式是添加 MiniTun 签名软件源，无需 `--allow-untrusted`。
@@ -147,14 +147,14 @@ apk add --repository \
 24.10 的 IPK 使用 `opkg install <文件>`：
 
 ```sh
-grep 'minitun-server-0.3.0-openwrt-25.12.5-aarch64_generic.apk$' \
+grep 'minitun-server-0.3.1-openwrt-25.12.5-aarch64_generic.apk$' \
   SHA256SUMS | sha256sum -c -
 apk add --allow-untrusted \
-  ./minitun-server-0.3.0-openwrt-25.12.5-aarch64_generic.apk
+  ./minitun-server-0.3.1-openwrt-25.12.5-aarch64_generic.apk
 
-grep 'minitun-server-0.3.0-openwrt-24.10.8-aarch64_generic.ipk$' \
+grep 'minitun-server-0.3.1-openwrt-24.10.8-aarch64_generic.ipk$' \
   SHA256SUMS | sha256sum -c -
-opkg install ./minitun-server-0.3.0-openwrt-24.10.8-aarch64_generic.ipk
+opkg install ./minitun-server-0.3.1-openwrt-24.10.8-aarch64_generic.ipk
 ```
 
 所有软件包都会创建专用服务账户，但不会生成凭据，也不会自动启动服务。
@@ -171,16 +171,16 @@ Release 同时发布最小 OCI 镜像（`ghcr.io/lmtinsuzhou/minitun-server` 与
 docker run -d --name minitun-server \
   -v /etc/minitun-server:/etc/minitun-server:ro \
   -p 2333:2333 \
-  ghcr.io/lmtinsuzhou/minitun-server:0.3.0
+  ghcr.io/lmtinsuzhou/minitun-server:0.3.1
 
 # 内网客户端：挂载状态卷（state.db 与 credentials.db）
 docker run -d --name minitund \
   -v minitun-state:/var/lib/minitun \
-  ghcr.io/lmtinsuzhou/minitun-client:0.3.0
+  ghcr.io/lmtinsuzhou/minitun-client:0.3.1
 ```
 
 需要覆盖默认路径或参数时，在镜像名后追加命令行参数（例如
-`ghcr.io/lmtinsuzhou/minitun-server:0.3.0 --listen 0.0.0.0:4433`）。
+`ghcr.io/lmtinsuzhou/minitun-server:0.3.1 --listen 0.0.0.0:4433`）。
 
 ### 2. 配置公网服务端
 

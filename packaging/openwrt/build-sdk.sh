@@ -97,17 +97,17 @@ mkdir -p package/minitun
 cp -a "$source_dir/packaging/openwrt/." package/minitun/
 
 # Generate the deterministic source tarball consumed by OpenWrt's PKG_SOURCE
-# machinery. `git archive --format=tar.gz` is reproducible, so the hash below
-# matches the tarball attached to the matching GitHub Release. Non-git source
-# directories fall back to a plain tar of the build inputs.
+# machinery. The helper strips git's pax_global_header so the hash below is a
+# pure function of the archived tree and matches the tarball attached to the
+# matching GitHub Release. Non-git source directories fall back to a plain tar
+# of the build inputs.
 install -d dl
 source_tarball="dl/minitun-$package_version.tar.gz"
 if git -C "$source_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-	git -C "$source_dir" archive \
-		--format=tar.gz \
-		--prefix="minitun-$package_version/" \
-		-o "$sdk_dir/$source_tarball" \
-		HEAD
+	"$source_dir/packaging/openwrt/make-source-tarball.sh" \
+		"$source_dir" \
+		"$package_version" \
+		"$sdk_dir/$source_tarball"
 else
 	staging_dir=$(mktemp -d)
 	trap 'rm -rf "$staging_dir"' EXIT HUP INT TERM
@@ -123,7 +123,9 @@ else
 		"$source_dir/src" \
 		"$staging_dir/minitun-$package_version/"
 	tar -czf "$sdk_dir/$source_tarball" \
-		-C "$staging_dir" "minitun-$package_version"
+		-C "$staging_dir" \
+		--exclude="minitun-$package_version/packaging/openwrt/Makefile" \
+		"minitun-$package_version"
 fi
 source_hash=$(sha256sum "$source_tarball" | awk '{ print $1 }')
 

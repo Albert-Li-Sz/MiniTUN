@@ -1,17 +1,18 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=minitun
-PKG_VERSION:=0.3.0
+PKG_VERSION:=0.3.1
 PKG_RELEASE:=1
 
 # Standard OpenWrt source tarball. Releases attach minitun-$(PKG_VERSION).tar.gz
 # (built deterministically with `git archive --format=tar.gz`) to the matching
-# GitHub Release; the SHA-256 below must match that asset exactly. Unreleased
-# development builds generate the tarball locally and patch PKG_HASH through
-# packaging/openwrt/build-sdk.sh.
+# GitHub Release; the SHA-256 below must match that asset exactly. The tarball
+# excludes this feed Makefile (see build-sdk.sh and release.yml), so PKG_HASH
+# is not self-referential. Unreleased development builds generate the tarball
+# locally and patch PKG_HASH through packaging/openwrt/build-sdk.sh.
 PKG_SOURCE:=minitun-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=https://github.com/LMTINSUZHOU/MiniTUN/releases/download/v$(PKG_VERSION)/
-PKG_HASH:=0e8b6afa20d9e6ed2b69418356bc1f6b91026821ce2d41e78638d9ec315cb02e
+PKG_HASH:=fee1e4c929748d8ccea8dd3af5441f32d266319af90c68b32cb80d422e08b94d
 
 PKG_LICENSE:=MIT
 PKG_LICENSE_FILES:=LICENSE

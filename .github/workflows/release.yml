@@ -186,11 +186,10 @@ jobs:
           install -d "${dist_dir}"
 
           # Deterministic source tarball that the OpenWrt feed consumes.
-          git archive \
-            --format=tar.gz \
-            --prefix="minitun-${PACKAGE_VERSION}/" \
-            -o "${dist_dir}/minitun-${PACKAGE_VERSION}.tar.gz" \
-            HEAD
+          packaging/openwrt/make-source-tarball.sh \
+            "${PWD}" \
+            "${PACKAGE_VERSION}" \
+            "${dist_dir}/minitun-${PACKAGE_VERSION}.tar.gz"
           actual_hash=$(sha256sum \
             "${dist_dir}/minitun-${PACKAGE_VERSION}.tar.gz" | awk '{ print $1 }')
           expected_hash=$(awk -F':=' '$1 == "PKG_HASH" { print $2; exit }' \
