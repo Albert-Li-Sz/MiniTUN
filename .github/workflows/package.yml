@@ -257,6 +257,7 @@ jobs:
             -DCMAKE_C_COMPILER="${TRIPLET}-gcc" \
             -DCMAKE_CXX_COMPILER="${TRIPLET}-g++" \
             -DCMAKE_LIBRARY_ARCHITECTURE="${TRIPLET}" \
+            -DCMAKE_LIBRARY_PATH="/usr/lib/${TRIPLET}" \
             -DCMAKE_FIND_ROOT_PATH=/usr \
             -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER \
             -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY \
@@ -515,6 +516,7 @@ jobs:
             -DCMAKE_C_COMPILER="${TRIPLET}-gcc" \
             -DCMAKE_CXX_COMPILER="${TRIPLET}-g++" \
             -DCMAKE_LIBRARY_ARCHITECTURE="${TRIPLET}" \
+            -DCMAKE_LIBRARY_PATH="/usr/lib/${TRIPLET}" \
             -DCMAKE_FIND_ROOT_PATH=/usr \
             -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER \
             -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY \

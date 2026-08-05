@@ -65,14 +65,10 @@ find_one_package() {
 control_field() {
 	package=$1
 	field=$2
-	temp_dir=$(mktemp -d)
-	ar p "$package" control.tar.gz | tar -xz -C "$temp_dir"
-	awk -v field="$field" \
-		'$1 == field ":" { $1=""; sub(/^ /, ""); print; exit }' \
-		"$temp_dir/control"
-	status=$?
-	rm -rf "$temp_dir"
-	return "$status"
+	tar -xOzf "$package" ./control.tar.gz |
+		tar -xOzf - ./control |
+		awk -v field="$field" \
+			'$1 == field ":" { $1=""; sub(/^ /, ""); print; exit }'
 }
 
 check_metadata() {
@@ -117,7 +113,8 @@ extract_package() {
 			;;
 		ipk)
 			mkdir -p "$destination"
-			ar p "$package" data.tar.gz | tar -xz -C "$destination"
+			tar -xOzf "$package" ./data.tar.gz |
+				tar -xzf - -C "$destination"
 			;;
 	esac
 }
