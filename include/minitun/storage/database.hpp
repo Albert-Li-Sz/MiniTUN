@@ -9,6 +9,7 @@
 
 #include <minitun/common/error.hpp>
 #include <minitun/common/result.hpp>
+#include <minitun/storage/diagnostics.hpp>
 
 struct sqlite3;
 
@@ -82,6 +83,18 @@ class Database final {
     [[nodiscard]] common::Result<int> schema_version() const;
     [[nodiscard]] common::Result<Transaction> begin_transaction();
     [[nodiscard]] common::Result<void> checkpoint();
+    /// Collects a non-secret health snapshot while the connection is locked.
+    [[nodiscard]] common::Result<DatabaseDiagnostics> diagnostics() const;
+    /// Creates a consistent SQLite online backup at an atomically installed
+    /// destination.  Existing destinations are never overwritten.
+    [[nodiscard]] common::Result<void> backup_to(std::string_view destination) const;
+    /// Validates restore-source ownership, permissions, integrity, version,
+    /// and schema without modifying this database.
+    [[nodiscard]] common::Result<void> validate_restore_source(std::string_view source) const;
+    /// Restores a validated backup into this connection while holding the
+    /// database lock. The per-database copy is atomic and no transaction may
+    /// be active.
+    [[nodiscard]] common::Result<void> restore_from(std::string_view source) const;
     [[nodiscard]] const std::string& path() const noexcept;
 
   private:

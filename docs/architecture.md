@@ -155,10 +155,22 @@ uint32 网络字节序 JSON 字节长度 | UTF-8 JSON 负载
 
 ```text
 daemon.status
-status
+status  doctor  health  readiness  metrics  reload
 server.add  server.login  server.list  server.inspect  server.remove
 tun.add     tun.list      tun.inspect  tun.remove
 ```
+
+方法的职责边界如下：
+
+| 方法 | 行为 |
+| --- | --- |
+| `daemon.status` | 返回守护进程运行状态和 IPC 协议版本，不访问数据库。 |
+| `status` | 在一致的状态事务快照上汇总服务器/隧道状态，并合并当前运行时指标。 |
+| `doctor` | 读取两个 SQLite 数据库的诊断信息，可请求 WAL checkpoint、在线备份或受控恢复；恢复后唤醒状态同步。 |
+| `health` / `readiness` | 分别报告数据库完整性健康状态和是否满足服务就绪条件，不打开公网监听。 |
+| `metrics` | 返回 ServerManager 的进程内运行指标，不读取或修改数据库。 |
+| `reload` | 异步请求 ServerManager 重建远程会话和 TLS 上下文；成功响应只表示请求已接受。 |
+| `server.*` / `tun.*` | 通过仓库事务修改或读取持久化资源，并在提交后唤醒受影响的远程会话。 |
 
 控制处理器严格拒绝缺失、类型错误、越界和未知参数。复合读取与隧道创建使用共享状态
 事务，因此并发 CLI 请求看到一致的服务器/隧道关系。删除操作使用仓库墓碑 API；
@@ -191,6 +203,14 @@ tun.add     tun.list      tun.inspect  tun.remove
 不同服务器的并发握手共享证书验证缓存。认证失败只会使对应服务器停留在
 `not_authenticated`；网络和心跳失败会进入有界退避。修改凭据或删除服务器只会
 替换受影响的会话。
+
+### DB executor
+
+所有 `ServerSession` 共享一个单线程 Asio `thread_pool` 作为 DB executor。凭据读取、
+隧道协调查询和服务器/隧道状态持久化先投递到该 executor，完成后再回到所属会话的
+strand；这些会话路径中的 SQLite 操作不会在 TLS、网络读取或重连定时器的执行路径中同步
+阻塞。DB executor 只运行有界的数据库闭包，不执行网络 I/O，也不跨越异步等待持有事务。
+控制面处理器仍可在本地有界分派池并发运行，并由数据库连接锁与事务规则串行化冲突操作。
 
 开始远程工作前，守护进程从状态数据库加载一个稳定的 `client_id`。模式版本 3 还会
 记录每条隧道最近一次远端同步时间。默认使用主机名
@@ -237,10 +257,24 @@ Worker 预算。Worker 独立连接并校验 TLS，携带当前 `client_id` 和
 同步、向在线控制会话发送 `GOAWAY`、关闭空闲 Worker，并允许已消耗 Worker 在配置
 期限内排空。任何信号回调都不会从所属 strand 之外修改会话注册表。
 
+`SIGHUP` 与 IPC 的 `reload` 使用同一条会话重建路径：守护进程保留监听套接字和数据库，
+重新创建每个服务器的客户端 TLS 上下文，并在下一次握手时重新读取凭据；旧会话和
+Worker 按优雅关闭期限退出。它不会重新解析进程启动参数，因此套接字路径、数据库路径、
+I/O 线程数、配额和超时上限仍需重启才能改变。服务端的 `SIGHUP` 只重新读取证书链、
+私钥和 Token，保持监听地址及端口白名单不变。新连接使用不可变的新凭据快照；现有
+控制会话和空闲 Worker 退出并重连，已经接管公网连接的 Worker 保留旧快照直至中继结束。
+
+`metrics` 是内存中的瞬时快照，计数器随守护进程重启归零，不代表持久化数据库健康度。
+`throughput.bytes_in/bytes_out` 统计成功完成的中继字节数，`quota_rejections` 统计
+Worker 预算拒绝次数；`connections.pending` 在客户端侧没有公网排队语义，当前固定为
+零。数据库完整性应使用 `health`、`readiness` 或 `doctor`。
+
 公网中继从接受连接直至中继拆除始终持有一个可移动但不可复制的配额租约。因此
 `--max-connections-per-client` 和 `--max-total-connections` 同时覆盖有界 Worker
 等待与活动数据路径，并在每条失败或关闭路径上恰好恢复一次容量。守护进程另行将
 `--max-total-connections` 应用于所有独立服务器池中的空闲与已消耗 Worker 会话。
+隧道监听器同时受 `--max-tunnels-per-client` 与 `--max-total-tunnels` 双重限制，
+后者限制所有已认证客户端的监听器总数，避免文件描述符和监听资源无界增长。
 
 ## 系统边界与非目标
 

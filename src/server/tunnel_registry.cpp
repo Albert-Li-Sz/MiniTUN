@@ -25,6 +25,8 @@
 namespace minitun::server {
 namespace {
 
+inline constexpr std::size_t kMaximumTotalTunnels = 100'000U;
+
 [[nodiscard]] std::string binding_key(const std::string_view client_id,
                                       const std::string_view tunnel_id) {
     std::string key;
@@ -190,17 +192,22 @@ class TunnelRegistry::Impl final {
   public:
     Impl(asio::any_io_executor listener_executor, asio::any_io_executor connection_executor,
          common::PortRange allowed_ports, const std::size_t max_tunnels_per_client,
-         PublicConnectionHandler connection_handler)
+         const std::size_t max_total_tunnels, PublicConnectionHandler connection_handler)
         : listener_executor_(std::move(listener_executor)),
           connection_executor_(std::move(connection_executor)),
           allowed_ports_(std::move(allowed_ports)), max_tunnels_per_client_(max_tunnels_per_client),
-          connection_handler_(std::move(connection_handler)),
+          max_total_tunnels_(max_total_tunnels), connection_handler_(std::move(connection_handler)),
           reserved_descriptor_(std::make_shared<ReservedFileDescriptor>()) {}
 
     [[nodiscard]] common::Result<void> register_tunnel(const TunnelBinding& binding) {
         auto valid = validate_binding(binding, allowed_ports_);
         if (!valid) {
             return valid;
+        }
+        if (max_tunnels_per_client_ == 0U || max_tunnels_per_client_ > kMaximumTotalTunnels ||
+            max_total_tunnels_ == 0U || max_total_tunnels_ > kMaximumTotalTunnels) {
+            return common::Result<void>::failure(common::ErrorCode::invalid_argument,
+                                                 "tunnel limits are invalid");
         }
         const std::string key = binding_key(binding.client_id, binding.tunnel_id);
         const auto existing = listeners_.find(key);
@@ -214,6 +221,10 @@ class TunnelRegistry::Impl final {
         if (client_size(binding.client_id) >= max_tunnels_per_client_) {
             return common::Result<void>::failure(common::ErrorCode::resource_exhausted,
                                                  "client tunnel limit has been reached");
+        }
+        if (listeners_.size() >= max_total_tunnels_) {
+            return common::Result<void>::failure(common::ErrorCode::resource_exhausted,
+                                                 "global tunnel limit has been reached");
         }
         auto listener =
             std::make_shared<Listener>(listener_executor_, connection_executor_, binding,
@@ -286,6 +297,7 @@ class TunnelRegistry::Impl final {
     asio::any_io_executor connection_executor_;
     common::PortRange allowed_ports_;
     std::size_t max_tunnels_per_client_;
+    std::size_t max_total_tunnels_;
     PublicConnectionHandler connection_handler_;
     std::shared_ptr<ReservedFileDescriptor> reserved_descriptor_;
     std::unordered_map<std::string, std::shared_ptr<Listener>> listeners_;
@@ -295,16 +307,33 @@ TunnelRegistry::TunnelRegistry(asio::any_io_executor executor, common::PortRange
                                const std::size_t max_tunnels_per_client,
                                PublicConnectionHandler connection_handler)
     : TunnelRegistry(executor, executor, std::move(allowed_ports), max_tunnels_per_client,
-                     std::move(connection_handler)) {}
+                     kMaximumTotalTunnels, std::move(connection_handler)) {}
+
+TunnelRegistry::TunnelRegistry(asio::any_io_executor executor, common::PortRange allowed_ports,
+                               const std::size_t max_tunnels_per_client,
+                               const std::size_t max_total_tunnels,
+                               PublicConnectionHandler connection_handler)
+    : TunnelRegistry(executor, executor, std::move(allowed_ports), max_tunnels_per_client,
+                     max_total_tunnels, std::move(connection_handler)) {}
 
 TunnelRegistry::TunnelRegistry(asio::any_io_executor listener_executor,
                                asio::any_io_executor connection_executor,
                                common::PortRange allowed_ports,
                                const std::size_t max_tunnels_per_client,
                                PublicConnectionHandler connection_handler)
+    : TunnelRegistry(std::move(listener_executor), std::move(connection_executor),
+                     std::move(allowed_ports), max_tunnels_per_client, kMaximumTotalTunnels,
+                     std::move(connection_handler)) {}
+
+TunnelRegistry::TunnelRegistry(asio::any_io_executor listener_executor,
+                               asio::any_io_executor connection_executor,
+                               common::PortRange allowed_ports,
+                               const std::size_t max_tunnels_per_client,
+                               const std::size_t max_total_tunnels,
+                               PublicConnectionHandler connection_handler)
     : implementation_(std::make_unique<Impl>(
           std::move(listener_executor), std::move(connection_executor), std::move(allowed_ports),
-          max_tunnels_per_client, std::move(connection_handler))) {}
+          max_tunnels_per_client, max_total_tunnels, std::move(connection_handler))) {}
 
 TunnelRegistry::~TunnelRegistry() noexcept = default;
 

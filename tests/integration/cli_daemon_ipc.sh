@@ -88,6 +88,61 @@ if [[ "$status_output" != *running* ]] || [[ "$status_output" != *"IPC version"*
     exit 1
 fi
 
+"$minitun_bin" --socket "$socket_path" health \
+    >"$runtime_dir/health.json" 2>"$runtime_dir/health.err"
+"$minitun_bin" --socket "$socket_path" readiness \
+    >"$runtime_dir/readiness.json" 2>"$runtime_dir/readiness.err"
+"$minitun_bin" --socket "$socket_path" metrics \
+    >"$runtime_dir/metrics.json" 2>"$runtime_dir/metrics.err"
+"$minitun_bin" --socket "$socket_path" reload \
+    >"$runtime_dir/reload.json" 2>"$runtime_dir/reload.err"
+"$minitun_bin" --socket "$socket_path" doctor --json --checkpoint \
+    --backup-state "$runtime_dir/state.backup.db" \
+    --backup-credentials "$runtime_dir/credentials.backup.db" \
+    >"$runtime_dir/doctor.json" 2>"$runtime_dir/doctor.err"
+python3 - "$runtime_dir" <<'PY'
+import json
+import os
+import sys
+
+root = sys.argv[1]
+
+def load(name):
+    err = os.path.join(root, name + ".err")
+    assert os.path.getsize(err) == 0, (name, open(err, encoding="utf-8").read())
+    with open(os.path.join(root, name + ".json"), encoding="utf-8") as stream:
+        return json.load(stream)
+
+health = load("health")
+assert health["status"] == "ok"
+assert health["state_db"] is True
+assert health["credentials_db"] is True
+
+readiness = load("readiness")
+assert readiness["ready"] is True
+assert readiness["reason"] is None
+
+metrics = load("metrics")
+assert "sessions" in metrics and "active" in metrics["sessions"]
+assert "workers" in metrics and {"idle", "active", "max_idle"} <= set(metrics["workers"])
+assert "connections" in metrics and {"active", "pending", "max"} <= set(metrics["connections"])
+assert "throughput" in metrics and {"bytes_in", "bytes_out"} <= set(metrics["throughput"])
+
+reload = load("reload")
+assert reload["reloaded"] is True
+
+doctor = load("doctor")
+assert doctor["ok"] is True
+assert doctor["state_db"]["schema_valid"] is True
+assert doctor["credentials_db"]["integrity_ok"] is True
+assert doctor["actions"]["backup_state"].endswith("state.backup.db")
+assert doctor["actions"]["backup_credentials"].endswith("credentials.backup.db")
+for name in ("state.backup.db", "credentials.backup.db"):
+    path = os.path.join(root, name)
+    assert os.path.isfile(path), path
+    assert os.path.getsize(path) > 0, path
+PY
+
 "$minitun_bin" --socket "$socket_path" server add 127.0.0.1:1 --name primary \
     >"$runtime_dir/server-add.out" 2>"$runtime_dir/server-add.err"
 if ! grep -q 'Status.*not_authenticated' "$runtime_dir/server-add.out" ||

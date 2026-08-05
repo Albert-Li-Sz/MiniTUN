@@ -21,6 +21,7 @@ struct ServerOptions final {
 
     std::size_t max_clients{1'000U};
     std::size_t max_tunnels_per_client{128U};
+    std::size_t max_total_tunnels{10'000U};
     std::size_t max_connections_per_client{10'000U};
     std::size_t max_total_connections{50'000U};
     std::chrono::seconds handshake_timeout{10};
@@ -50,6 +51,7 @@ class Server final {
     Server& operator=(Server&&) = delete;
 
     [[nodiscard]] common::Result<void> start();
+    [[nodiscard]] common::Result<void> reload();
     void stop() noexcept;
 
     [[nodiscard]] std::uint16_t listening_port() const noexcept;

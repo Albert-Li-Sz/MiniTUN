@@ -530,7 +530,14 @@ void print_table(const std::vector<std::vector<std::string>>& rows) {
     return true;
 }
 
-[[nodiscard]] bool print_status(const minitun::ipc::Json& result) {
+[[nodiscard]] bool print_status(const minitun::ipc::Json& result, const bool json_output) {
+    if (json_output) {
+        if (!result.is_object()) {
+            return false;
+        }
+        std::cout << result.dump(2) << '\n';
+        return true;
+    }
     const auto daemon = result.find("daemon");
     const auto servers = result.find("servers");
     const auto tunnels = result.find("tunnels");
@@ -552,6 +559,14 @@ void print_table(const std::vector<std::vector<std::string>>& rows) {
               << "  Daemon    running\n"
               << "  Servers  " << *server_total << " total, " << *server_online << " online\n"
               << "  Tunnels  " << *tunnel_total << " total, " << *tunnel_active << " active\n";
+    return true;
+}
+
+[[nodiscard]] bool print_json_object(const minitun::ipc::Json& result) {
+    if (!result.is_object()) {
+        return false;
+    }
+    std::cout << result.dump(2) << '\n';
     return true;
 }
 
@@ -680,6 +695,34 @@ int main(int argc, char** argv) {
     CLI::App* const version_command = app.add_subcommand("version", "Show version information");
     CLI::App* const help_command = app.add_subcommand("help", "Show this help message");
     CLI::App* const status_command = app.add_subcommand("status", "Show MiniTun status");
+    bool status_json = false;
+    status_command->add_flag("--json", status_json, "Print JSON");
+
+    CLI::App* const doctor_command =
+        app.add_subcommand("doctor", "Check, back up, or restore the local SQLite databases");
+    bool doctor_json = false;
+    bool doctor_checkpoint = false;
+    std::string doctor_backup_state;
+    std::string doctor_backup_credentials;
+    std::string doctor_restore_state;
+    std::string doctor_restore_credentials;
+    doctor_command->add_flag("--json", doctor_json, "Print JSON");
+    doctor_command->add_flag("--checkpoint", doctor_checkpoint,
+                             "Checkpoint the state database before reporting");
+    doctor_command->add_option("--backup-state", doctor_backup_state,
+                               "Write an online state database backup");
+    doctor_command->add_option("--backup-credentials", doctor_backup_credentials,
+                               "Write an online credentials database backup");
+    doctor_command->add_option("--restore-state", doctor_restore_state,
+                               "Restore the state database from a private backup");
+    doctor_command->add_option("--restore-credentials", doctor_restore_credentials,
+                               "Restore the credentials database from a private backup");
+
+    CLI::App* const health_command = app.add_subcommand("health", "Check local daemon health");
+    CLI::App* const readiness_command =
+        app.add_subcommand("readiness", "Check whether the daemon is ready");
+    CLI::App* const metrics_command = app.add_subcommand("metrics", "Print local metrics");
+    CLI::App* const reload_command = app.add_subcommand("reload", "Reload daemon configuration");
 
     CLI::App* const daemon_command = app.add_subcommand("daemon", "Inspect the local daemon");
     CLI::App* const daemon_status_command =
@@ -795,8 +838,56 @@ int main(int argc, char** argv) {
                                    print_daemon_status);
         }
         if (status_command->parsed()) {
-            return execute_request(socket_path, "status", minitun::ipc::Json::object(),
-                                   print_status);
+            return execute_request(
+                socket_path, "status", minitun::ipc::Json::object(),
+                [status_json](const auto& result) { return print_status(result, status_json); });
+        }
+        if (doctor_command->parsed()) {
+            minitun::ipc::Json params = minitun::ipc::Json::object();
+            if (!doctor_backup_state.empty()) {
+                params["backup_state"] = doctor_backup_state;
+            }
+            if (!doctor_backup_credentials.empty()) {
+                params["backup_credentials"] = doctor_backup_credentials;
+            }
+            if (!doctor_restore_state.empty()) {
+                params["restore_state"] = doctor_restore_state;
+            }
+            if (!doctor_restore_credentials.empty()) {
+                params["restore_credentials"] = doctor_restore_credentials;
+            }
+            if (doctor_checkpoint) {
+                params["checkpoint"] = true;
+            }
+            return execute_request(
+                socket_path, "doctor", std::move(params), [doctor_json](const auto& result) {
+                    if (doctor_json) {
+                        return print_json_object(result);
+                    }
+                    const auto ok = result.find("ok");
+                    if (ok == result.end() || !ok->is_boolean()) {
+                        return false;
+                    }
+                    std::cout << "MiniTun doctor: "
+                              << (ok->template get<bool>() ? "healthy" : "degraded") << '\n';
+                    return true;
+                });
+        }
+        if (health_command->parsed()) {
+            return execute_request(socket_path, "health", minitun::ipc::Json::object(),
+                                   print_json_object);
+        }
+        if (readiness_command->parsed()) {
+            return execute_request(socket_path, "readiness", minitun::ipc::Json::object(),
+                                   print_json_object);
+        }
+        if (metrics_command->parsed()) {
+            return execute_request(socket_path, "metrics", minitun::ipc::Json::object(),
+                                   print_json_object);
+        }
+        if (reload_command->parsed()) {
+            return execute_request(socket_path, "reload", minitun::ipc::Json::object(),
+                                   print_json_object);
         }
         if (server_add_command->parsed()) {
             minitun::ipc::Json params{{"endpoint", server_add_endpoint}};

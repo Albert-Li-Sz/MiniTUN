@@ -66,14 +66,11 @@ def stop(_signum, _frame):
 
 def handle(connection):
     try:
-        payload = bytearray()
         while True:
             chunk = connection.recv(16384)
             if not chunk:
                 break
-            payload.extend(chunk)
-        if payload:
-            connection.sendall(payload)
+            connection.sendall(chunk)
         connection.shutdown(socket.SHUT_WR)
     except OSError:
         pass
@@ -226,6 +223,51 @@ wait_tunnel unavailable active
 
 round_trip 2097152 1
 round_trip 1048576 8
+
+# A server credential reload must rotate control and idle Worker sessions
+# without interrupting a Worker that is already carrying a public relay.
+python3 - "$remote_port" "$server_pid" <<'PY'
+import os
+import signal
+import socket
+import sys
+import time
+
+port = int(sys.argv[1])
+server_pid = int(sys.argv[2])
+
+
+def receive_exact(connection, size):
+    received = bytearray()
+    while len(received) < size:
+        chunk = connection.recv(size - len(received))
+        if not chunk:
+            raise RuntimeError("relay closed during server reload")
+        received.extend(chunk)
+    return bytes(received)
+
+
+connection = socket.create_connection(("127.0.0.1", port), timeout=1)
+connection.settimeout(5)
+before_reload = b"relay-before-server-reload"
+after_reload = b"relay-after-server-reload"
+connection.sendall(before_reload)
+if receive_exact(connection, len(before_reload)) != before_reload:
+    raise SystemExit("pre-reload relay payload mismatch")
+
+os.kill(server_pid, signal.SIGHUP)
+time.sleep(0.5)
+
+connection.sendall(after_reload)
+if receive_exact(connection, len(after_reload)) != after_reload:
+    raise SystemExit("post-reload relay payload mismatch")
+connection.shutdown(socket.SHUT_WR)
+if connection.recv(1) != b"":
+    raise SystemExit("relay did not preserve half-close after reload")
+connection.close()
+PY
+wait_tunnel relay active
+round_trip 131072 2
 
 python3 - "$remote_port" <<'PY'
 import socket

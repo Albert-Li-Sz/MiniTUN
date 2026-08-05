@@ -6,6 +6,8 @@
 #include <new>
 #include <string>
 #include <string_view>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <utility>
 
 #include <sqlite3.h>
@@ -62,6 +64,34 @@ CREATE TABLE credentials (
             "credential operation failed and its transaction could not be rolled back");
     }
     return error;
+}
+
+[[nodiscard]] common::Result<void> validate_credential_restore_source(sqlite3* database) {
+    auto version = internal::query_single_int64(database, "PRAGMA user_version",
+                                                "read restore credential schema version");
+    if (!version) {
+        return version.error();
+    }
+    if (*version != kCurrentCredentialSchemaVersion) {
+        return common::Error{common::ErrorCode::unsupported_version,
+                             "restore credential schema version is unsupported"};
+    }
+    auto table_count = internal::query_single_int64(
+        database,
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name NOT GLOB 'sqlite_*'",
+        "inspect restore credential schema");
+    if (!table_count || *table_count != 1) {
+        return common::Error{common::ErrorCode::database_error,
+                             "restore credential schema is incomplete"};
+    }
+    auto columns = internal::query_single_int64(
+        database, "SELECT COUNT(*) FROM pragma_table_info('credentials')",
+        "validate restore credential schema");
+    if (!columns || *columns != 3) {
+        return common::Error{common::ErrorCode::database_error,
+                             "restore credential schema is invalid"};
+    }
+    return common::Result<void>::success();
 }
 
 } // namespace
@@ -335,5 +365,149 @@ common::Result<void> SqliteCredentialStore::remove(const std::string_view key) {
 }
 
 const std::string& SqliteCredentialStore::path() const noexcept { return path_; }
+
+common::Result<DatabaseDiagnostics> SqliteCredentialStore::diagnostics() const {
+    std::scoped_lock lock{mutex_};
+    if (handle_ == nullptr) {
+        return common::Error{common::ErrorCode::database_error,
+                             "credential SQLite connection is unusable"};
+    }
+    DatabaseDiagnostics result;
+    result.path = path_;
+
+    struct stat status{};
+    if (::lstat(path_.c_str(), &status) != 0) {
+        return common::Error{common::ErrorCode::database_error,
+                             "inspect credential database file failed"};
+    }
+    result.file_size_bytes = static_cast<std::int64_t>(status.st_size);
+    result.file_mode = static_cast<std::uint32_t>(status.st_mode & 0777);
+    result.owner_uid = static_cast<std::uint64_t>(status.st_uid);
+    result.device = static_cast<std::uint64_t>(status.st_dev);
+    result.inode = static_cast<std::uint64_t>(status.st_ino);
+
+    auto schema = internal::query_single_int64(handle_, "PRAGMA user_version",
+                                               "inspect credential schema version");
+    if (!schema) {
+        return schema.error();
+    }
+    result.schema_version = *schema;
+
+    auto journal_mode = internal::query_single_text(handle_, "PRAGMA journal_mode",
+                                                    "inspect credential journal mode");
+    if (!journal_mode) {
+        return journal_mode.error();
+    }
+    result.journal_mode = std::move(*journal_mode);
+
+    auto synchronous = internal::query_single_int64(handle_, "PRAGMA synchronous",
+                                                    "inspect credential synchronous mode");
+    if (!synchronous) {
+        return synchronous.error();
+    }
+    switch (*synchronous) {
+    case 0:
+        result.synchronous = "off";
+        break;
+    case 1:
+        result.synchronous = "normal";
+        break;
+    case 2:
+        result.synchronous = "full";
+        break;
+    case 3:
+        result.synchronous = "extra";
+        break;
+    default:
+        result.synchronous = "unknown";
+        break;
+    }
+
+    auto foreign_keys = internal::query_single_int64(handle_, "PRAGMA foreign_keys",
+                                                     "inspect credential foreign-key mode");
+    if (!foreign_keys) {
+        return foreign_keys.error();
+    }
+    result.foreign_keys = *foreign_keys != 0;
+
+    auto page_count =
+        internal::query_single_int64(handle_, "PRAGMA page_count", "inspect credential page count");
+    auto freelist_count = internal::query_single_int64(handle_, "PRAGMA freelist_count",
+                                                       "inspect credential freelist count");
+    if (!page_count) {
+        return page_count.error();
+    }
+    if (!freelist_count) {
+        return freelist_count.error();
+    }
+    result.page_count = *page_count;
+    result.freelist_count = *freelist_count;
+
+    auto integrity = internal::query_single_text(handle_, "PRAGMA integrity_check",
+                                                 "inspect credential database integrity");
+    if (!integrity) {
+        return integrity.error();
+    }
+    result.integrity_result = *integrity;
+    result.integrity_ok = *integrity == "ok";
+
+    auto table_count = internal::query_single_int64(
+        handle_, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'credentials'",
+        "inspect credential schema tables");
+    auto column_count = internal::query_single_int64(
+        handle_, "SELECT COUNT(*) FROM pragma_table_info('credentials')",
+        "inspect credential schema columns");
+    result.schema_valid = *schema == kCurrentCredentialSchemaVersion && table_count &&
+                          column_count && *table_count == 1 && *column_count == 3;
+
+    if (result.journal_mode == "wal" || result.journal_mode == "WAL") {
+        int log_frames = -1;
+        int checkpointed_frames = -1;
+        const int checkpoint_result = sqlite3_wal_checkpoint_v2(
+            handle_, nullptr, SQLITE_CHECKPOINT_PASSIVE, &log_frames, &checkpointed_frames);
+        if (checkpoint_result != SQLITE_OK) {
+            return internal::sqlite_error(handle_, checkpoint_result,
+                                          "inspect credential WAL checkpoint state");
+        }
+        result.wal_log_frames = log_frames;
+        result.wal_checkpointed_frames = checkpointed_frames;
+        struct stat wal_status{};
+        const std::string wal_path = path_ + "-wal";
+        if (::lstat(wal_path.c_str(), &wal_status) == 0 && wal_status.st_size >= 0) {
+            result.wal_size_bytes = static_cast<std::int64_t>(wal_status.st_size);
+        }
+    }
+    return result;
+}
+
+common::Result<void> SqliteCredentialStore::backup_to(const std::string_view destination) const {
+    std::scoped_lock lock{mutex_};
+    if (handle_ == nullptr) {
+        return common::Error{common::ErrorCode::database_error,
+                             "credential SQLite connection is unusable"};
+    }
+    return internal::backup_database(handle_, path_, destination, "backup credential database");
+}
+
+common::Result<void>
+SqliteCredentialStore::validate_restore_source(const std::string_view source) const {
+    std::scoped_lock lock{mutex_};
+    if (handle_ == nullptr) {
+        return common::Error{common::ErrorCode::database_error,
+                             "credential SQLite connection is unusable"};
+    }
+    return internal::validate_restore_source(path_, source, "restore credential database",
+                                             validate_credential_restore_source);
+}
+
+common::Result<void> SqliteCredentialStore::restore_from(const std::string_view source) const {
+    std::scoped_lock lock{mutex_};
+    if (handle_ == nullptr) {
+        return common::Error{common::ErrorCode::database_error,
+                             "credential SQLite connection is unusable"};
+    }
+    return internal::restore_database(handle_, path_, source, "restore credential database",
+                                      validate_credential_restore_source);
+}
 
 } // namespace minitun::storage

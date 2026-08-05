@@ -39,6 +39,7 @@
 #include <asio/use_awaitable.hpp>
 
 #include <fcntl.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -64,6 +65,10 @@ namespace {
 
 inline constexpr std::size_t kMaxTokenFileBytes = 64U * 1024U;
 inline constexpr std::size_t kMaxServerConnections = 100'000U;
+inline constexpr std::size_t kMaxServerTunnels = 100'000U;
+inline constexpr std::uint16_t kMaxWorkerRequestCount = 128U;
+inline constexpr auto kWorkerRequestCooldown = std::chrono::milliseconds{100};
+inline constexpr auto kWorkerRequestRetryAfter = std::chrono::seconds{1};
 inline constexpr std::chrono::seconds kMaxConfiguredTimeout{300};
 inline constexpr std::chrono::hours kMaximumRelayTimeout{24};
 
@@ -157,6 +162,10 @@ class FileDescriptor final {
     if (options.max_tunnels_per_client == 0U || options.max_tunnels_per_client > 4'096U) {
         return common::Result<void>::failure(common::ErrorCode::invalid_argument,
                                              "max tunnels per client is outside 1..4096");
+    }
+    if (options.max_total_tunnels == 0U || options.max_total_tunnels > kMaxServerTunnels) {
+        return common::Result<void>::failure(common::ErrorCode::invalid_argument,
+                                             "total tunnel limit is invalid");
     }
     if (options.max_connections_per_client == 0U ||
         options.max_connections_per_client > kMaxServerConnections ||
@@ -280,6 +289,7 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
             return common::Result<void>::failure(common::ErrorCode::connection_failed,
                                                  "failed to inspect the TLS server listener");
         }
+        warn_file_descriptor_budget();
         accept_next();
         return common::Result<void>::success();
     }
@@ -290,6 +300,37 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
         }
         auto self = shared_from_this();
         asio::dispatch(strand_, [self] { self->begin_shutdown(); });
+    }
+
+    [[nodiscard]] common::Result<void> reload() {
+        auto context = protocol::make_server_tls_context({
+            .certificate_chain_path = options_.tls_certificate_path,
+            .private_key_path = options_.tls_private_key_path,
+        });
+        if (!context) {
+            return context.error();
+        }
+        auto token = load_token_file(options_.token_file_path);
+        if (!token) {
+            return token.error();
+        }
+        auto token_snapshot = std::make_shared<const common::SecureString>(std::move(*token));
+        if (!running_.load()) {
+            return common::Error{common::ErrorCode::connection_failed, "TLS server is not running"};
+        }
+        auto self = shared_from_this();
+        asio::post(strand_, [self, context = std::move(*context),
+                             token = std::move(token_snapshot)]() mutable {
+            self->tls_context_ = std::move(context);
+            self->token_ = std::move(token);
+            for (auto& [key, session] : self->sessions_) {
+                static_cast<void>(key);
+                session->request_reload_stop();
+            }
+            common::log_info("TLS credentials reloaded",
+                             {.component = "server", .server_id = self->server_id_});
+        });
+        return common::Result<void>::success();
     }
 
     [[nodiscard]] std::uint16_t listening_port() const noexcept { return listening_port_.load(); }
@@ -383,7 +424,8 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
     class ControlSession final : public std::enable_shared_from_this<ControlSession> {
       public:
         ControlSession(asio::ip::tcp::socket socket, std::shared_ptr<Impl> server)
-            : server_(std::move(server)), stream_(std::move(socket), *server_->tls_context_),
+            : server_(std::move(server)), tls_context_owner_(server_->tls_context_),
+              token_owner_(server_->token_), stream_(std::move(socket), *tls_context_owner_),
               operation_timer_(stream_.get_executor()), heartbeat_timer_(stream_.get_executor()) {
             asio::error_code endpoint_error;
             const auto endpoint = stream_.lowest_layer().remote_endpoint(endpoint_error);
@@ -418,6 +460,20 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
                            [self, graceful] { self->request_stop_on_executor(graceful); });
         }
 
+        void request_reload_stop() {
+            auto self = shared_from_this();
+            asio::dispatch(stream_.get_executor(), [self] {
+                // Once a Worker owns a public connection, its TLS context is
+                // immutable and safe to retain. The peer's graceful session
+                // shutdown bounds this drain through the existing Worker pool
+                // lifecycle; control sessions and idle Workers rotate now.
+                if (self->worker_assignment_ != nullptr) {
+                    return;
+                }
+                self->request_stop_on_executor(true);
+            });
+        }
+
         void force_stop() noexcept {
             auto self = shared_from_this();
             asio::dispatch(stream_.get_executor(), [self] { self->force_stop_on_executor(); });
@@ -426,6 +482,35 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
         [[nodiscard]] bool relay_active() const noexcept { return relay_active_.load(); }
 
         [[nodiscard]] asio::any_io_executor executor() noexcept { return stream_.get_executor(); }
+
+        [[nodiscard]] bool is_control_session(const std::string_view client_id,
+                                              const std::uint64_t generation) const noexcept {
+            return control_connection_ && client_id_ == client_id && generation_ == generation;
+        }
+
+        void enqueue_worker_request(const std::uint16_t count) {
+            if (count == 0U) {
+                return;
+            }
+            auto self = shared_from_this();
+            asio::post(stream_.get_executor(), [self, count] {
+                if (self->run_finished_ || self->stop_requested_ || !self->control_connection_ ||
+                    !self->state_.has_value() ||
+                    self->state_->state() != protocol::ConnectionState::authenticated) {
+                    return;
+                }
+                const auto available = static_cast<std::size_t>(kMaxWorkerRequestCount) -
+                                       std::min<std::size_t>(self->pending_worker_request_count_,
+                                                             kMaxWorkerRequestCount);
+                self->pending_worker_request_count_ = std::min<std::size_t>(
+                    kMaxWorkerRequestCount,
+                    self->pending_worker_request_count_ + std::min<std::size_t>(count, available));
+                self->worker_request_wakeup_ = self->pending_worker_request_count_ != 0U;
+                if (self->worker_request_wakeup_) {
+                    static_cast<void>(self->heartbeat_timer_.cancel());
+                }
+            });
+        }
 
         void cleanup_on_control_strand() noexcept {
             if (cleanup_complete_) {
@@ -439,7 +524,9 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
             if (control_connection_ && generation_ != 0U && !client_id_.empty()) {
                 server_->worker_pool_.remove_session(client_id_, generation_);
                 server_->tunnel_registry_.remove_session(client_id_, generation_);
+                server_->cancel_pending_for_session(client_id_, generation_);
                 server_->session_registry_.close(client_id_, generation_);
+                server_->worker_request_states_.erase(pending_session_key(client_id_, generation_));
             }
             server_->active_connections_.fetch_sub(1U);
         }
@@ -568,7 +655,7 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
             }
             if (accepted) {
                 auto verified = protocol::verify_authentication_data(
-                    server_->token_.view(), auth->client_id, auth->timestamp_seconds, auth->nonce,
+                    token_owner_->view(), auth->client_id, auth->timestamp_seconds, auth->nonce,
                     auth->authentication_data);
                 accepted = verified && *verified;
             }
@@ -694,6 +781,7 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
                 co_return;
             }
             worker_registered_ = true;
+            server_->worker_request_registered(client_id_, generation_);
 
             heartbeat_timer_.expires_after(server_->options_.worker_idle_timeout);
             server_->notify_worker_available(client_id_, generation_);
@@ -770,6 +858,28 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
                     if (ready == IdleWaitResult::stopped) {
                         co_return;
                     }
+                    if (ready == IdleWaitResult::worker_request) {
+                        if (stop_requested_) {
+                            co_return;
+                        }
+                        const auto requested = take_worker_request();
+                        if (requested == 0U) {
+                            continue;
+                        }
+                        auto request_payload = protocol::encode_request_workers({requested});
+                        if (!request_payload) {
+                            co_return;
+                        }
+                        const protocol::Frame request_frame{protocol::MessageType::request_workers,
+                                                            0U, sequence,
+                                                            std::move(*request_payload)};
+                        if (!co_await write_frame(request_frame,
+                                                  server_->options_.heartbeat_timeout)) {
+                            co_return;
+                        }
+                        advance_sequence(sequence);
+                        continue;
+                    }
                     if (ready == IdleWaitResult::heartbeat_due) {
                         break;
                     }
@@ -780,11 +890,9 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
                     }
                 }
 
-                const std::size_t idle_workers =
-                    co_await server_->idle_worker_count(client_id_, generation_);
-                if (idle_workers < server_->options_.min_idle_workers) {
-                    const auto missing = static_cast<std::uint16_t>(
-                        server_->options_.min_idle_workers - idle_workers);
+                const auto missing = co_await server_->reserve_worker_request(
+                    client_id_, generation_, server_->options_.min_idle_workers);
+                if (missing != 0U) {
                     auto request_payload = protocol::encode_request_workers({missing});
                     if (!request_payload) {
                         co_return;
@@ -794,6 +902,7 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
                     if (!co_await write_frame(request_frame, server_->options_.heartbeat_timeout)) {
                         co_return;
                     }
+                    advance_sequence(sequence);
                 }
 
                 auto heartbeat_sequence = protocol::encode_worker_timeout_heartbeat_sequence(
@@ -843,21 +952,23 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
                         co_return;
                     }
                 }
-                ++sequence;
-                if (sequence == 0U || sequence > protocol::kMaximumNegotiatedHeartbeatSequence) {
-                    sequence = 1U;
-                }
+                advance_sequence(sequence);
             }
         }
 
         enum class IdleWaitResult : std::uint8_t {
             heartbeat_due,
             readable,
+            worker_request,
             stopped,
         };
 
         [[nodiscard]] asio::awaitable<IdleWaitResult>
         wait_for_heartbeat_or_input(const std::chrono::steady_clock::time_point deadline) {
+            if (pending_worker_request_count_ != 0U) {
+                worker_request_wakeup_ = false;
+                co_return IdleWaitResult::worker_request;
+            }
             struct WaitState final {
                 bool active{true};
                 bool readable{false};
@@ -882,6 +993,10 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
             if (state->readable) {
                 co_return IdleWaitResult::readable;
             }
+            if (pending_worker_request_count_ != 0U || worker_request_wakeup_) {
+                worker_request_wakeup_ = false;
+                co_return IdleWaitResult::worker_request;
+            }
 
             // Only the readiness wait is outstanding while the control session is
             // idle. Cancel it before starting the next framed operation; socket
@@ -889,6 +1004,21 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
             asio::error_code ignored;
             stream_.lowest_layer().cancel(ignored);
             co_return timer_error ? IdleWaitResult::stopped : IdleWaitResult::heartbeat_due;
+        }
+
+        [[nodiscard]] std::uint16_t take_worker_request() noexcept {
+            const auto requested = static_cast<std::uint16_t>(
+                std::min<std::size_t>(pending_worker_request_count_, kMaxWorkerRequestCount));
+            pending_worker_request_count_ -= requested;
+            worker_request_wakeup_ = pending_worker_request_count_ != 0U;
+            return requested;
+        }
+
+        static void advance_sequence(std::uint64_t& sequence) noexcept {
+            ++sequence;
+            if (sequence == 0U || sequence > protocol::kMaximumNegotiatedHeartbeatSequence) {
+                sequence = 1U;
+            }
         }
 
         [[nodiscard]] asio::awaitable<bool>
@@ -1087,6 +1217,8 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
         }
 
         std::shared_ptr<Impl> server_;
+        std::shared_ptr<asio::ssl::context> tls_context_owner_;
+        std::shared_ptr<const common::SecureString> token_owner_;
         protocol::TlsStream stream_;
         asio::steady_timer operation_timer_;
         asio::steady_timer heartbeat_timer_;
@@ -1107,7 +1239,92 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
         bool run_finished_{false};
         bool finished_notified_{false};
         bool cleanup_complete_{false};
+        std::size_t pending_worker_request_count_{0U};
+        bool worker_request_wakeup_{false};
     };
+
+    struct WorkerRequestState final {
+        std::size_t outstanding{0U};
+        std::chrono::steady_clock::time_point last_request{};
+    };
+
+    [[nodiscard]] std::optional<std::uint16_t>
+    reserve_worker_request_on_control_strand(const std::string_view client_id,
+                                             const std::uint64_t generation,
+                                             const std::size_t desired) {
+        if (desired == 0U) {
+            return std::nullopt;
+        }
+        ControlSession* control_session = nullptr;
+        for (const auto& [key, session] : sessions_) {
+            static_cast<void>(key);
+            if (session->is_control_session(client_id, generation)) {
+                control_session = session.get();
+                break;
+            }
+        }
+        if (control_session == nullptr) {
+            worker_request_states_.erase(pending_session_key(client_id, generation));
+            return std::nullopt;
+        }
+
+        const std::string key = pending_session_key(client_id, generation);
+        auto& state = worker_request_states_[key];
+        const auto now = std::chrono::steady_clock::now();
+        if (state.outstanding != 0U && now - state.last_request >= kWorkerRequestRetryAfter) {
+            state.outstanding = 0U;
+        }
+        if (state.last_request != std::chrono::steady_clock::time_point{} &&
+            now - state.last_request < kWorkerRequestCooldown) {
+            return std::nullopt;
+        }
+        const std::size_t idle_workers = worker_pool_.idle_count(client_id, generation);
+        const std::size_t accounted = idle_workers + state.outstanding;
+        if (desired <= accounted || state.outstanding >= options_.max_idle_workers) {
+            return std::nullopt;
+        }
+        const std::size_t global_capacity =
+            options_.max_total_idle_workers > worker_pool_.size()
+                ? options_.max_total_idle_workers - worker_pool_.size()
+                : 0U;
+        const std::size_t per_session_capacity =
+            options_.max_idle_workers > idle_workers + state.outstanding
+                ? options_.max_idle_workers - idle_workers - state.outstanding
+                : 0U;
+        const std::size_t requested =
+            std::min({desired - accounted, global_capacity, per_session_capacity,
+                      static_cast<std::size_t>(kMaxWorkerRequestCount)});
+        if (requested == 0U) {
+            return std::nullopt;
+        }
+        state.outstanding += requested;
+        state.last_request = now;
+        return static_cast<std::uint16_t>(requested);
+    }
+
+    [[nodiscard]] asio::awaitable<std::uint16_t>
+    reserve_worker_request(std::string client_id, const std::uint64_t generation,
+                           const std::size_t desired) {
+        return async_run_on_control_strand(
+            [this, client_id = std::move(client_id), generation, desired] {
+                const auto requested =
+                    reserve_worker_request_on_control_strand(client_id, generation, desired);
+                return requested.value_or(0U);
+            },
+            asio::use_awaitable);
+    }
+
+    void worker_request_registered(std::string client_id, const std::uint64_t generation) {
+        auto self = shared_from_this();
+        asio::post(strand_, [self, client_id = std::move(client_id), generation] {
+            const std::string key = pending_session_key(client_id, generation);
+            const auto state = self->worker_request_states_.find(key);
+            if (state != self->worker_request_states_.end() && state->second.outstanding != 0U) {
+                --state->second.outstanding;
+            }
+            self->maybe_request_workers_for_pending(client_id, generation);
+        });
+    }
 
     class PendingPublicConnection final
         : public std::enable_shared_from_this<PendingPublicConnection> {
@@ -1195,14 +1412,15 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
          std::string server_id, common::PortRange allowed_ports)
         : io_context_(io_context), options_(std::move(options)),
           strand_(asio::make_strand(io_context)), acceptor_(strand_), accept_retry_timer_(strand_),
-          shutdown_timer_(strand_), listen_endpoint_(listen_endpoint),
-          tls_context_(std::move(tls_context)), token_(std::move(token)),
+          worker_request_retry_timer_(strand_), shutdown_timer_(strand_),
+          listen_endpoint_(listen_endpoint), tls_context_(std::move(tls_context)),
+          token_(std::make_shared<const common::SecureString>(std::move(token))),
           server_id_(std::move(server_id)), session_registry_(options_.max_clients),
           worker_pool_(options_.max_idle_workers, options_.max_total_idle_workers),
           connection_quota_(options_.max_connections_per_client, options_.max_total_connections),
           tunnel_registry_(
               strand_, io_context_.get_executor(), std::move(allowed_ports),
-              options_.max_tunnels_per_client,
+              options_.max_tunnels_per_client, options_.max_total_tunnels,
               [this](TunnelBinding binding, asio::ip::tcp::socket public_socket) mutable {
                   handle_public_connection(std::move(binding), std::move(public_socket));
               }) {}
@@ -1224,6 +1442,8 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
                               .error_code = connection_lease.error().code()});
             return;
         }
+        const std::string pending_client_id = binding.client_id;
+        const std::uint64_t pending_generation = binding.session_generation;
         auto pending = std::make_shared<PendingPublicConnection>(
             shared_from_this(), std::move(binding), std::move(public_socket),
             std::move(*connection_lease));
@@ -1233,6 +1453,8 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
         queue.push_back(pending.get());
         pending_connection_positions_.emplace(pending.get(), std::prev(queue.end()));
         pending->start(first_waiter);
+        maybe_request_workers_for_pending(pending_client_id, pending_generation);
+        schedule_worker_request_retry();
     }
 
     void pending_connection_finished(PendingPublicConnection* pending) noexcept {
@@ -1249,6 +1471,29 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
         pending_connections_.erase(pending);
     }
 
+    void cancel_pending_for_session(const std::string_view client_id,
+                                    const std::uint64_t session_generation) noexcept {
+        const std::string key = pending_session_key(client_id, session_generation);
+        for (;;) {
+            const auto group = pending_connections_by_session_.find(key);
+            if (group == pending_connections_by_session_.end() || group->second.empty()) {
+                return;
+            }
+            const auto candidate = group->second.front();
+            const auto owned = pending_connections_.find(candidate);
+            if (owned == pending_connections_.end()) {
+                group->second.pop_front();
+                pending_connection_positions_.erase(candidate);
+                if (group->second.empty()) {
+                    pending_connections_by_session_.erase(group);
+                }
+                continue;
+            }
+            auto pending = owned->second;
+            pending->stop();
+        }
+    }
+
     void notify_worker_available(std::string client_id, const std::uint64_t session_generation) {
         auto self = shared_from_this();
         asio::post(strand_, [self, client_id = std::move(client_id), session_generation] {
@@ -1256,7 +1501,7 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
             for (;;) {
                 auto group = self->pending_connections_by_session_.find(session_key);
                 if (group == self->pending_connections_by_session_.end() || group->second.empty()) {
-                    return;
+                    break;
                 }
                 PendingPublicConnection* candidate = group->second.front();
                 const auto owned = self->pending_connections_.find(candidate);
@@ -1270,15 +1515,73 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
                 }
                 auto pending = owned->second;
                 if (pending->try_assign()) {
-                    return;
+                    break;
                 }
                 // A failed assignment either removed an obsolete pending connection
                 // or found that another notification already consumed the worker.
                 // Continue only in the former case.
                 if (self->pending_connections_.contains(candidate)) {
-                    return;
+                    break;
                 }
             }
+            self->maybe_request_workers_for_pending(client_id, session_generation);
+        });
+    }
+
+    void maybe_request_workers_for_pending(const std::string_view client_id,
+                                           const std::uint64_t session_generation) {
+        const std::string session_key = pending_session_key(client_id, session_generation);
+        const auto group = pending_connections_by_session_.find(session_key);
+        if (group == pending_connections_by_session_.end() || group->second.empty()) {
+            return;
+        }
+        const auto requested = reserve_worker_request_on_control_strand(
+            client_id, session_generation, group->second.size());
+        if (!requested.has_value()) {
+            return;
+        }
+        for (const auto& [key, session] : sessions_) {
+            static_cast<void>(key);
+            if (session->is_control_session(client_id, session_generation)) {
+                session->enqueue_worker_request(*requested);
+                return;
+            }
+        }
+    }
+
+    void schedule_worker_request_retry() {
+        if (worker_request_retry_scheduled_ || pending_connections_by_session_.empty() ||
+            shutting_down_) {
+            return;
+        }
+        worker_request_retry_scheduled_ = true;
+        worker_request_retry_timer_.expires_after(kWorkerRequestCooldown);
+        auto self = shared_from_this();
+        worker_request_retry_timer_.async_wait([self](const asio::error_code& error) {
+            self->worker_request_retry_scheduled_ = false;
+            if (error || self->shutting_down_) {
+                return;
+            }
+            std::vector<std::pair<std::string, std::uint64_t>> sessions;
+            sessions.reserve(self->pending_connections_by_session_.size());
+            for (const auto& [key, queue] : self->pending_connections_by_session_) {
+                if (queue.empty()) {
+                    continue;
+                }
+                const auto separator = key.rfind('/');
+                if (separator == std::string::npos || separator + 1U >= key.size()) {
+                    continue;
+                }
+                try {
+                    sessions.emplace_back(key.substr(0U, separator),
+                                          std::stoull(key.substr(separator + 1U)));
+                } catch (...) {
+                }
+            }
+            for (const auto& [client_id, generation] : sessions) {
+                self->maybe_request_workers_for_pending(client_id, generation);
+            }
+            self->schedule_worker_request_retry();
         });
     }
 
@@ -1321,8 +1624,10 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
         asio::error_code ignored;
         try {
             static_cast<void>(accept_retry_timer_.cancel());
+            static_cast<void>(worker_request_retry_timer_.cancel());
         } catch (...) {
         }
+        worker_request_retry_scheduled_ = false;
         acceptor_.cancel(ignored);
         acceptor_.close(ignored);
         reserved_descriptor_.close();
@@ -1359,6 +1664,39 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
         for (auto& [key, session] : sessions_) {
             static_cast<void>(key);
             session->force_stop();
+        }
+    }
+
+    void warn_file_descriptor_budget() const noexcept {
+        try {
+            struct rlimit limits{};
+            if (::getrlimit(RLIMIT_NOFILE, &limits) != 0 || limits.rlim_cur == RLIM_INFINITY) {
+                return;
+            }
+            std::uintmax_t required = 32U;
+            const auto add_saturating = [&required](const std::size_t value) {
+                const auto converted = static_cast<std::uintmax_t>(value);
+                if (converted > std::numeric_limits<std::uintmax_t>::max() - required) {
+                    required = std::numeric_limits<std::uintmax_t>::max();
+                } else {
+                    required += converted;
+                }
+            };
+            add_saturating(options_.max_clients);
+            add_saturating(options_.max_total_idle_workers);
+            add_saturating(options_.max_total_connections);
+            add_saturating(options_.max_total_tunnels);
+            if (required <= static_cast<std::uintmax_t>(limits.rlim_cur)) {
+                return;
+            }
+            common::log_warn(
+                "configured server resource limits may exceed RLIMIT_NOFILE (required " +
+                    std::to_string(required) + ", soft limit " +
+                    std::to_string(static_cast<std::uintmax_t>(limits.rlim_cur)) + ")",
+                {.component = "server.listener",
+                 .server_id = server_id_,
+                 .error_code = common::ErrorCode::resource_exhausted});
+        } catch (...) {
         }
     }
 
@@ -1425,10 +1763,11 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
     asio::strand<asio::io_context::executor_type> strand_;
     asio::ip::tcp::acceptor acceptor_;
     asio::steady_timer accept_retry_timer_;
+    asio::steady_timer worker_request_retry_timer_;
     asio::steady_timer shutdown_timer_;
     asio::ip::tcp::endpoint listen_endpoint_;
     std::shared_ptr<asio::ssl::context> tls_context_;
-    common::SecureString token_;
+    std::shared_ptr<const common::SecureString> token_;
     std::string server_id_;
     protocol::NonceReplayCache nonce_cache_;
     protocol::AuthRateLimiter auth_rate_limiter_;
@@ -1443,11 +1782,13 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
     std::unordered_map<std::string, PendingConnectionQueue> pending_connections_by_session_;
     std::unordered_map<PendingPublicConnection*, PendingConnectionQueue::iterator>
         pending_connection_positions_;
+    std::unordered_map<std::string, WorkerRequestState> worker_request_states_;
     std::atomic<std::size_t> active_connections_{0U};
     std::atomic<std::uint16_t> listening_port_{0U};
     std::atomic<bool> running_{false};
     ReservedFileDescriptor reserved_descriptor_;
     AcceptRetryPolicy accept_retry_policy_;
+    bool worker_request_retry_scheduled_{false};
     bool shutting_down_{false};
 };
 
@@ -1466,6 +1807,8 @@ Server::Server(std::shared_ptr<Impl> implementation) noexcept
 Server::~Server() noexcept { stop(); }
 
 common::Result<void> Server::start() { return implementation_->start(); }
+
+common::Result<void> Server::reload() { return implementation_->reload(); }
 
 void Server::stop() noexcept { implementation_->stop(); }
 

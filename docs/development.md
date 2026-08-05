@@ -297,7 +297,7 @@ tar --zstd --extract --file "$MINITUN_SDK_ARCHIVE" \
 
 MINITUN_OPENWRT_JOBS=2 \
   packaging/openwrt/build-sdk.sh \
-    "$PWD/build/openwrt/x86_64/sdk" "$PWD" 0.2.4
+    "$PWD/build/openwrt/x86_64/sdk" "$PWD" 0.3.0
 ```
 
 `build-sdk.sh` 会按 SDK 内锁定的 feed 提交安装 OpenSSL、SQLite 与 CA 依赖，
@@ -319,7 +319,7 @@ find build/openwrt/x86_64/sdk/bin/packages -type f \
 packaging/tests/verify-openwrt.sh \
   "$PWD/build/openwrt/x86_64/sdk" \
   "$PWD/build/openwrt/x86_64/packages" \
-  0.2.4 x86_64 qemu-x86_64-static
+  0.3.0 x86_64 qemu-x86_64-static
 ```
 
 OpenWrt 包默认不启用服务。客户端和服务端分别使用
@@ -345,8 +345,8 @@ GitHub Actions 包含四条工作流：
 必须与 `CMakeLists.txt` 中的项目版本一致：
 
 ```bash
-git tag -a v0.2.4 -m "MiniTun v0.2.4"
-git push origin v0.2.4
+git tag -a v0.3.0 -m "MiniTun v0.3.0"
+git push origin v0.3.0
 ```
 
 发布工作流仅在全部软件包测试通过后创建 GitHub Release。每个版本

@@ -33,9 +33,16 @@ class TunnelRegistry final {
     TunnelRegistry(asio::any_io_executor executor, common::PortRange allowed_ports,
                    std::size_t max_tunnels_per_client,
                    PublicConnectionHandler connection_handler = {});
+    TunnelRegistry(asio::any_io_executor executor, common::PortRange allowed_ports,
+                   std::size_t max_tunnels_per_client, std::size_t max_total_tunnels,
+                   PublicConnectionHandler connection_handler = {});
     TunnelRegistry(asio::any_io_executor listener_executor,
                    asio::any_io_executor connection_executor, common::PortRange allowed_ports,
                    std::size_t max_tunnels_per_client,
+                   PublicConnectionHandler connection_handler = {});
+    TunnelRegistry(asio::any_io_executor listener_executor,
+                   asio::any_io_executor connection_executor, common::PortRange allowed_ports,
+                   std::size_t max_tunnels_per_client, std::size_t max_total_tunnels,
                    PublicConnectionHandler connection_handler = {});
     ~TunnelRegistry() noexcept;
 

@@ -227,6 +227,13 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
             auto relayed = co_await protocol::relay_tls_and_tcp(
                 stream_, *local_socket_,
                 {.inactivity_timeout = pool->options_.relay_inactivity_timeout});
+            if (relayed && pool->options_.relay_stats_handler) {
+                try {
+                    pool->options_.relay_stats_handler(relayed->tls_to_tcp_bytes,
+                                                       relayed->tcp_to_tls_bytes);
+                } catch (...) {
+                }
+            }
             if (!relayed && relayed.error().code() != common::ErrorCode::connection_timeout) {
                 common::log_warn("worker relay ended with a transport error",
                                  log_context(relayed.error().code()));
@@ -455,10 +462,12 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
         const std::size_t count = std::min(requested, available);
         for (std::size_t index = 0U; index < count; ++index) {
             if (!connection_budget_->try_acquire()) {
+                notify_quota_rejection();
                 break;
             }
             if (!budget_->try_acquire()) {
                 connection_budget_->release();
+                notify_quota_rejection();
                 break;
             }
             auto worker_id = common::Id::generate(common::IdKind::connection);
@@ -481,6 +490,16 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
             available_workers_.insert(key);
             size_.store(available_workers_.size());
             session->start();
+        }
+    }
+
+    void notify_quota_rejection() noexcept {
+        if (!options_.quota_rejection_handler) {
+            return;
+        }
+        try {
+            options_.quota_rejection_handler();
+        } catch (...) {
         }
     }
 

@@ -5,6 +5,8 @@
 #include <memory>
 #include <string>
 
+#include <minitun/ipc/protocol.hpp>
+
 #include <asio/io_context.hpp>
 
 #include <minitun/common/id.hpp>
@@ -47,8 +49,12 @@ class ServerManager final {
     [[nodiscard]] common::Result<void> start();
     void stop() noexcept;
     void notify_changed();
+    /// Rebuilds remote session state so rotated CA/token material is picked up
+    /// without restarting the daemon process.
+    void reload();
 
     [[nodiscard]] std::size_t session_count() const noexcept;
+    [[nodiscard]] ipc::Json metrics() const;
 
   private:
     class Impl;

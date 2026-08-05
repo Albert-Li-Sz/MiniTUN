@@ -8,6 +8,7 @@
 #include <csignal>
 #include <cstdlib>
 #include <exception>
+#include <functional>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -182,7 +183,12 @@ int run_daemon_impl(const std::string& socket_path, const std::string& database_
 
     minitun::daemon::ControlService control_service{
         **repository, **credentials,
-        [manager = server_manager->get()] { manager->notify_changed(); }};
+        [manager = server_manager->get()] { manager->notify_changed(); },
+        [manager = server_manager->get()] { return manager->metrics(); },
+        [manager = server_manager->get()] {
+            manager->reload();
+            return minitun::common::Result<void>::success();
+        }};
     auto dispatcher = std::make_shared<minitun::ipc::Dispatcher>();
     auto registered = control_service.register_handlers(*dispatcher);
     if (!registered) {
@@ -195,13 +201,23 @@ int run_daemon_impl(const std::string& socket_path, const std::string& database_
         dispatcher,
         minitun::ipc::LocalServerOptions{.socket_path = socket_path},
     };
-    asio::signal_set signals{io_context, SIGINT, SIGTERM};
-    signals.async_wait([&ipc_server, &server_manager](const asio::error_code& error, int) {
-        if (!error) {
-            ipc_server.stop();
-            (*server_manager)->stop();
+    asio::signal_set signals{io_context, SIGINT, SIGTERM, SIGHUP};
+    auto signal_handler = std::make_shared<std::function<void(const asio::error_code&, int)>>();
+    *signal_handler = [&ipc_server, &server_manager, &signals,
+                       signal_handler](const asio::error_code& error, const int signal_number) {
+        if (error) {
+            return;
         }
-    });
+        if (signal_number == SIGHUP) {
+            (*server_manager)->reload();
+            minitun::common::log_info("configuration reload requested");
+            signals.async_wait(*signal_handler);
+            return;
+        }
+        ipc_server.stop();
+        (*server_manager)->stop();
+    };
+    signals.async_wait(*signal_handler);
 
     auto started = ipc_server.start();
     if (!started) {

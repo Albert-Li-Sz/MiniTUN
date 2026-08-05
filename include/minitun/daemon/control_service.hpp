@@ -19,8 +19,12 @@ namespace minitun::daemon {
 
 class ControlService final {
   public:
+    using JsonProvider = std::function<ipc::Json()>;
+    using ReloadHandler = std::function<common::Result<void>()>;
+
     ControlService(storage::StateRepository& repository, storage::CredentialStore& credentials,
-                   std::function<void()> state_changed = {}) noexcept;
+                   std::function<void()> state_changed = {}, JsonProvider runtime_metrics = {},
+                   ReloadHandler reload_handler = {}) noexcept;
 
     ControlService(const ControlService&) = delete;
     ControlService& operator=(const ControlService&) = delete;
@@ -39,11 +43,18 @@ class ControlService final {
     [[nodiscard]] common::Result<ipc::Json> tunnel_inspect(const ipc::Request& request) const;
     [[nodiscard]] common::Result<ipc::Json> tunnel_remove(const ipc::Request& request);
     [[nodiscard]] common::Result<ipc::Json> status(const ipc::Request& request) const;
+    [[nodiscard]] common::Result<ipc::Json> doctor(const ipc::Request& request);
+    [[nodiscard]] common::Result<ipc::Json> health(const ipc::Request& request) const;
+    [[nodiscard]] common::Result<ipc::Json> readiness(const ipc::Request& request) const;
+    [[nodiscard]] common::Result<ipc::Json> metrics(const ipc::Request& request) const;
+    [[nodiscard]] common::Result<ipc::Json> reload(const ipc::Request& request) const;
     void notify_state_changed() const noexcept;
 
     storage::StateRepository& repository_;
     storage::CredentialStore& credentials_;
     std::function<void()> state_changed_;
+    JsonProvider runtime_metrics_;
+    ReloadHandler reload_handler_;
     // Login and removal cross the state and credential databases; keep their
     // post-commit cleanup sagas ordered so one request cannot erase a newer key.
     std::mutex credential_operation_mutex_;

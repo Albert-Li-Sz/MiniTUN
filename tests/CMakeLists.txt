@@ -23,6 +23,7 @@ add_executable(minitun_unit_tests
     unit/secure_string_test.cpp
     unit/state_recovery_test.cpp
     unit/storage_database_test.cpp
+    unit/storage_diagnostics_test.cpp
     unit/storage_models_test.cpp
     unit/storage_repository_test.cpp
     unit/time_test.cpp

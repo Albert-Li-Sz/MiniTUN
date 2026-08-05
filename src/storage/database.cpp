@@ -6,7 +6,9 @@
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <sys/stat.h>
 #include <tuple>
+#include <unistd.h>
 #include <utility>
 
 #include <sqlite3.h>
@@ -557,6 +559,18 @@ CREATE TABLE daemon_identity (
     return common::Result<void>::success();
 }
 
+[[nodiscard]] common::Result<void> validate_state_restore_source(sqlite3* database) {
+    auto version = read_schema_version(database, true);
+    if (!version) {
+        return version.error();
+    }
+    if (*version != kCurrentSchemaVersion) {
+        return common::Error{common::ErrorCode::unsupported_version,
+                             "restore source schema version is unsupported"};
+    }
+    return validate_current_schema(database);
+}
+
 [[nodiscard]] common::Result<void> apply_version_one(sqlite3* database) {
     constexpr std::pair<std::string_view, std::string_view> statements[]{
         {kCreateServers, "create servers table"},
@@ -1004,5 +1018,156 @@ common::Result<void> Database::checkpoint() {
 }
 
 const std::string& Database::path() const noexcept { return path_; }
+
+common::Result<DatabaseDiagnostics> Database::diagnostics() const {
+    std::scoped_lock lock{mutex_};
+    if (handle_ == nullptr || poisoned_) {
+        return common::Error{common::ErrorCode::database_error, "SQLite connection is unusable"};
+    }
+    DatabaseDiagnostics result;
+    result.path = path_;
+
+    struct stat status{};
+    if (::lstat(path_.c_str(), &status) != 0) {
+        return common::Error{common::ErrorCode::database_error,
+                             "inspect SQLite database file failed"};
+    }
+    result.file_size_bytes = static_cast<std::int64_t>(status.st_size);
+    result.file_mode = static_cast<std::uint32_t>(status.st_mode & 0777);
+    result.owner_uid = static_cast<std::uint64_t>(status.st_uid);
+    result.device = static_cast<std::uint64_t>(status.st_dev);
+    result.inode = static_cast<std::uint64_t>(status.st_ino);
+
+    auto schema = read_schema_version(handle_, false);
+    if (!schema) {
+        result.schema_version = -1;
+    } else {
+        result.schema_version = *schema;
+    }
+
+    auto journal_mode =
+        internal::query_single_text(handle_, "PRAGMA journal_mode", "inspect SQLite journal mode");
+    if (!journal_mode) {
+        return journal_mode.error();
+    }
+    result.journal_mode = std::move(*journal_mode);
+
+    auto synchronous = internal::query_single_int64(handle_, "PRAGMA synchronous",
+                                                    "inspect SQLite synchronous mode");
+    if (!synchronous) {
+        return synchronous.error();
+    }
+    switch (*synchronous) {
+    case 0:
+        result.synchronous = "off";
+        break;
+    case 1:
+        result.synchronous = "normal";
+        break;
+    case 2:
+        result.synchronous = "full";
+        break;
+    case 3:
+        result.synchronous = "extra";
+        break;
+    default:
+        result.synchronous = "unknown";
+        break;
+    }
+
+    auto foreign_keys = internal::query_single_int64(handle_, "PRAGMA foreign_keys",
+                                                     "inspect SQLite foreign-key mode");
+    if (!foreign_keys) {
+        return foreign_keys.error();
+    }
+    result.foreign_keys = *foreign_keys != 0;
+
+    auto page_count =
+        internal::query_single_int64(handle_, "PRAGMA page_count", "inspect SQLite page count");
+    auto freelist_count = internal::query_single_int64(handle_, "PRAGMA freelist_count",
+                                                       "inspect SQLite freelist count");
+    if (!page_count) {
+        return page_count.error();
+    }
+    if (!freelist_count) {
+        return freelist_count.error();
+    }
+    result.page_count = *page_count;
+    result.freelist_count = *freelist_count;
+
+    auto integrity = internal::query_single_text(handle_, "PRAGMA integrity_check",
+                                                 "inspect SQLite database integrity");
+    if (!integrity) {
+        return integrity.error();
+    }
+    result.integrity_result = *integrity;
+    result.integrity_ok = *integrity == "ok";
+
+    // validate_current_schema also checks foreign keys and required indexes.
+    // Keep its detailed error private, while exposing a safe boolean to the
+    // caller so a doctor report can still be produced for a damaged database.
+    result.schema_valid = schema.has_value() && *schema == kCurrentSchemaVersion;
+    if (result.schema_valid) {
+        result.schema_valid = static_cast<bool>(validate_current_schema(handle_));
+    }
+
+    if (result.journal_mode == "wal" || result.journal_mode == "WAL") {
+        int log_frames = -1;
+        int checkpointed_frames = -1;
+        const int checkpoint_result = sqlite3_wal_checkpoint_v2(
+            handle_, nullptr, SQLITE_CHECKPOINT_PASSIVE, &log_frames, &checkpointed_frames);
+        if (checkpoint_result != SQLITE_OK) {
+            return internal::sqlite_error(handle_, checkpoint_result,
+                                          "inspect SQLite WAL checkpoint state");
+        }
+        result.wal_log_frames = log_frames;
+        result.wal_checkpointed_frames = checkpointed_frames;
+
+        struct stat wal_status{};
+        const std::string wal_path = path_ + "-wal";
+        if (::lstat(wal_path.c_str(), &wal_status) == 0 && wal_status.st_size >= 0) {
+            result.wal_size_bytes = static_cast<std::int64_t>(wal_status.st_size);
+        }
+    }
+    return result;
+}
+
+common::Result<void> Database::backup_to(const std::string_view destination) const {
+    std::scoped_lock lock{mutex_};
+    if (handle_ == nullptr || poisoned_) {
+        return common::Error{common::ErrorCode::database_error, "SQLite connection is unusable"};
+    }
+    if (transaction_active_) {
+        return common::Error{common::ErrorCode::invalid_argument,
+                             "cannot back up SQLite state during an active transaction"};
+    }
+    return internal::backup_database(handle_, path_, destination, "backup SQLite state database");
+}
+
+common::Result<void> Database::validate_restore_source(const std::string_view source) const {
+    std::scoped_lock lock{mutex_};
+    if (handle_ == nullptr || poisoned_) {
+        return common::Error{common::ErrorCode::database_error, "SQLite connection is unusable"};
+    }
+    if (transaction_active_) {
+        return common::Error{common::ErrorCode::invalid_argument,
+                             "cannot validate SQLite state restore during an active transaction"};
+    }
+    return internal::validate_restore_source(path_, source, "restore SQLite state database",
+                                             validate_state_restore_source);
+}
+
+common::Result<void> Database::restore_from(const std::string_view source) const {
+    std::scoped_lock lock{mutex_};
+    if (handle_ == nullptr || poisoned_) {
+        return common::Error{common::ErrorCode::database_error, "SQLite connection is unusable"};
+    }
+    if (transaction_active_) {
+        return common::Error{common::ErrorCode::invalid_argument,
+                             "cannot restore SQLite state during an active transaction"};
+    }
+    return internal::restore_database(handle_, path_, source, "restore SQLite state database",
+                                      validate_state_restore_source);
+}
 
 } // namespace minitun::storage

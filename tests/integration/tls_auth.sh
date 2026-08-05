@@ -30,8 +30,11 @@ openssl req -x509 -newkey rsa:2048 -sha256 -days 1 -nodes \
 chmod 0600 "$runtime_dir/server.key"
 
 token='stage-six-integration-token'
+rotated_token='stage-six-rotated-token'
 printf '%s\n' "$token" >"$runtime_dir/token"
 chmod 0600 "$runtime_dir/token"
+printf '%s\n' "$token" >"$runtime_dir/old-token"
+chmod 0600 "$runtime_dir/old-token"
 printf '%s\n' 'wrong-token' >"$runtime_dir/wrong-token"
 chmod 0600 "$runtime_dir/wrong-token"
 
@@ -91,7 +94,48 @@ if "$client_bin" \
     exit 1
 fi
 
-if grep -F "$token" "$runtime_dir/server.log"; then
+authenticated_before=$(grep -cF 'remote client authenticated' "$runtime_dir/server.log" || true)
+"$client_bin" \
+    --endpoint "127.0.0.1:$port" \
+    --server-name localhost \
+    --ca-cert "$runtime_dir/server.crt" \
+    --token-file "$runtime_dir/token" \
+    --expect-goaway \
+    --heartbeat-count 0 &
+goaway_client_pid=$!
+for _ in $(seq 1 100); do
+    authenticated_now=$(grep -cF 'remote client authenticated' "$runtime_dir/server.log" || true)
+    if ((authenticated_now > authenticated_before)); then
+        break
+    fi
+    kill -0 "$goaway_client_pid" 2>/dev/null || break
+    sleep 0.02
+done
+
+printf '%s\n' "$rotated_token" >"$runtime_dir/token.next"
+chmod 0600 "$runtime_dir/token.next"
+mv "$runtime_dir/token.next" "$runtime_dir/token"
+kill -HUP "$server_pid"
+wait "$goaway_client_pid"
+goaway_client_pid=
+kill -0 "$server_pid"
+
+"$client_bin" \
+    --endpoint "127.0.0.1:$port" \
+    --server-name localhost \
+    --ca-cert "$runtime_dir/server.crt" \
+    --token-file "$runtime_dir/old-token" \
+    --expect-auth-failure \
+    --heartbeat-count 0
+
+"$client_bin" \
+    --endpoint "127.0.0.1:$port" \
+    --server-name localhost \
+    --ca-cert "$runtime_dir/server.crt" \
+    --token-file "$runtime_dir/token" \
+    --heartbeat-count 1
+
+if grep -F -e "$token" -e "$rotated_token" "$runtime_dir/server.log"; then
     echo 'authentication Token leaked into server logs' >&2
     exit 1
 fi

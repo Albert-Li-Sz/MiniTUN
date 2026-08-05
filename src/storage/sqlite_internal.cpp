@@ -1,8 +1,14 @@
 #include "sqlite_internal.hpp"
 
 #include <algorithm>
+#include <cerrno>
+#include <fcntl.h>
 #include <limits>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
 #include <utility>
+#include <vector>
 
 #include <minitun/common/endpoint.hpp>
 #include <minitun/common/error.hpp>
@@ -10,6 +16,69 @@
 
 namespace minitun::storage::internal {
 namespace {
+
+constexpr std::size_t kMaximumDatabasePathBytes = 4'096U;
+
+[[nodiscard]] std::string parent_path(const std::string_view path) {
+    const auto slash = path.rfind('/');
+    if (slash == std::string_view::npos) {
+        return ".";
+    }
+    if (slash == 0U) {
+        return "/";
+    }
+    return std::string{path.substr(0U, slash)};
+}
+
+[[nodiscard]] common::Result<void> validate_private_parent(const std::string_view path,
+                                                           const std::string_view description) {
+    const std::string parent = parent_path(path);
+    struct stat status{};
+    if (::lstat(parent.c_str(), &status) != 0) {
+        return common::Error{common::ErrorCode::not_found,
+                             std::string{description} + " parent directory is unavailable"};
+    }
+    if (!S_ISDIR(status.st_mode) || status.st_uid != ::geteuid() ||
+        (status.st_mode & (S_IWGRP | S_IWOTH)) != 0) {
+        return common::Error{common::ErrorCode::permission_denied,
+                             std::string{description} +
+                                 " parent directory must be daemon-owned and private"};
+    }
+    return common::Result<void>::success();
+}
+
+[[nodiscard]] common::Result<void> fsync_file(const int descriptor,
+                                              const std::string_view description) {
+    if (::fsync(descriptor) == 0) {
+        return common::Result<void>::success();
+    }
+    return common::Error{common::ErrorCode::database_error,
+                         std::string{description} + " fsync failed"};
+}
+
+[[nodiscard]] common::Result<void> fsync_directory(const std::string_view path,
+                                                   const std::string_view description) {
+    const std::string parent = parent_path(path);
+    const int descriptor = ::open(parent.c_str(), O_RDONLY | O_CLOEXEC | O_DIRECTORY);
+    if (descriptor < 0) {
+        return common::Error{common::ErrorCode::database_error,
+                             std::string{description} + " directory open failed"};
+    }
+    const int result = ::fsync(descriptor);
+    const int saved_errno = errno;
+    static_cast<void>(::close(descriptor));
+    if (result == 0) {
+        return common::Result<void>::success();
+    }
+    static_cast<void>(saved_errno);
+    return common::Error{common::ErrorCode::database_error,
+                         std::string{description} + " directory fsync failed"};
+}
+
+[[nodiscard]] common::Result<void> remove_temporary(const std::string& path, common::Error error) {
+    static_cast<void>(::unlink(path.c_str()));
+    return error;
+}
 
 [[nodiscard]] common::Error corrupt_field(const std::string_view field) {
     return common::Error{common::ErrorCode::database_error,
@@ -262,6 +331,302 @@ common::Result<void> execute(sqlite3* database, const std::string_view sql,
     }
     sqlite3_free(raw_error);
     return error;
+}
+
+common::Result<void> backup_database(sqlite3* source_database, const std::string_view source_path,
+                                     const std::string_view destination,
+                                     const std::string_view description) {
+    if (source_database == nullptr || destination.empty() ||
+        destination.size() > kMaximumDatabasePathBytes ||
+        destination.find('\0') != std::string_view::npos) {
+        return common::Error{common::ErrorCode::invalid_argument,
+                             std::string{description} + " destination path is invalid"};
+    }
+    if (destination == source_path) {
+        return common::Error{common::ErrorCode::invalid_argument,
+                             std::string{description} + " destination must differ from source"};
+    }
+    if (auto parent = validate_private_parent(destination, description); !parent) {
+        return parent;
+    }
+
+    struct stat destination_status{};
+    if (::lstat(std::string{destination}.c_str(), &destination_status) == 0) {
+        return common::Error{common::ErrorCode::already_exists,
+                             std::string{description} + " destination already exists"};
+    }
+    if (errno != ENOENT) {
+        return common::Error{common::ErrorCode::permission_denied,
+                             std::string{description} + " destination cannot be inspected"};
+    }
+
+    std::string temporary_template = parent_path(destination);
+    if (temporary_template.back() != '/') {
+        temporary_template.push_back('/');
+    }
+    temporary_template.append(".minitun-backup-XXXXXX");
+    std::vector<char> writable_template{temporary_template.begin(), temporary_template.end()};
+    writable_template.push_back('\0');
+    const int temporary_descriptor = ::mkstemp(writable_template.data());
+    if (temporary_descriptor < 0) {
+        return common::Error{common::ErrorCode::database_error,
+                             std::string{description} + " temporary file creation failed"};
+    }
+    const std::string temporary_path{writable_template.data()};
+    if (::fchmod(temporary_descriptor, S_IRUSR | S_IWUSR) != 0) {
+        const int saved_errno = errno;
+        static_cast<void>(::close(temporary_descriptor));
+        static_cast<void>(::unlink(temporary_path.c_str()));
+        static_cast<void>(saved_errno);
+        return common::Error{common::ErrorCode::permission_denied,
+                             std::string{description} + " temporary permission setup failed"};
+    }
+    static_cast<void>(::close(temporary_descriptor));
+
+    sqlite3* destination_database = nullptr;
+    const int open_result = sqlite3_open_v2(
+        temporary_path.c_str(), &destination_database,
+        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr);
+    if (open_result != SQLITE_OK) {
+        common::Error error = sqlite_error(destination_database, open_result,
+                                           std::string{description} + " destination open");
+        if (destination_database != nullptr) {
+            sqlite3_close_v2(destination_database);
+        }
+        return remove_temporary(temporary_path, std::move(error));
+    }
+    sqlite3_extended_result_codes(destination_database, 1);
+
+    sqlite3_backup* backup =
+        sqlite3_backup_init(destination_database, "main", source_database, "main");
+    if (backup == nullptr) {
+        common::Error error =
+            sqlite_error(destination_database, sqlite3_errcode(destination_database),
+                         std::string{description} + " initialize online backup");
+        sqlite3_close_v2(destination_database);
+        return remove_temporary(temporary_path, std::move(error));
+    }
+
+    int step_result = SQLITE_OK;
+    constexpr int kPagesPerStep = 256;
+    constexpr int kMaximumBusySteps = 200; // 5 seconds at 25 ms per retry.
+    int busy_steps = 0;
+    while (true) {
+        step_result = sqlite3_backup_step(backup, kPagesPerStep);
+        if (step_result == SQLITE_DONE) {
+            break;
+        }
+        if (step_result == SQLITE_OK) {
+            busy_steps = 0;
+            continue;
+        }
+        if (step_result == SQLITE_BUSY || step_result == SQLITE_LOCKED) {
+            if (++busy_steps > kMaximumBusySteps) {
+                break;
+            }
+            sqlite3_sleep(25);
+            continue;
+        }
+        break;
+    }
+    const int finish_result = sqlite3_backup_finish(backup);
+    if (step_result != SQLITE_DONE || finish_result != SQLITE_OK) {
+        const int error_code = finish_result != SQLITE_OK ? finish_result : step_result;
+        common::Error error = sqlite_error(destination_database, error_code,
+                                           std::string{description} + " copy database pages");
+        sqlite3_close_v2(destination_database);
+        return remove_temporary(temporary_path, std::move(error));
+    }
+    // Keep backups readable without write access to the containing directory.
+    // A WAL-mode backup would otherwise require a sidecar -shm file when a
+    // read-only diagnostic process opens it.
+    auto journal_reset = execute(destination_database, "PRAGMA journal_mode = DELETE",
+                                 std::string{description} + " normalize backup journal");
+    if (!journal_reset) {
+        sqlite3_close_v2(destination_database);
+        return remove_temporary(temporary_path, journal_reset.error());
+    }
+    sqlite3_close_v2(destination_database);
+
+    const int synchronized_descriptor =
+        ::open(temporary_path.c_str(), O_RDWR | O_CLOEXEC | O_NOFOLLOW);
+    if (synchronized_descriptor < 0) {
+        return remove_temporary(temporary_path, common::Error{common::ErrorCode::database_error,
+                                                              std::string{description} +
+                                                                  " temporary file reopen failed"});
+    }
+    auto synchronized = fsync_file(synchronized_descriptor, description);
+    static_cast<void>(::close(synchronized_descriptor));
+    if (!synchronized) {
+        return remove_temporary(temporary_path, std::move(synchronized).error());
+    }
+
+    if (::rename(temporary_path.c_str(), std::string{destination}.c_str()) != 0) {
+        return remove_temporary(
+            temporary_path,
+            common::Error{common::ErrorCode::database_error,
+                          std::string{description} + " destination installation failed"});
+    }
+    if (auto synced = fsync_directory(destination, description); !synced) {
+        // The backup is already atomically installed.  Report the durability
+        // warning so callers can retry a directory sync if required.
+        return synced;
+    }
+    return common::Result<void>::success();
+}
+
+namespace {
+
+[[nodiscard]] common::Result<sqlite3*> open_validated_restore_source(
+    const std::string_view destination_path, const std::string_view source,
+    const std::string_view description,
+    const std::function<common::Result<void>(sqlite3*)>& source_validator) {
+    if (source.empty() || source.size() > kMaximumDatabasePathBytes ||
+        source.find('\0') != std::string_view::npos || destination_path.empty() ||
+        destination_path.size() > kMaximumDatabasePathBytes ||
+        destination_path.find('\0') != std::string_view::npos) {
+        return common::Error{common::ErrorCode::invalid_argument,
+                             std::string{description} + " source path is invalid"};
+    }
+    if (source == destination_path) {
+        return common::Error{common::ErrorCode::invalid_argument,
+                             std::string{description} + " source must differ from destination"};
+    }
+    if (auto parent = validate_private_parent(source, description); !parent) {
+        return parent.error();
+    }
+    struct stat source_status{};
+    if (::lstat(std::string{source}.c_str(), &source_status) != 0 ||
+        !S_ISREG(source_status.st_mode)) {
+        return common::Error{common::ErrorCode::invalid_argument,
+                             std::string{description} + " source must be a regular file"};
+    }
+    if (source_status.st_uid != ::geteuid() || (source_status.st_mode & 0077) != 0) {
+        return common::Error{common::ErrorCode::permission_denied,
+                             std::string{description} + " source file permissions are unsafe"};
+    }
+
+    sqlite3* source_database = nullptr;
+    const int open_result = sqlite3_open_v2(std::string{source}.c_str(), &source_database,
+                                            SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nullptr);
+    if (open_result != SQLITE_OK) {
+        common::Error error =
+            sqlite_error(source_database, open_result, std::string{description} + " source open");
+        if (source_database != nullptr) {
+            sqlite3_close_v2(source_database);
+        }
+        return error;
+    }
+    sqlite3_extended_result_codes(source_database, 1);
+    sqlite3_busy_timeout(source_database, 5'000);
+
+    auto integrity = query_single_text(source_database, "PRAGMA integrity_check",
+                                       std::string{description} + " source integrity");
+    if (!integrity || *integrity != "ok") {
+        common::Error error =
+            integrity ? common::Error{common::ErrorCode::database_error,
+                                      std::string{description} + " source integrity check failed"}
+                      : integrity.error();
+        sqlite3_close_v2(source_database);
+        return error;
+    }
+    if (source_validator) {
+        auto validated = source_validator(source_database);
+        if (!validated) {
+            sqlite3_close_v2(source_database);
+            return validated.error();
+        }
+    }
+    return source_database;
+}
+
+} // namespace
+
+common::Result<void>
+validate_restore_source(const std::string_view destination_path, const std::string_view source,
+                        const std::string_view description,
+                        std::function<common::Result<void>(sqlite3*)> source_validator) {
+    auto source_database =
+        open_validated_restore_source(destination_path, source, description, source_validator);
+    if (!source_database) {
+        return source_database.error();
+    }
+    sqlite3_close_v2(*source_database);
+    return common::Result<void>::success();
+}
+
+common::Result<void>
+restore_database(sqlite3* destination_database, const std::string_view destination_path,
+                 const std::string_view source, const std::string_view description,
+                 std::function<common::Result<void>(sqlite3*)> source_validator) {
+    if (destination_database == nullptr) {
+        return common::Error{common::ErrorCode::invalid_argument,
+                             std::string{description} + " source path is invalid"};
+    }
+    auto opened_source =
+        open_validated_restore_source(destination_path, source, description, source_validator);
+    if (!opened_source) {
+        return opened_source.error();
+    }
+    sqlite3* const source_database = *opened_source;
+
+    sqlite3_backup* backup =
+        sqlite3_backup_init(destination_database, "main", source_database, "main");
+    if (backup == nullptr) {
+        common::Error error =
+            sqlite_error(destination_database, sqlite3_errcode(destination_database),
+                         std::string{description} + " initialize restore");
+        sqlite3_close_v2(source_database);
+        return error;
+    }
+    int step_result = SQLITE_OK;
+    int busy_steps = 0;
+    constexpr int kPagesPerStep = 256;
+    constexpr int kMaximumBusySteps = 200;
+    while (true) {
+        step_result = sqlite3_backup_step(backup, kPagesPerStep);
+        if (step_result == SQLITE_DONE) {
+            break;
+        }
+        if (step_result == SQLITE_OK) {
+            busy_steps = 0;
+            continue;
+        }
+        if (step_result == SQLITE_BUSY || step_result == SQLITE_LOCKED) {
+            if (++busy_steps > kMaximumBusySteps) {
+                break;
+            }
+            sqlite3_sleep(25);
+            continue;
+        }
+        break;
+    }
+    const int finish_result = sqlite3_backup_finish(backup);
+    sqlite3_close_v2(source_database);
+    if (step_result != SQLITE_DONE || finish_result != SQLITE_OK) {
+        const int error_code = finish_result != SQLITE_OK ? finish_result : step_result;
+        return sqlite_error(destination_database, error_code,
+                            std::string{description} + " copy database pages");
+    }
+
+    int log_frames = -1;
+    int checkpointed_frames = -1;
+    const int checkpoint_result =
+        sqlite3_wal_checkpoint_v2(destination_database, nullptr, SQLITE_CHECKPOINT_TRUNCATE,
+                                  &log_frames, &checkpointed_frames);
+    if (checkpoint_result != SQLITE_OK && checkpoint_result != SQLITE_ERROR) {
+        return sqlite_error(destination_database, checkpoint_result,
+                            std::string{description} + " checkpoint restored database");
+    }
+    struct stat destination_status{};
+    if (::stat(std::string{destination_path}.c_str(), &destination_status) == 0) {
+        const int descriptor = ::open(std::string{destination_path}.c_str(), O_RDONLY | O_CLOEXEC);
+        if (descriptor >= 0) {
+            static_cast<void>(::fsync(descriptor));
+            static_cast<void>(::close(descriptor));
+        }
+    }
+    return common::Result<void>::success();
 }
 
 common::Result<std::int64_t> query_single_int64(sqlite3* database, const std::string_view sql,

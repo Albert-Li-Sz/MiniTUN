@@ -301,13 +301,37 @@ tunnel_counts(const std::vector<TunnelRecord>& tunnels) {
     return std::max(previous, common::unix_milliseconds_now());
 }
 
+[[nodiscard]] Json diagnostics_json(const storage::DatabaseDiagnostics& diagnostics) {
+    return Json{
+        {"path", diagnostics.path},
+        {"file_size_bytes", diagnostics.file_size_bytes},
+        {"file_mode", diagnostics.file_mode},
+        {"owner_uid", diagnostics.owner_uid},
+        {"device", diagnostics.device},
+        {"inode", diagnostics.inode},
+        {"schema_version", diagnostics.schema_version},
+        {"journal_mode", diagnostics.journal_mode},
+        {"synchronous", diagnostics.synchronous},
+        {"foreign_keys", diagnostics.foreign_keys},
+        {"schema_valid", diagnostics.schema_valid},
+        {"integrity_ok", diagnostics.integrity_ok},
+        {"integrity_result", diagnostics.integrity_result},
+        {"page_count", diagnostics.page_count},
+        {"freelist_count", diagnostics.freelist_count},
+        {"wal_log_frames", diagnostics.wal_log_frames},
+        {"wal_checkpointed_frames", diagnostics.wal_checkpointed_frames},
+        {"wal_size_bytes", diagnostics.wal_size_bytes},
+    };
+}
+
 } // namespace
 
 ControlService::ControlService(storage::StateRepository& repository,
                                storage::CredentialStore& credentials,
-                               std::function<void()> state_changed) noexcept
-    : repository_(repository), credentials_(credentials), state_changed_(std::move(state_changed)) {
-}
+                               std::function<void()> state_changed, JsonProvider runtime_metrics,
+                               ReloadHandler reload_handler) noexcept
+    : repository_(repository), credentials_(credentials), state_changed_(std::move(state_changed)),
+      runtime_metrics_(std::move(runtime_metrics)), reload_handler_(std::move(reload_handler)) {}
 
 void ControlService::notify_state_changed() const noexcept {
     if (!state_changed_) {
@@ -323,7 +347,7 @@ void ControlService::notify_state_changed() const noexcept {
 
 common::Result<void> ControlService::register_handlers(ipc::Dispatcher& dispatcher) {
     std::vector<std::string> registered;
-    registered.reserve(11U);
+    registered.reserve(16U);
     const auto add = [&dispatcher, &registered](std::string method,
                                                 ipc::MethodHandler handler) -> Result<void> {
         std::string method_copy = method;
@@ -367,6 +391,21 @@ common::Result<void> ControlService::register_handlers(ipc::Dispatcher& dispatch
                   }}},
         std::pair{"status", ipc::MethodHandler{[this](const ipc::Request& request) {
                       return status(request);
+                  }}},
+        std::pair{"doctor", ipc::MethodHandler{[this](const ipc::Request& request) {
+                      return doctor(request);
+                  }}},
+        std::pair{"health", ipc::MethodHandler{[this](const ipc::Request& request) {
+                      return health(request);
+                  }}},
+        std::pair{"readiness", ipc::MethodHandler{[this](const ipc::Request& request) {
+                      return readiness(request);
+                  }}},
+        std::pair{"metrics", ipc::MethodHandler{[this](const ipc::Request& request) {
+                      return metrics(request);
+                  }}},
+        std::pair{"reload", ipc::MethodHandler{[this](const ipc::Request& request) {
+                      return reload(request);
                   }}},
     };
 
@@ -916,6 +955,28 @@ Result<Json> ControlService::status(const ipc::Request& request) const {
     for (const auto& [state, count] : tunnel_states) {
         tunnel_state_json[state] = count;
     }
+    Json runtime = Json{
+        {"sessions", Json{{"active", 0U}}},
+        {"workers", Json{{"idle", 0U}, {"active", 0U}}},
+        {"connections", Json{{"active", 0U}, {"pending", 0U}}},
+        {"reconnects", 0U},
+        {"quota_rejections", 0U},
+        {"errors", 0U},
+        {"throughput", Json{{"bytes_in", 0U}, {"bytes_out", 0U}}},
+    };
+    if (runtime_metrics_) {
+        try {
+            auto supplied = runtime_metrics_();
+            if (supplied.is_object()) {
+                for (auto iterator = supplied.begin(); iterator != supplied.end(); ++iterator) {
+                    runtime[iterator.key()] = std::move(iterator.value());
+                }
+            }
+        } catch (...) {
+            runtime["provider_error"] = true;
+        }
+    }
+
     return Json{
         {"daemon", Json{{"state", "running"}, {"ipc_version", ipc::kProtocolVersion}}},
         {"servers", Json{{"total", server_total},
@@ -924,7 +985,203 @@ Result<Json> ControlService::status(const ipc::Request& request) const {
         {"tunnels", Json{{"total", tunnel_total},
                          {"active", tunnel_states["active"]},
                          {"states", std::move(tunnel_state_json)}}},
+        {"runtime", std::move(runtime)},
     };
+}
+
+Result<Json> ControlService::doctor(const ipc::Request& request) {
+    if (auto valid = validate_params(request.params, {},
+                                     {"backup_state", "backup_credentials", "restore_state",
+                                      "restore_credentials", "checkpoint"});
+        !valid) {
+        return valid.error();
+    }
+    const auto read_path =
+        [&request](const std::string_view field) -> Result<std::optional<std::string>> {
+        return optional_string(request.params, field);
+    };
+    auto backup_state = read_path("backup_state");
+    auto backup_credentials = read_path("backup_credentials");
+    auto restore_state = read_path("restore_state");
+    auto restore_credentials = read_path("restore_credentials");
+    if (!backup_state || !backup_credentials || !restore_state || !restore_credentials) {
+        return !backup_state         ? backup_state.error()
+               : !backup_credentials ? backup_credentials.error()
+               : !restore_state      ? restore_state.error()
+                                     : restore_credentials.error();
+    }
+    const auto checkpoint = request.params.find("checkpoint");
+    if (checkpoint != request.params.end() && !checkpoint->is_boolean()) {
+        return Error{ErrorCode::invalid_argument, "checkpoint must be a boolean"};
+    }
+
+    auto* const sqlite_credentials = dynamic_cast<storage::SqliteCredentialStore*>(&credentials_);
+    if (sqlite_credentials == nullptr) {
+        return Error{ErrorCode::unsupported_version,
+                     "database doctor is unavailable for this credential store"};
+    }
+
+    // A restore spanning two SQLite files cannot use one database transaction.
+    // Validate every requested source before changing either live database;
+    // each subsequent online-backup copy remains atomic for its own database.
+    if (restore_state->has_value()) {
+        auto validated = repository_.validate_restore_source(**restore_state);
+        if (!validated) {
+            return validated.error();
+        }
+    }
+    if (restore_credentials->has_value()) {
+        auto validated = sqlite_credentials->validate_restore_source(**restore_credentials);
+        if (!validated) {
+            return validated.error();
+        }
+    }
+
+    bool restored_any = false;
+    if (restore_state->has_value()) {
+        auto restored = repository_.restore_from(**restore_state);
+        if (!restored) {
+            return restored.error();
+        }
+        restored_any = true;
+    }
+    if (restore_credentials->has_value()) {
+        auto restored = sqlite_credentials->restore_from(**restore_credentials);
+        if (!restored) {
+            if (restored_any) {
+                notify_state_changed();
+            }
+            return restored.error();
+        }
+        restored_any = true;
+    }
+    if (restored_any) {
+        notify_state_changed();
+    }
+    if (checkpoint != request.params.end() && checkpoint->get<bool>()) {
+        auto checkpointed = repository_.checkpoint();
+        if (!checkpointed) {
+            return checkpointed.error();
+        }
+    }
+    Json actions = Json::object();
+    if (restore_state->has_value()) {
+        actions["restore_state"] = **restore_state;
+    }
+    if (restore_credentials->has_value()) {
+        actions["restore_credentials"] = **restore_credentials;
+    }
+    if (restore_state->has_value() || restore_credentials->has_value()) {
+        actions["restore_consistency"] =
+            restore_state->has_value() && restore_credentials->has_value()
+                ? "prevalidated_per_database"
+                : "single_database_atomic";
+    }
+    if (backup_state->has_value()) {
+        auto backed_up = repository_.backup_to(**backup_state);
+        if (!backed_up) {
+            return backed_up.error();
+        }
+        actions["backup_state"] = **backup_state;
+    }
+    if (backup_credentials->has_value()) {
+        auto backed_up = sqlite_credentials->backup_to(**backup_credentials);
+        if (!backed_up) {
+            return backed_up.error();
+        }
+        actions["backup_credentials"] = **backup_credentials;
+    }
+
+    auto state = repository_.diagnostics();
+    auto credentials = sqlite_credentials->diagnostics();
+    if (!state) {
+        return state.error();
+    }
+    if (!credentials) {
+        return credentials.error();
+    }
+    const bool healthy = state->schema_valid && state->integrity_ok && credentials->schema_valid &&
+                         credentials->integrity_ok;
+    return Json{{"ok", healthy},
+                {"state_db", diagnostics_json(*state)},
+                {"credentials_db", diagnostics_json(*credentials)},
+                {"actions", std::move(actions)}};
+}
+
+Result<Json> ControlService::health(const ipc::Request& request) const {
+    if (auto valid = validate_params(request.params, {}); !valid) {
+        return valid.error();
+    }
+    auto state = repository_.diagnostics();
+    if (!state) {
+        return state.error();
+    }
+    auto* const sqlite_credentials =
+        dynamic_cast<const storage::SqliteCredentialStore*>(&credentials_);
+    if (sqlite_credentials == nullptr) {
+        return Error{ErrorCode::unsupported_version, "credential health is unavailable"};
+    }
+    auto credentials = sqlite_credentials->diagnostics();
+    if (!credentials) {
+        return credentials.error();
+    }
+    const bool healthy = state->schema_valid && state->integrity_ok && credentials->schema_valid &&
+                         credentials->integrity_ok;
+    return Json{{"status", healthy ? "ok" : "degraded"},
+                {"state_db", state->schema_valid && state->integrity_ok},
+                {"credentials_db", credentials->schema_valid && credentials->integrity_ok}};
+}
+
+Result<Json> ControlService::readiness(const ipc::Request& request) const {
+    if (auto valid = validate_params(request.params, {}); !valid) {
+        return valid.error();
+    }
+    auto state = repository_.diagnostics();
+    if (!state) {
+        return Json{{"ready", false}, {"reason", "state_database_unavailable"}};
+    }
+    auto* const sqlite_credentials =
+        dynamic_cast<const storage::SqliteCredentialStore*>(&credentials_);
+    if (sqlite_credentials == nullptr) {
+        return Json{{"ready", false}, {"reason", "credential_store_unavailable"}};
+    }
+    auto credentials = sqlite_credentials->diagnostics();
+    if (!credentials) {
+        return Json{{"ready", false}, {"reason", "credential_database_unavailable"}};
+    }
+    const bool ready = state->schema_valid && state->integrity_ok && credentials->schema_valid &&
+                       credentials->integrity_ok;
+    return Json{{"ready", ready},
+                {"reason", ready ? Json(nullptr) : Json("database_check_failed")}};
+}
+
+Result<Json> ControlService::metrics(const ipc::Request& request) const {
+    if (auto valid = validate_params(request.params, {}); !valid) {
+        return valid.error();
+    }
+    if (!runtime_metrics_) {
+        return Json::object();
+    }
+    try {
+        auto supplied = runtime_metrics_();
+        return supplied.is_object() ? supplied : Json::object();
+    } catch (...) {
+        return Error{ErrorCode::internal_error, "metrics provider failed"};
+    }
+}
+
+Result<Json> ControlService::reload(const ipc::Request& request) const {
+    if (auto valid = validate_params(request.params, {}); !valid) {
+        return valid.error();
+    }
+    if (!reload_handler_) {
+        return Error{ErrorCode::unsupported_version, "reload is not supported by this daemon"};
+    }
+    auto reloaded = reload_handler_();
+    if (!reloaded) {
+        return reloaded.error();
+    }
+    return Json{{"reloaded", true}};
 }
 
 } // namespace minitun::daemon

@@ -55,7 +55,7 @@ PY
     --allow-ports 1024-65535 \
     --heartbeat-interval 1 \
     --heartbeat-timeout 3 \
-    --min-idle-workers 1 \
+    --min-idle-workers 0 \
     --max-idle-workers 1 \
     --max-total-idle-workers 1 \
     --worker-idle-timeout 2 \

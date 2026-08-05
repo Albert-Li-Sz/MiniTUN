@@ -1,4 +1,4 @@
-.TH MINITUN 1 "2026-08-04" "MiniTun 0.2.4" "用户命令"
+.TH MINITUN 1 "2026-08-04" "MiniTun 0.3.0" "用户命令"
 .SH NAME
 minitun \- 管理 MiniTun 服务器和 TCP 隧道
 .SH 用法
@@ -46,6 +46,21 @@ SQLite 数据库，也不会直接连接公网服务端。
 .TP
 .B status
 显示聚合客户端状态。
+.TP
+.B doctor [--json] [--checkpoint] [--backup-state path] [--backup-credentials path] [--restore-state path] [--restore-credentials path]
+检查本地 SQLite 数据库，执行 WAL checkpoint，并可进行在线备份或恢复。
+.TP
+.B health
+输出本地守护进程健康状态 JSON。
+.TP
+.B readiness
+输出本地守护进程是否可服务的 JSON。
+.TP
+.B metrics
+输出本地运行指标 JSON。
+.TP
+.B reload
+请求本地守护进程重新加载远程会话配置。
 .TP
 .B daemon status
 检查本地守护进程。

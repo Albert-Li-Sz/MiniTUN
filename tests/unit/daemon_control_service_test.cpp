@@ -3,6 +3,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <sys/stat.h>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -91,9 +92,22 @@ class DaemonControlServiceTest : public testing::Test {
         ASSERT_TRUE(opened_credentials) << opened_credentials.error();
         credentials_ = std::move(*opened_credentials);
 
-        service_ = std::make_unique<ControlService>(*repository_, *credentials_, [this] {
-            notifications_.fetch_add(1U, std::memory_order_relaxed);
-        });
+        service_ = std::make_unique<ControlService>(
+            *repository_, *credentials_,
+            [this] { notifications_.fetch_add(1U, std::memory_order_relaxed); },
+            [] {
+                return ipc::Json{{"sessions", ipc::Json{{"active", 2}}},
+                                 {"workers", ipc::Json{{"idle", 3}, {"active", 1}}},
+                                 {"connections", ipc::Json{{"active", 1}, {"pending", 0}}},
+                                 {"reconnects", 4},
+                                 {"quota_rejections", 0},
+                                 {"errors", 0},
+                                 {"throughput", ipc::Json{{"bytes_in", 0}, {"bytes_out", 0}}}};
+            },
+            [this] {
+                reloads_.fetch_add(1U, std::memory_order_relaxed);
+                return common::Result<void>::success();
+            });
         const auto registered = service_->register_handlers(dispatcher_);
         ASSERT_TRUE(registered) << registered.error();
     }
@@ -105,6 +119,7 @@ class DaemonControlServiceTest : public testing::Test {
     std::unique_ptr<ControlService> service_;
     ipc::Dispatcher dispatcher_;
     std::atomic_size_t notifications_{0U};
+    std::atomic_size_t reloads_{0U};
 };
 
 TEST_F(DaemonControlServiceTest, NotifiesOnlyAfterSuccessfulStateMutations) {
@@ -148,7 +163,7 @@ TEST_F(DaemonControlServiceTest, NotifiesOnlyAfterSuccessfulStateMutations) {
 }
 
 TEST_F(DaemonControlServiceTest, RegistersCompleteStageFourMethodSet) {
-    EXPECT_EQ(dispatcher_.size(), 11U);
+    EXPECT_EQ(dispatcher_.size(), 16U);
 
     const auto daemon_status = dispatch(dispatcher_, "daemon.status", ipc::Json::object());
     ASSERT_TRUE(daemon_status.ok());
@@ -158,6 +173,72 @@ TEST_F(DaemonControlServiceTest, RegistersCompleteStageFourMethodSet) {
     ASSERT_TRUE(status.ok());
     EXPECT_EQ(require_result(status).at("servers").at("total"), 0);
     EXPECT_EQ(require_result(status).at("tunnels").at("total"), 0);
+    EXPECT_EQ(require_result(status).at("runtime").at("sessions").at("active"), 2);
+}
+
+TEST_F(DaemonControlServiceTest, ExposesHealthReadinessMetricsDoctorAndReload) {
+    const auto health = dispatch(dispatcher_, "health", ipc::Json::object());
+    ASSERT_TRUE(health.ok()) << *health.error();
+    EXPECT_EQ(require_result(health).at("status"), "ok");
+    EXPECT_TRUE(require_result(health).at("state_db").get<bool>());
+    EXPECT_TRUE(require_result(health).at("credentials_db").get<bool>());
+
+    const auto readiness = dispatch(dispatcher_, "readiness", ipc::Json::object());
+    ASSERT_TRUE(readiness.ok()) << *readiness.error();
+    EXPECT_TRUE(require_result(readiness).at("ready").get<bool>());
+    EXPECT_TRUE(require_result(readiness).at("reason").is_null());
+
+    const auto metrics = dispatch(dispatcher_, "metrics", ipc::Json::object());
+    ASSERT_TRUE(metrics.ok()) << *metrics.error();
+    EXPECT_EQ(require_result(metrics).at("sessions").at("active"), 2);
+    EXPECT_EQ(require_result(metrics).at("workers").at("idle"), 3);
+    EXPECT_EQ(require_result(metrics).at("reconnects"), 4);
+
+    const auto doctor = dispatch(dispatcher_, "doctor", ipc::Json::object());
+    ASSERT_TRUE(doctor.ok()) << *doctor.error();
+    EXPECT_TRUE(require_result(doctor).at("ok").get<bool>());
+    EXPECT_TRUE(require_result(doctor).at("state_db").at("schema_valid").get<bool>());
+    EXPECT_TRUE(require_result(doctor).at("credentials_db").at("integrity_ok").get<bool>());
+
+    EXPECT_EQ(reloads_.load(std::memory_order_relaxed), 0U);
+    const auto reload = dispatch(dispatcher_, "reload", ipc::Json::object());
+    ASSERT_TRUE(reload.ok()) << *reload.error();
+    EXPECT_TRUE(require_result(reload).at("reloaded").get<bool>());
+    EXPECT_EQ(reloads_.load(std::memory_order_relaxed), 1U);
+}
+
+TEST_F(DaemonControlServiceTest, PrevalidatesBothRestoreSourcesBeforeChangingLiveState) {
+    auto live_client_id = repository_->client_id();
+    ASSERT_TRUE(live_client_id) << live_client_id.error();
+
+    TemporaryDatabaseFile restore_state_file;
+    auto restore_repository = storage::StateRepository::open(restore_state_file.path_string());
+    ASSERT_TRUE(restore_repository) << restore_repository.error();
+    auto restore_client_id = (*restore_repository)->client_id();
+    ASSERT_TRUE(restore_client_id) << restore_client_id.error();
+    ASSERT_NE(*restore_client_id, *live_client_id);
+    const auto state_backup = restore_state_file.directory() / "restore-state.db";
+    ASSERT_TRUE((*restore_repository)->backup_to(state_backup.string()));
+
+    TemporaryDatabaseFile invalid_credentials_file;
+    {
+        NativeSqliteDatabase invalid_credentials{invalid_credentials_file.path()};
+        invalid_credentials.execute("CREATE TABLE unrelated(value TEXT NOT NULL)");
+    }
+    ASSERT_EQ(::chmod(invalid_credentials_file.path().c_str(), 0600), 0);
+
+    const auto restored =
+        dispatch(dispatcher_, "doctor",
+                 ipc::Json{{"restore_state", state_backup.string()},
+                           {"restore_credentials", invalid_credentials_file.path_string()}});
+    ASSERT_FALSE(restored.ok());
+    ASSERT_NE(restored.error(), nullptr);
+    EXPECT_EQ(restored.error()->code(), common::ErrorCode::unsupported_version);
+    EXPECT_EQ(notifications_.load(std::memory_order_relaxed), 0U);
+
+    auto current_client_id = repository_->client_id();
+    ASSERT_TRUE(current_client_id) << current_client_id.error();
+    EXPECT_EQ(*current_client_id, *live_client_id);
 }
 
 TEST_F(DaemonControlServiceTest, PersistsServerLoginAndOfflineTunnelWithoutLeakingToken) {

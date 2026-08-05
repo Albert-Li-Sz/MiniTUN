@@ -53,6 +53,22 @@ common::Result<int> StateRepository::schema_version() const { return database_->
 
 common::Result<void> StateRepository::checkpoint() { return database_->checkpoint(); }
 
+common::Result<DatabaseDiagnostics> StateRepository::diagnostics() const {
+    return database_->diagnostics();
+}
+
+common::Result<void> StateRepository::backup_to(const std::string_view destination) const {
+    return database_->backup_to(destination);
+}
+
+common::Result<void> StateRepository::validate_restore_source(const std::string_view source) const {
+    return database_->validate_restore_source(source);
+}
+
+common::Result<void> StateRepository::restore_from(const std::string_view source) const {
+    return database_->restore_from(source);
+}
+
 common::Result<common::Id> StateRepository::client_id() {
     auto transaction = database_->begin_transaction();
     if (!transaction) {

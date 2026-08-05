@@ -28,6 +28,8 @@ MiniTun 使用 C++20 开发，可将公网服务器上的 TCP 端口转发到内
   TCP 中继采用固定 16 KiB 双向缓冲和写入背压。
 - **稳定的连接生命周期**：支持心跳、指数退避重连、TCP 半关闭、空闲超时、会话代次
   隔离和有期限的优雅退出。
+- **生产运维工具**：提供本地 `health`、`readiness`、`metrics`、`reload` 与
+  `doctor` 命令，支持健康探测、运行指标、热加载、SQLite 在线备份和诊断。
 - **多平台交付**：提供独立 Client/Server DEB 与 RPM，以及集成
   UCI 和 procd 的 OpenWrt APK；OpenWrt 产物覆盖 x86_64、ARM、MIPS 与 RISC-V。
 - **持续验证**：CI 覆盖 GCC、Clang、完整 CTest、ASan、UBSan、TSan、libFuzzer，
@@ -78,20 +80,20 @@ Debian/Ubuntu：
 
 ```bash
 # 公网服务器
-sudo apt install ./minitun-server-0.2.4-linux-amd64.deb
+sudo apt install ./minitun-server-0.3.0-linux-amd64.deb
 
 # 内网客户端
-sudo apt install ./minitun-client-0.2.4-linux-amd64.deb
+sudo apt install ./minitun-client-0.3.0-linux-amd64.deb
 ```
 
 Fedora/RHEL 系：
 
 ```bash
 # 公网服务器
-sudo dnf install ./minitun-server-0.2.4-linux-x86_64.rpm
+sudo dnf install ./minitun-server-0.3.0-linux-x86_64.rpm
 
 # 内网客户端
-sudo dnf install ./minitun-client-0.2.4-linux-x86_64.rpm
+sudo dnf install ./minitun-client-0.3.0-linux-x86_64.rpm
 ```
 
 OpenWrt 25.12 使用 APK v3。先查看设备的包架构，再安装同架构的
@@ -101,16 +103,16 @@ OpenWrt 25.12 使用 APK v3。先查看设备的包架构，再安装同架构�
 apk --print-arch
 
 # 公网设备；以 aarch64_generic 为例
-grep 'minitun-server-0.2.4-openwrt-25.12.5-aarch64_generic.apk$' \
+grep 'minitun-server-0.3.0-openwrt-25.12.5-aarch64_generic.apk$' \
   SHA256SUMS | sha256sum -c -
 apk add --allow-untrusted \
-  ./minitun-server-0.2.4-openwrt-25.12.5-aarch64_generic.apk
+  ./minitun-server-0.3.0-openwrt-25.12.5-aarch64_generic.apk
 
 # 内网设备
-grep 'minitun-client-0.2.4-openwrt-25.12.5-aarch64_generic.apk$' \
+grep 'minitun-client-0.3.0-openwrt-25.12.5-aarch64_generic.apk$' \
   SHA256SUMS | sha256sum -c -
 apk add --allow-untrusted \
-  ./minitun-client-0.2.4-openwrt-25.12.5-aarch64_generic.apk
+  ./minitun-client-0.3.0-openwrt-25.12.5-aarch64_generic.apk
 ```
 
 GitHub Release 中的 APK 是独立发布产物，不属于 OpenWrt 官方签名软件源，
@@ -270,6 +272,11 @@ minitun tun add primary 8080 6001 \
 
 ```bash
 minitun status
+minitun health
+minitun readiness
+minitun metrics
+minitun doctor --json --checkpoint
+minitun reload
 minitun server list
 minitun server inspect primary --json
 minitun tun list primary

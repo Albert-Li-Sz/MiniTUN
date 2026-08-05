@@ -9,6 +9,7 @@ Type=simple
 User=minitun
 Group=minitun
 ExecStart=/usr/libexec/minitun/minitund --foreground --database /var/lib/minitun/state.db --credentials /var/lib/minitun/credentials.db --socket /run/minitun/minitun.sock
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=2s
 RuntimeDirectory=minitun

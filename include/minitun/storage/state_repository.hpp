@@ -33,6 +33,10 @@ class StateRepository final {
     [[nodiscard]] common::Result<Transaction> begin_transaction();
     [[nodiscard]] common::Result<int> schema_version() const;
     [[nodiscard]] common::Result<void> checkpoint();
+    [[nodiscard]] common::Result<DatabaseDiagnostics> diagnostics() const;
+    [[nodiscard]] common::Result<void> backup_to(std::string_view destination) const;
+    [[nodiscard]] common::Result<void> validate_restore_source(std::string_view source) const;
+    [[nodiscard]] common::Result<void> restore_from(std::string_view source) const;
 
     /// Returns the stable daemon identity, creating it transactionally once.
     [[nodiscard]] common::Result<common::Id> client_id();

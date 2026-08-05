@@ -1,4 +1,4 @@
-.TH MINITUN-SERVER 8 "2026-08-04" "MiniTun 0.2.4" "系统管理"
+.TH MINITUN-SERVER 8 "2026-08-04" "MiniTun 0.3.0" "系统管理"
 .SH NAME
 minitun-server \- MiniTun 公网 TCP 隧道服务端
 .SH 用法
@@ -40,6 +40,9 @@ TLS 控制监听器。
 .TP
 .BI --max-tunnels-per-client " count"
 单个客户端注册的隧道上限。默认为 128。
+.TP
+.BI --max-total-tunnels " count"
+全部客户端注册的隧道上限。默认为 10000。
 .TP
 .BI --max-connections-per-client " count"
 单个客户端的活动公网中继上限。默认为 10000。
@@ -93,6 +96,16 @@ Asio 工作线程数，
 .TP
 .B --version
 打印版本信息后退出。
+.SH 信号
+.TP
+.B SIGHUP
+重新读取 --tls-cert、--tls-key 和 --token-file，并在验证成功后应用新的 TLS 凭据。
+监听地址、端口和白名单保持不变；现有控制会话和空闲 Worker 会被请求停止，客户端
+重连后使用新凭据，活动中继保留旧凭据快照直至连接结束。读取或验证失败时保留当前
+配置并记录错误。
+.TP
+.B SIGINT, SIGTERM
+停止公网监听器和会话，拒绝新的中继，并按 --shutdown-timeout 优雅排空活动中继。
 .SH 文件
 .TP
 .I /etc/minitun-server/server.crt

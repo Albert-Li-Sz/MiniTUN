@@ -28,11 +28,36 @@ namespace {
 TEST(ServerOptionsTest, AllowsEveryValidTcpPortByDefault) {
     const ServerOptions options;
     EXPECT_EQ(options.allowed_ports, "1-65535");
+    EXPECT_EQ(options.max_total_tunnels, 10'000U);
 
     const auto allowed = common::PortRange::parse(options.allowed_ports);
     ASSERT_TRUE(allowed) << allowed.error();
     EXPECT_TRUE(allowed->contains(1U));
     EXPECT_TRUE(allowed->contains(65'535U));
+}
+
+TEST(TunnelRegistryTest, EnforcesGlobalTunnelLimitAcrossClients) {
+    asio::io_context io_context;
+    const std::uint16_t first_port = available_port(io_context);
+    const std::uint16_t second_port = available_port(io_context);
+    auto allowed = common::PortRange::parse("1-65535");
+    ASSERT_TRUE(allowed) << allowed.error();
+    TunnelRegistry registry{io_context.get_executor(), std::move(*allowed), 4U, 1U};
+
+    const std::string first_client = generated_id(common::IdKind::client);
+    const std::string second_client = generated_id(common::IdKind::client);
+    const std::string first_tunnel = generated_id(common::IdKind::tunnel);
+    const std::string second_tunnel = generated_id(common::IdKind::tunnel);
+    ASSERT_TRUE(
+        registry.register_tunnel({first_client, 1U, first_tunnel, "127.0.0.1", first_port}));
+
+    const auto rejected =
+        registry.register_tunnel({second_client, 1U, second_tunnel, "127.0.0.1", second_port});
+    ASSERT_FALSE(rejected);
+    EXPECT_EQ(rejected.error().code(), common::ErrorCode::resource_exhausted);
+    registry.remove_client(first_client);
+    EXPECT_TRUE(
+        registry.register_tunnel({second_client, 1U, second_tunnel, "127.0.0.1", second_port}));
 }
 
 TEST(TunnelRegistryTest, EnforcesAllowlistOwnershipLimitsAndIdempotentRemoval) {

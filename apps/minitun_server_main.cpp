@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <exception>
+#include <functional>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -79,12 +80,26 @@ int run_server(const minitun::server::ServerOptions& options,
                                                      .server_id = (*server)->server_id(),
                                                      .remote_endpoint = options.listen_endpoint});
 
-    asio::signal_set signals{io_context, SIGINT, SIGTERM};
-    signals.async_wait([&server](const asio::error_code& error, int) {
-        if (!error) {
-            (*server)->stop();
+    asio::signal_set signals{io_context, SIGINT, SIGTERM, SIGHUP};
+    auto signal_handler = std::make_shared<std::function<void(const asio::error_code&, int)>>();
+    *signal_handler = [&server, &signals, signal_handler](const asio::error_code& error,
+                                                          const int signal_number) {
+        if (error) {
+            return;
         }
-    });
+        if (signal_number == SIGHUP) {
+            auto reloaded = (*server)->reload();
+            if (!reloaded) {
+                minitun::common::log_error(
+                    "TLS credential reload failed",
+                    {.component = "server", .error_code = reloaded.error().code()});
+            }
+            signals.async_wait(*signal_handler);
+            return;
+        }
+        (*server)->stop();
+    };
+    signals.async_wait(*signal_handler);
 
     std::vector<std::jthread> workers;
     workers.reserve(io_threads > 0U ? io_threads - 1U : 0U);
@@ -174,6 +189,10 @@ int main(int argc, char** argv) {
     app.add_option("--max-tunnels-per-client", options.max_tunnels_per_client,
                    "Maximum registered tunnels per authenticated client")
         ->check(CLI::Range(1U, 4'096U))
+        ->capture_default_str();
+    app.add_option("--max-total-tunnels", options.max_total_tunnels,
+                   "Maximum registered tunnels across all authenticated clients")
+        ->check(CLI::Range(1U, 100'000U))
         ->capture_default_str();
     app.add_option("--max-connections-per-client", options.max_connections_per_client,
                    "Maximum concurrent public relays per authenticated client")

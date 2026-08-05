@@ -20,6 +20,13 @@ minitun tun inspect <tun-id-or-name> [--json]
 minitun tun remove <tun-id-or-name>
 
 minitun status
+minitun doctor [--json] [--checkpoint]
+               [--backup-state <path>] [--backup-credentials <path>]
+               [--restore-state <path>] [--restore-credentials <path>]
+minitun health
+minitun readiness
+minitun metrics
+minitun reload
 minitun daemon status
 minitun version
 minitun help
@@ -31,6 +38,7 @@ minitun help
 --socket <path>   本地 minitund 套接字（默认 /run/minitun/minitun.sock）
 ```
 
+`status --json`、`doctor --json`、`health`、`readiness`、`metrics` 和 `reload` 输出 JSON 对象；
 `list --json` 输出 JSON 数组，`inspect --json` 输出单个 JSON 对象。服务器 JSON
 只包含 `credential_configured`，绝不暴露凭据引用或 Token。列表和详情命令不会
 返回已经删除的墓碑记录。
@@ -90,6 +98,47 @@ minitun tun add primary 8080 6001 \
 控制面提交后会立即唤醒对应服务器会话并注销公网监听器，心跳同步只作为兜底；删除
 完成后到注销之间的新连接不会再转发到本地目标。`server remove` 同样先提交状态删除，
 再清理独立凭据库，避免活动状态引用已经删除的 Token。
+
+## 本地运维命令
+
+`health` 和 `readiness` 用于服务管理和本地探测。二者只访问本地 Unix 套接字，
+不会增加公网监听面：
+
+```bash
+minitun health
+minitun readiness
+```
+
+`metrics` 返回本地运行指标，包括活动会话、空闲与活动 Worker、连接配额、重连次数、
+持久化/协议错误计数、Worker 配额拒绝次数和成功中继的双向字节数。客户端侧没有公网
+排队语义，因此 `connections.pending` 当前为 `0`：
+
+```bash
+minitun metrics
+minitun status --json
+```
+
+`reload` 会请求 `minitund` 重新创建远程会话，使 CA、Token 和会话配置在不重启
+守护进程的情况下生效；已建立的中继按优雅关闭期限排空：
+
+```bash
+minitun reload
+```
+
+`doctor` 用于本地 SQLite 诊断、WAL checkpoint、在线备份和受控恢复。备份与恢复路径
+必须位于真实、私有且受保护的目录中：
+
+```bash
+minitun doctor --json --checkpoint
+minitun doctor --json \
+  --backup-state /var/backups/minitun/state.db \
+  --backup-credentials /var/backups/minitun/credentials.db
+```
+
+恢复操作会在线替换相应数据库内容，并唤醒状态同步。同时恢复两个数据库时，守护进程
+会在修改任一实时数据库前完整验证两个来源；每个 SQLite 文件独立原子替换，但两个文件
+之间不构成同一数据库事务。生产恢复前应同时备份 `state.db` 与 `credentials.db`，并使用
+同一时间点生成的成对备份，避免状态记录和凭据引用不一致。
 
 ## 退出码
 

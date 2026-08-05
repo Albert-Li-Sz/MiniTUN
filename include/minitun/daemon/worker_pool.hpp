@@ -50,6 +50,8 @@ struct WorkerPoolOptions final {
     std::chrono::seconds relay_inactivity_timeout{300};
     std::chrono::seconds graceful_shutdown_timeout{10};
     bool insecure_skip_verify{false};
+    std::function<void()> quota_rejection_handler;
+    std::function<void(std::uint64_t bytes_in, std::uint64_t bytes_out)> relay_stats_handler;
 };
 
 class WorkerPool final {

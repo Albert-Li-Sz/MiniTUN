@@ -1,4 +1,4 @@
-.TH MINITUND 8 "2026-08-04" "MiniTun 0.2.4" "系统管理"
+.TH MINITUND 8 "2026-08-04" "MiniTun 0.3.0" "系统管理"
 .SH NAME
 minitund \- MiniTun 客户端守护进程
 .SH 用法
@@ -54,6 +54,16 @@ Asio 工作线程数，
 .TP
 .B --version
 打印版本信息后退出。
+.SH 信号
+.TP
+.B SIGHUP
+热加载客户端远程会话。守护进程重新创建各服务器会话，在下一次握手时重新读取
+--tls-ca 指定的 CA 和凭据；旧 Worker 按 --shutdown-timeout 优雅排空。Unix 套接字、
+数据库路径、I/O 线程数以及资源上限不会改变。也可以使用
+.BR "minitun reload" .
+.TP
+.B SIGINT, SIGTERM
+停止 IPC 和远程会话，并按 --shutdown-timeout 优雅排空活动中继。
 .SH 文件
 .TP
 .I /run/minitun/minitun.sock
