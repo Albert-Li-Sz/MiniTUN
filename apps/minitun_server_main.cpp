@@ -82,8 +82,9 @@ int run_server(const minitun::server::ServerOptions& options,
 
     asio::signal_set signals{io_context, SIGINT, SIGTERM, SIGHUP};
     auto signal_handler = std::make_shared<std::function<void(const asio::error_code&, int)>>();
-    *signal_handler = [&server, &signals, signal_handler](const asio::error_code& error,
-                                                          const int signal_number) {
+    const std::weak_ptr weak_signal_handler = signal_handler;
+    *signal_handler = [&server, &signals, weak_signal_handler](const asio::error_code& error,
+                                                               const int signal_number) {
         if (error) {
             return;
         }
@@ -94,7 +95,9 @@ int run_server(const minitun::server::ServerOptions& options,
                     "TLS credential reload failed",
                     {.component = "server", .error_code = reloaded.error().code()});
             }
-            signals.async_wait(*signal_handler);
+            if (const auto handler = weak_signal_handler.lock()) {
+                signals.async_wait(*handler);
+            }
             return;
         }
         (*server)->stop();

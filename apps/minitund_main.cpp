@@ -203,15 +203,18 @@ int run_daemon_impl(const std::string& socket_path, const std::string& database_
     };
     asio::signal_set signals{io_context, SIGINT, SIGTERM, SIGHUP};
     auto signal_handler = std::make_shared<std::function<void(const asio::error_code&, int)>>();
-    *signal_handler = [&ipc_server, &server_manager, &signals,
-                       signal_handler](const asio::error_code& error, const int signal_number) {
+    const std::weak_ptr weak_signal_handler = signal_handler;
+    *signal_handler = [&ipc_server, &server_manager, &signals, weak_signal_handler](
+                          const asio::error_code& error, const int signal_number) {
         if (error) {
             return;
         }
         if (signal_number == SIGHUP) {
             (*server_manager)->reload();
             minitun::common::log_info("configuration reload requested");
-            signals.async_wait(*signal_handler);
+            if (const auto handler = weak_signal_handler.lock()) {
+                signals.async_wait(*handler);
+            }
             return;
         }
         ipc_server.stop();
