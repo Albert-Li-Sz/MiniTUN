@@ -1,0 +1,20 @@
+# Minimal MiniTun client-daemon image. The context must contain the minitun
+# and minitund binaries for the target architecture (produced by the
+# cross-compiled DEB/RPM matrix); no compilation happens in this image.
+FROM debian:stable-slim
+
+RUN apt-get update \
+	&& apt-get install -y --no-install-recommends ca-certificates \
+	&& rm -rf /var/lib/apt/lists/* \
+	&& mkdir -p /var/lib/minitun /run/minitun \
+	&& chown -R 65532:65532 /var/lib/minitun /run/minitun
+
+COPY minitun /usr/bin/minitun
+COPY minitund /usr/libexec/minitun/minitund
+
+USER 65532:65532
+
+ENTRYPOINT ["minitund", "--foreground"]
+CMD ["--database", "/var/lib/minitun/state.db", \
+	"--credentials", "/var/lib/minitun/credentials.db", \
+	"--socket", "/run/minitun/minitun.sock"]

@@ -1,9 +1,10 @@
 #!/bin/sh
 set -eu
 
-package_directory=${1:?usage: smoke-rpm.sh PACKAGE_DIRECTORY}
-client_package=$(find "$package_directory" -maxdepth 1 -type f -name 'minitun-client-*.x86_64.rpm')
-server_package=$(find "$package_directory" -maxdepth 1 -type f -name 'minitun-server-*.x86_64.rpm')
+package_directory=${1:?usage: smoke-rpm.sh PACKAGE_DIRECTORY [ARCH]}
+expected_arch=${2:-x86_64}
+client_package=$(find "$package_directory" -maxdepth 1 -type f -name "minitun-client-*.${expected_arch}.rpm")
+server_package=$(find "$package_directory" -maxdepth 1 -type f -name "minitun-server-*.${expected_arch}.rpm")
 [ -n "$client_package" ]
 [ -n "$server_package" ]
 

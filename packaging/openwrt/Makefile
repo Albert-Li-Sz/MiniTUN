@@ -4,6 +4,15 @@ PKG_NAME:=minitun
 PKG_VERSION:=0.3.0
 PKG_RELEASE:=1
 
+# Standard OpenWrt source tarball. Releases attach minitun-$(PKG_VERSION).tar.gz
+# (built deterministically with `git archive --format=tar.gz`) to the matching
+# GitHub Release; the SHA-256 below must match that asset exactly. Unreleased
+# development builds generate the tarball locally and patch PKG_HASH through
+# packaging/openwrt/build-sdk.sh.
+PKG_SOURCE:=minitun-$(PKG_VERSION).tar.gz
+PKG_SOURCE_URL:=https://github.com/LMTINSUZHOU/MiniTUN/releases/download/v$(PKG_VERSION)/
+PKG_HASH:=0e8b6afa20d9e6ed2b69418356bc1f6b91026821ce2d41e78638d9ec315cb02e
+
 PKG_LICENSE:=MIT
 PKG_LICENSE_FILES:=LICENSE
 PKG_MAINTAINER:=MiniTun maintainers
@@ -104,24 +113,12 @@ $(eval $(call Download,nlohmann-json))
 $(eval $(call Download,spdlog))
 $(eval $(call Download,asio))
 
+# Build/Prepare/Default unpacks PKG_SOURCE into $(PKG_BUILD_DIR); this hook
+# additionally unpacks the pinned third-party header dependencies that are not
+# available as OpenWrt feed packages, matching CMake's FetchContent versions so
+# the offline build is reproducible.
 define Build/Prepare
-	@if [ -z "$(MINITUN_SOURCE_DIR)" ] || \
-		[ ! -f "$(MINITUN_SOURCE_DIR)/CMakeLists.txt" ]; then \
-		echo "MINITUN_SOURCE_DIR must point to a MiniTun source checkout" >&2; \
-		exit 1; \
-	fi
-	rm -rf $(PKG_BUILD_DIR)
-	$(INSTALL_DIR) $(PKG_BUILD_DIR)
-	$(CP) \
-		$(MINITUN_SOURCE_DIR)/CMakeLists.txt \
-		$(MINITUN_SOURCE_DIR)/LICENSE \
-		$(MINITUN_SOURCE_DIR)/README.md \
-		$(MINITUN_SOURCE_DIR)/apps \
-		$(MINITUN_SOURCE_DIR)/cmake \
-		$(MINITUN_SOURCE_DIR)/include \
-		$(MINITUN_SOURCE_DIR)/packaging \
-		$(MINITUN_SOURCE_DIR)/src \
-		$(PKG_BUILD_DIR)/
+	$(call Build/Prepare/Default)
 	$(INSTALL_DIR) \
 		$(PKG_BUILD_DIR)/third_party/cli11 \
 		$(PKG_BUILD_DIR)/third_party/nlohmann-json \

@@ -1,12 +1,13 @@
 #!/bin/sh
 set -eu
 
-package_directory=${1:?usage: verify-rpm.sh PACKAGE_DIRECTORY}
+package_directory=${1:?usage: verify-rpm.sh PACKAGE_DIRECTORY [ARCH]}
+expected_arch=${2:-x86_64}
 package_count=$(find "$package_directory" -maxdepth 1 -type f -name '*.rpm' | wc -l | tr -d ' ')
 [ "$package_count" -eq 2 ]
 
-client_package=$(find "$package_directory" -maxdepth 1 -type f -name 'minitun-client-*.x86_64.rpm')
-server_package=$(find "$package_directory" -maxdepth 1 -type f -name 'minitun-server-*.x86_64.rpm')
+client_package=$(find "$package_directory" -maxdepth 1 -type f -name "minitun-client-*.${expected_arch}.rpm")
+server_package=$(find "$package_directory" -maxdepth 1 -type f -name "minitun-server-*.${expected_arch}.rpm")
 [ -n "$client_package" ]
 [ -n "$server_package" ]
 
@@ -17,8 +18,8 @@ rpm -qlp "$server_package"
 
 [ "$(rpm -qp --queryformat '%{NAME}' "$client_package")" = minitun-client ]
 [ "$(rpm -qp --queryformat '%{NAME}' "$server_package")" = minitun-server ]
-[ "$(rpm -qp --queryformat '%{ARCH}' "$client_package")" = x86_64 ]
-[ "$(rpm -qp --queryformat '%{ARCH}' "$server_package")" = x86_64 ]
+[ "$(rpm -qp --queryformat '%{ARCH}' "$client_package")" = "$expected_arch" ]
+[ "$(rpm -qp --queryformat '%{ARCH}' "$server_package")" = "$expected_arch" ]
 
 rpm -qlp "$client_package" | grep -qx '/usr/bin/minitun'
 rpm -qlp "$client_package" | grep -qx '/usr/libexec/minitun/minitund'

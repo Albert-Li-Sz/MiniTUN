@@ -1,12 +1,13 @@
 #!/bin/sh
 set -eu
 
-package_directory=${1:?usage: verify-deb.sh PACKAGE_DIRECTORY}
+package_directory=${1:?usage: verify-deb.sh PACKAGE_DIRECTORY [ARCH]}
+expected_arch=${2:-amd64}
 package_count=$(find "$package_directory" -maxdepth 1 -type f -name '*.deb' | wc -l | tr -d ' ')
 [ "$package_count" -eq 2 ]
 
-client_package=$(find "$package_directory" -maxdepth 1 -type f -name 'minitun-client_*_amd64.deb')
-server_package=$(find "$package_directory" -maxdepth 1 -type f -name 'minitun-server_*_amd64.deb')
+client_package=$(find "$package_directory" -maxdepth 1 -type f -name "minitun-client_*_${expected_arch}.deb")
+server_package=$(find "$package_directory" -maxdepth 1 -type f -name "minitun-server_*_${expected_arch}.deb")
 [ -n "$client_package" ]
 [ -n "$server_package" ]
 
@@ -17,8 +18,8 @@ dpkg-deb -c "$server_package"
 
 [ "$(dpkg-deb -f "$client_package" Package)" = minitun-client ]
 [ "$(dpkg-deb -f "$server_package" Package)" = minitun-server ]
-[ "$(dpkg-deb -f "$client_package" Architecture)" = amd64 ]
-[ "$(dpkg-deb -f "$server_package" Architecture)" = amd64 ]
+[ "$(dpkg-deb -f "$client_package" Architecture)" = "$expected_arch" ]
+[ "$(dpkg-deb -f "$server_package" Architecture)" = "$expected_arch" ]
 
 client_contents=$(dpkg-deb --fsys-tarfile "$client_package" | tar -tf -)
 server_contents=$(dpkg-deb --fsys-tarfile "$server_package" | tar -tf -)

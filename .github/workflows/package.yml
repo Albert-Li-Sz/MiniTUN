@@ -8,6 +8,11 @@ on:
         required: false
         type: string
         default: ""
+      publish_oci:
+        description: Build and publish OCI images to GHCR
+        required: false
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       package_version:
@@ -15,6 +20,11 @@ on:
         required: false
         type: string
         default: ""
+      publish_oci:
+        description: Build and publish OCI images to GHCR
+        required: false
+        type: boolean
+        default: false
   push:
     branches:
       - main
@@ -31,6 +41,8 @@ on:
 
 permissions:
   contents: read
+  # GITHUB_TOKEN pushes OCI images to ghcr.io in the oci job.
+  packages: write
 
 concurrency:
   group: packages-${{ github.workflow }}-${{ github.ref }}
@@ -84,14 +96,52 @@ jobs:
           echo "package_version=${package_version}" >>"${GITHUB_OUTPUT}"
           echo "artifact_version=${artifact_version}" >>"${GITHUB_OUTPUT}"
 
-  deb-amd64:
-    name: DEB amd64
+  deb:
+    name: DEB ${{ matrix.name }}
     needs: resolve-version
-    runs-on: ubuntu-22.04
-    timeout-minutes: 60
+    runs-on: ${{ matrix.runs_on }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - name: amd64
+            deb_arch: amd64
+            docker_platform: linux/amd64
+            docker_image: ubuntu:22.04
+            runs_on: ubuntu-22.04
+            native: true
+          - name: arm64
+            deb_arch: arm64
+            triplet: aarch64-linux-gnu
+            system_processor: aarch64
+            docker_platform: linux/arm64
+            docker_image: ubuntu:24.04
+            runs_on: ubuntu-24.04
+            native: false
+          - name: armhf
+            deb_arch: armhf
+            triplet: arm-linux-gnueabihf
+            system_processor: armv7l
+            docker_platform: linux/arm/v7
+            docker_image: ubuntu:24.04
+            runs_on: ubuntu-24.04
+            native: false
+          - name: riscv64
+            deb_arch: riscv64
+            triplet: riscv64-linux-gnu
+            system_processor: riscv64
+            docker_platform: linux/riscv64
+            docker_image: ubuntu:24.04
+            runs_on: ubuntu-24.04
+            native: false
     env:
       PACKAGE_VERSION: ${{ needs.resolve-version.outputs.package_version }}
       ARTIFACT_VERSION: ${{ needs.resolve-version.outputs.artifact_version }}
+      DEB_ARCH: ${{ matrix.deb_arch }}
+      TRIPLET: ${{ matrix.triplet }}
+      SYSTEM_PROCESSOR: ${{ matrix.system_processor }}
 
     steps:
       - name: Check out source
@@ -116,33 +166,55 @@ jobs:
       - name: Install DEB build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends --yes \
-            clang \
-            cmake \
-            dpkg-dev \
-            fakeroot \
-            file \
-            git \
-            libasio-dev \
-            libboost-system-dev \
-            libcli11-dev \
-            libgtest-dev \
-            libspdlog-dev \
-            libsqlite3-dev \
-            libssl-dev \
-            ninja-build \
-            nlohmann-json3-dev \
-            openssl \
-            pkg-config \
-            python3
+          if [[ "${{ matrix.native }}" == "true" ]]; then
+            sudo apt-get install --no-install-recommends --yes \
+              clang \
+              cmake \
+              dpkg-dev \
+              fakeroot \
+              file \
+              git \
+              libasio-dev \
+              libboost-system-dev \
+              libcli11-dev \
+              libgtest-dev \
+              libspdlog-dev \
+              libsqlite3-dev \
+              libssl-dev \
+              ninja-build \
+              nlohmann-json3-dev \
+              openssl \
+              pkg-config \
+              python3
+          else
+            sudo dpkg --add-architecture "${DEB_ARCH}"
+            if [[ "${DEB_ARCH}" == "riscv64" ]]; then
+              echo "deb [arch=riscv64] http://ports.ubuntu.com/ubuntu-ports noble main universe" | \
+                sudo tee /etc/apt/sources.list.d/riscv64.list >/dev/null
+            fi
+            sudo apt-get install --no-install-recommends --yes \
+              "gcc-${TRIPLET}" \
+              "g++-${TRIPLET}" \
+              "libssl-dev:${DEB_ARCH}" \
+              "libsqlite3-dev:${DEB_ARCH}" \
+              cmake \
+              dpkg-dev \
+              fakeroot \
+              file \
+              git \
+              ninja-build \
+              pkg-config \
+              python3
+          fi
 
       - name: Restore fetched dependencies
         uses: actions/cache@v6
         with:
           path: ~/.cache/minitun-fetchcontent/package-deb
-          key: package-deb-fetchcontent-${{ hashFiles('cmake/Dependencies.cmake') }}
+          key: package-deb-fetchcontent-${{ matrix.deb_arch }}-${{ hashFiles('cmake/Dependencies.cmake') }}
 
-      - name: Configure DEB build
+      - name: Configure DEB build (native)
+        if: matrix.native == 'true'
         env:
           CC: clang
           CXX: clang++
@@ -157,12 +229,39 @@ jobs:
             "${version_arguments[@]}" \
             2>&1 | tee ci-logs/deb/configure.log
 
+      - name: Configure DEB build (cross)
+        if: matrix.native != 'true'
+        run: |
+          mkdir -p ci-logs/deb
+          version_arguments=()
+          if [[ -n "${PACKAGE_VERSION}" ]]; then
+            version_arguments+=("-DMINITUN_PACKAGE_VERSION=${PACKAGE_VERSION}")
+          fi
+          cmake --preset package-deb \
+            -DFETCHCONTENT_BASE_DIR="${HOME}/.cache/minitun-fetchcontent/package-deb" \
+            -DCMAKE_SYSTEM_NAME=Linux \
+            -DCMAKE_SYSTEM_PROCESSOR="${SYSTEM_PROCESSOR}" \
+            -DCMAKE_C_COMPILER="${TRIPLET}-gcc" \
+            -DCMAKE_CXX_COMPILER="${TRIPLET}-g++" \
+            -DCMAKE_FIND_ROOT_PATH=/usr \
+            -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER \
+            -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY \
+            -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY \
+            -DCPACK_DEBIAN_PACKAGE_ARCHITECTURE="${DEB_ARCH}" \
+            -DCPACK_DEBIAN_PACKAGE_SHLIBDEPS=OFF \
+            -DCPACK_DEBIAN_CLIENT_PACKAGE_DEPENDS="systemd, libssl3t64 | libssl3, libsqlite3-0, libstdc++6, libgcc-s1, libatomic1" \
+            -DCPACK_DEBIAN_SERVER_PACKAGE_DEPENDS="systemd, libssl3t64 | libssl3, libsqlite3-0, libstdc++6, libgcc-s1, libatomic1" \
+            -DMINITUN_BUILD_TESTS=OFF \
+            "${version_arguments[@]}" \
+            2>&1 | tee ci-logs/deb/configure.log
+
       - name: Build DEB binaries
         run: |
           cmake --build --preset package-deb --parallel 2 \
             2>&1 | tee ci-logs/deb/build.log
 
       - name: Test DEB build
+        if: matrix.native == 'true'
         run: |
           ctest --test-dir build/package-deb --output-on-failure --no-tests=error \
             2>&1 | tee ci-logs/deb/ctest.log
@@ -174,24 +273,29 @@ jobs:
 
       - name: Verify DEB metadata and contents
         run: |
-          packaging/tests/verify-deb.sh build/package-deb \
+          packaging/tests/verify-deb.sh build/package-deb "${DEB_ARCH}" \
             2>&1 | tee ci-logs/deb/verify.log
 
-      - name: Smoke test DEB packages in clean Ubuntu
+      - name: Register QEMU for foreign-architecture containers
+        if: matrix.native != 'true'
         run: |
-          docker run --rm --platform linux/amd64 \
+          docker run --privileged --rm tonistiigi/binfmt --install arm64,arm,riscv64
+
+      - name: Smoke test DEB packages in clean container
+        run: |
+          docker run --rm --platform "${{ matrix.docker_platform }}" \
             -v "${PWD}/build/package-deb:/packages:ro" \
             -v "${PWD}/packaging/tests:/tests:ro" \
-            ubuntu:22.04 \
-            /tests/smoke-deb.sh /packages \
+            "${{ matrix.docker_image }}" \
+            /tests/smoke-deb.sh /packages "${DEB_ARCH}" \
             2>&1 | tee ci-logs/deb/smoke.log
 
       - name: Prepare DEB artifacts
         run: |
           client_package=$(find build/package-deb -maxdepth 1 -type f \
-            -name 'minitun-client_*_amd64.deb')
+            -name "minitun-client_*_${DEB_ARCH}.deb")
           server_package=$(find build/package-deb -maxdepth 1 -type f \
-            -name 'minitun-server_*_amd64.deb')
+            -name "minitun-server_*_${DEB_ARCH}.deb")
           test -n "${client_package}"
           test -n "${server_package}"
 
@@ -199,15 +303,15 @@ jobs:
 
           install -d dist/deb
           install -m 0644 "${client_package}" \
-            "dist/deb/minitun-client-${artifact_version}-linux-amd64.deb"
+            "dist/deb/minitun-client-${artifact_version}-linux-${DEB_ARCH}.deb"
           install -m 0644 "${server_package}" \
-            "dist/deb/minitun-server-${artifact_version}-linux-amd64.deb"
-          (cd dist/deb && sha256sum ./*.deb >SHA256SUMS)
+            "dist/deb/minitun-server-${artifact_version}-linux-${DEB_ARCH}.deb"
+          (cd dist/deb && sha256sum ./*.deb >"SHA256SUMS-${DEB_ARCH}")
 
       - name: Upload DEB packages
         uses: actions/upload-artifact@v7
         with:
-          name: minitun-deb-amd64
+          name: minitun-deb-${{ matrix.deb_arch }}
           if-no-files-found: error
           retention-days: 14
           path: dist/deb/
@@ -216,21 +320,54 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: minitun-deb-amd64-logs
+          name: minitun-deb-${{ matrix.deb_arch }}-logs
           if-no-files-found: warn
           retention-days: 14
           path: |
             ci-logs/deb/
             build/package-deb/Testing/Temporary/
 
-  rpm-x86-64:
-    name: RPM x86_64
+  rpm:
+    name: RPM ${{ matrix.name }}
     needs: resolve-version
     runs-on: ubuntu-24.04
-    timeout-minutes: 75
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - name: x86_64
+            rpm_arch: x86_64
+            native: true
+          - name: aarch64
+            rpm_arch: aarch64
+            triplet: aarch64-linux-gnu
+            deb_arch: arm64
+            system_processor: aarch64
+            docker_platform: linux/arm64
+            native: false
+          - name: armv7hl
+            rpm_arch: armv7hl
+            triplet: arm-linux-gnueabihf
+            deb_arch: armhf
+            system_processor: armv7l
+            docker_platform: linux/arm/v7
+            native: false
+          - name: riscv64
+            rpm_arch: riscv64
+            triplet: riscv64-linux-gnu
+            deb_arch: riscv64
+            system_processor: riscv64
+            docker_platform: linux/riscv64
+            native: false
     env:
       PACKAGE_VERSION: ${{ needs.resolve-version.outputs.package_version }}
       ARTIFACT_VERSION: ${{ needs.resolve-version.outputs.artifact_version }}
+      RPM_ARCH: ${{ matrix.rpm_arch }}
+      TRIPLET: ${{ matrix.triplet }}
+      DEB_ARCH: ${{ matrix.deb_arch }}
+      SYSTEM_PROCESSOR: ${{ matrix.system_processor }}
 
     steps:
       - name: Check out source
@@ -253,6 +390,7 @@ jobs:
           fi
 
       - name: Build, test, and inspect RPM packages in Fedora
+        if: matrix.native == 'true'
         run: |
           mkdir -p ci-logs/rpm
           docker run --rm --platform linux/amd64 \
@@ -294,24 +432,112 @@ jobs:
               cmake --build --preset package-rpm --parallel 2
               ctest --test-dir build/package-rpm --output-on-failure --no-tests=error
               cpack --config build/package-rpm/CPackConfig.cmake -G RPM
-              packaging/tests/verify-rpm.sh build/package-rpm
+              packaging/tests/verify-rpm.sh build/package-rpm x86_64
             ' 2>&1 | tee ci-logs/rpm/build-test-package.log
 
       - name: Smoke test RPM packages in clean Fedora
+        if: matrix.native == 'true'
         run: |
           docker run --rm --platform linux/amd64 \
             -v "${PWD}/build/package-rpm:/packages:ro" \
             -v "${PWD}/packaging/tests:/tests:ro" \
             fedora:43 \
-            /tests/smoke-rpm.sh /packages \
+            /tests/smoke-rpm.sh /packages x86_64 \
+            2>&1 | tee ci-logs/rpm/smoke.log
+
+      - name: Install RPM cross build dependencies
+        if: matrix.native != 'true'
+        run: |
+          sudo apt-get update
+          sudo dpkg --add-architecture "${DEB_ARCH}"
+          if [[ "${DEB_ARCH}" == "riscv64" ]]; then
+            echo "deb [arch=riscv64] http://ports.ubuntu.com/ubuntu-ports noble main universe" | \
+              sudo tee /etc/apt/sources.list.d/riscv64.list >/dev/null
+          fi
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes \
+            "gcc-${TRIPLET}" \
+            "g++-${TRIPLET}" \
+            "libssl-dev:${DEB_ARCH}" \
+            "libsqlite3-dev:${DEB_ARCH}" \
+            cmake \
+            dpkg-dev \
+            file \
+            git \
+            ninja-build \
+            pkg-config \
+            python3 \
+            rpm
+
+      - name: Restore fetched dependencies
+        if: matrix.native != 'true'
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/minitun-fetchcontent/package-rpm
+          key: package-rpm-fetchcontent-${{ matrix.rpm_arch }}-${{ hashFiles('cmake/Dependencies.cmake') }}
+
+      - name: Configure RPM build (cross)
+        if: matrix.native != 'true'
+        run: |
+          mkdir -p ci-logs/rpm
+          version_arguments=()
+          if [[ -n "${PACKAGE_VERSION}" ]]; then
+            version_arguments+=("-DMINITUN_PACKAGE_VERSION=${PACKAGE_VERSION}")
+          fi
+          cmake --preset package-rpm \
+            -DFETCHCONTENT_BASE_DIR="${HOME}/.cache/minitun-fetchcontent/package-rpm" \
+            -DCMAKE_SYSTEM_NAME=Linux \
+            -DCMAKE_SYSTEM_PROCESSOR="${SYSTEM_PROCESSOR}" \
+            -DCMAKE_C_COMPILER="${TRIPLET}-gcc" \
+            -DCMAKE_CXX_COMPILER="${TRIPLET}-g++" \
+            -DCMAKE_FIND_ROOT_PATH=/usr \
+            -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER \
+            -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY \
+            -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY \
+            -DCPACK_RPM_PACKAGE_ARCHITECTURE="${RPM_ARCH}" \
+            -DMINITUN_BUILD_TESTS=OFF \
+            "${version_arguments[@]}" \
+            2>&1 | tee ci-logs/rpm/configure.log
+
+      - name: Build RPM binaries
+        if: matrix.native != 'true'
+        run: |
+          cmake --build --preset package-rpm --parallel 2 \
+            2>&1 | tee ci-logs/rpm/build.log
+
+      - name: Generate RPM packages
+        if: matrix.native != 'true'
+        run: |
+          cpack --config build/package-rpm/CPackConfig.cmake -G RPM \
+            2>&1 | tee ci-logs/rpm/cpack.log
+
+      - name: Verify RPM metadata and contents
+        if: matrix.native != 'true'
+        run: |
+          packaging/tests/verify-rpm.sh build/package-rpm "${RPM_ARCH}" \
+            2>&1 | tee ci-logs/rpm/verify.log
+
+      - name: Register QEMU for foreign-architecture containers
+        if: matrix.native != 'true'
+        run: |
+          docker run --privileged --rm tonistiigi/binfmt --install arm64,arm,riscv64
+
+      - name: Smoke test RPM packages in clean container
+        if: matrix.native != 'true'
+        run: |
+          docker run --rm --platform "${{ matrix.docker_platform }}" \
+            -v "${PWD}/build/package-rpm:/packages:ro" \
+            -v "${PWD}/packaging/tests:/tests:ro" \
+            ubuntu:24.04 \
+            /tests/smoke-rpm-cross.sh /packages "${RPM_ARCH}" \
             2>&1 | tee ci-logs/rpm/smoke.log
 
       - name: Prepare RPM artifacts
         run: |
           client_package=$(find build/package-rpm -maxdepth 1 -type f \
-            -name 'minitun-client-*.x86_64.rpm')
+            -name "minitun-client-*.${RPM_ARCH}.rpm")
           server_package=$(find build/package-rpm -maxdepth 1 -type f \
-            -name 'minitun-server-*.x86_64.rpm')
+            -name "minitun-server-*.${RPM_ARCH}.rpm")
           test -n "${client_package}"
           test -n "${server_package}"
 
@@ -319,15 +545,15 @@ jobs:
 
           install -d dist/rpm
           install -m 0644 "${client_package}" \
-            "dist/rpm/minitun-client-${artifact_version}-linux-x86_64.rpm"
+            "dist/rpm/minitun-client-${artifact_version}-linux-${RPM_ARCH}.rpm"
           install -m 0644 "${server_package}" \
-            "dist/rpm/minitun-server-${artifact_version}-linux-x86_64.rpm"
-          (cd dist/rpm && sha256sum ./*.rpm >SHA256SUMS)
+            "dist/rpm/minitun-server-${artifact_version}-linux-${RPM_ARCH}.rpm"
+          (cd dist/rpm && sha256sum ./*.rpm >"SHA256SUMS-${RPM_ARCH}")
 
       - name: Upload RPM packages
         uses: actions/upload-artifact@v7
         with:
-          name: minitun-rpm-x86_64
+          name: minitun-rpm-${{ matrix.rpm_arch }}
           if-no-files-found: error
           retention-days: 14
           path: dist/rpm/
@@ -336,7 +562,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: minitun-rpm-x86_64-logs
+          name: minitun-rpm-${{ matrix.rpm_arch }}-logs
           if-no-files-found: warn
           retention-days: 14
           path: |
@@ -344,7 +570,7 @@ jobs:
             build/package-rpm/Testing/Temporary/
 
   openwrt:
-    name: OpenWrt 25.12.5 / ${{ matrix.package_arch }}
+    name: OpenWrt ${{ matrix.openwrt_version }} / ${{ matrix.package_arch }}
     needs: resolve-version
     runs-on: ubuntu-24.04
     timeout-minutes: 120
@@ -356,44 +582,104 @@ jobs:
       max-parallel: 2
       matrix:
         include:
-          - target: x86
+          - openwrt_version: 24.10.8
+            target: x86
             subtarget: "64"
             package_arch: x86_64
+            package_kind: ipk
+            qemu: qemu-x86_64-static
+            sdk_file: openwrt-sdk-24.10.8-x86-64_gcc-13.3.0_musl.Linux-x86_64.tar.zst
+            sdk_sha256: ac4a0405d2eea821b06f93c14ba13ffa90ad0457648903df7dde02570027ab21
+          - openwrt_version: 24.10.8
+            target: armsr
+            subtarget: armv8
+            package_arch: aarch64_generic
+            package_kind: ipk
+            qemu: qemu-aarch64-static
+            sdk_file: openwrt-sdk-24.10.8-armsr-armv8_gcc-13.3.0_musl.Linux-x86_64.tar.zst
+            sdk_sha256: 5f430f5b30c9ea6dc472710356c139abf916b7ebd5de14e108e9cc204f40a2a4
+          - openwrt_version: 24.10.8
+            target: armsr
+            subtarget: armv7
+            package_arch: arm_cortex-a15_neon-vfpv4
+            package_kind: ipk
+            qemu: qemu-arm-static
+            sdk_file: openwrt-sdk-24.10.8-armsr-armv7_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst
+            sdk_sha256: c30c6fc09d8038351e1cccb7d8565d8f3e4447dd017d15de8c7e83960fdb4718
+          - openwrt_version: 24.10.8
+            target: ath79
+            subtarget: generic
+            package_arch: mips_24kc
+            package_kind: ipk
+            qemu: qemu-mips-static
+            sdk_file: openwrt-sdk-24.10.8-ath79-generic_gcc-13.3.0_musl.Linux-x86_64.tar.zst
+            sdk_sha256: e46c4d0127061486ef4ce681f527f8a3980702011cafbf7801aff965a366dd8d
+          - openwrt_version: 24.10.8
+            target: ramips
+            subtarget: mt7621
+            package_arch: mipsel_24kc
+            package_kind: ipk
+            qemu: qemu-mipsel-static
+            sdk_file: openwrt-sdk-24.10.8-ramips-mt7621_gcc-13.3.0_musl.Linux-x86_64.tar.zst
+            sdk_sha256: 9dd11b0517883b016ad7684f5c408a3483eec5b2455b2ffe004c9edd84063e45
+          - openwrt_version: 24.10.8
+            target: sifiveu
+            subtarget: generic
+            package_arch: riscv64_generic
+            package_kind: ipk
+            qemu: qemu-riscv64-static
+            sdk_file: openwrt-sdk-24.10.8-sifiveu-generic_gcc-13.3.0_musl.Linux-x86_64.tar.zst
+            sdk_sha256: f50d8a78fe938270cfb59f439808d3a8ff9dc903dede0a25b88e4c660dfeb1ca
+          - openwrt_version: 25.12.5
+            target: x86
+            subtarget: "64"
+            package_arch: x86_64
+            package_kind: apk
             qemu: qemu-x86_64-static
             sdk_file: openwrt-sdk-25.12.5-x86-64_gcc-14.3.0_musl.Linux-x86_64.tar.zst
             sdk_sha256: 0c8df0151a1e88feb7c03d694d61f6a18d51872815b7c811d76e2b77504d5e9c
-          - target: armsr
+          - openwrt_version: 25.12.5
+            target: armsr
             subtarget: armv8
             package_arch: aarch64_generic
+            package_kind: apk
             qemu: qemu-aarch64-static
             sdk_file: openwrt-sdk-25.12.5-armsr-armv8_gcc-14.3.0_musl.Linux-x86_64.tar.zst
             sdk_sha256: 1b0316604a3e820b2b008a1baff3f9dac6716af942bef800930e58c7de98c98b
-          - target: armsr
+          - openwrt_version: 25.12.5
+            target: armsr
             subtarget: armv7
             package_arch: arm_cortex-a15_neon-vfpv4
+            package_kind: apk
             qemu: qemu-arm-static
             sdk_file: openwrt-sdk-25.12.5-armsr-armv7_gcc-14.3.0_musl_eabi.Linux-x86_64.tar.zst
             sdk_sha256: b4284390873291da05651cfb5970670a6ec7d85910616b5090b2aec3b9ad6591
-          - target: ath79
+          - openwrt_version: 25.12.5
+            target: ath79
             subtarget: generic
             package_arch: mips_24kc
+            package_kind: apk
             qemu: qemu-mips-static
             sdk_file: openwrt-sdk-25.12.5-ath79-generic_gcc-14.3.0_musl.Linux-x86_64.tar.zst
             sdk_sha256: bc4307ae2065c0c0b7c84627356e9f3d368a5a803c81552fcb77aa034a843f5a
-          - target: ramips
+          - openwrt_version: 25.12.5
+            target: ramips
             subtarget: mt7621
             package_arch: mipsel_24kc
+            package_kind: apk
             qemu: qemu-mipsel-static
             sdk_file: openwrt-sdk-25.12.5-ramips-mt7621_gcc-14.3.0_musl.Linux-x86_64.tar.zst
             sdk_sha256: 9962084f4131610e90e48bc864c6ceade0b238f15f335de5f672910532b20e9c
-          - target: sifiveu
+          - openwrt_version: 25.12.5
+            target: sifiveu
             subtarget: generic
             package_arch: riscv64_generic
+            package_kind: apk
             qemu: qemu-riscv64-static
             sdk_file: openwrt-sdk-25.12.5-sifiveu-generic_gcc-14.3.0_musl.Linux-x86_64.tar.zst
             sdk_sha256: f5d7d584acd386883294011442b251c006a5a17ba68c990742efd8738931a70d
     env:
-      OPENWRT_VERSION: 25.12.5
+      OPENWRT_VERSION: ${{ matrix.openwrt_version }}
       PACKAGE_VERSION: ${{ needs.resolve-version.outputs.package_version }}
       ARTIFACT_VERSION: ${{ needs.resolve-version.outputs.artifact_version }}
 
@@ -459,31 +745,32 @@ jobs:
 
       - name: Extract OpenWrt SDK
         run: |
-          sdk_dir="build/openwrt/${{ matrix.package_arch }}/sdk"
+          sdk_dir="build/openwrt/${{ matrix.openwrt_version }}/${{ matrix.package_arch }}/sdk"
           install -d "${sdk_dir}"
           tar --zstd --extract \
             --file ".cache/openwrt/${{ matrix.sdk_file }}" \
             --directory "${sdk_dir}" \
             --strip-components=1
 
-      - name: Build OpenWrt APK packages
+      - name: Build OpenWrt packages
         run: |
           set -o pipefail
-          install -d "ci-logs/openwrt/${{ matrix.package_arch }}"
+          install -d "ci-logs/openwrt/${{ matrix.openwrt_version }}/${{ matrix.package_arch }}"
           MINITUN_OPENWRT_JOBS=2 \
             packaging/openwrt/build-sdk.sh \
-              "build/openwrt/${{ matrix.package_arch }}/sdk" \
+              "build/openwrt/${{ matrix.openwrt_version }}/${{ matrix.package_arch }}/sdk" \
               "${GITHUB_WORKSPACE}" \
               "${PACKAGE_VERSION}" \
-            2>&1 | tee "ci-logs/openwrt/${{ matrix.package_arch }}/build.log"
+            2>&1 | tee "ci-logs/openwrt/${{ matrix.openwrt_version }}/${{ matrix.package_arch }}/build.log"
 
       - name: Verify OpenWrt packages and cross-built executables
         run: |
-          sdk_dir="build/openwrt/${{ matrix.package_arch }}/sdk"
-          package_dir="build/openwrt/${{ matrix.package_arch }}/packages"
+          sdk_dir="build/openwrt/${{ matrix.openwrt_version }}/${{ matrix.package_arch }}/sdk"
+          package_dir="build/openwrt/${{ matrix.openwrt_version }}/${{ matrix.package_arch }}/packages"
           install -d "${package_dir}"
           find "${sdk_dir}/bin/packages" -type f \
-            \( -name 'minitun-client-*.apk' -o -name 'minitun-server-*.apk' \) \
+            \( -name 'minitun-client-*.apk' -o -name 'minitun-server-*.apk' \
+               -o -name 'minitun-client_*.ipk' -o -name 'minitun-server_*.ipk' \) \
             -exec install -m 0644 {} "${package_dir}/" \;
 
           artifact_version=${PACKAGE_VERSION}
@@ -496,44 +783,164 @@ jobs:
             "${artifact_version}" \
             "${{ matrix.package_arch }}" \
             "${{ matrix.qemu }}" \
-            2>&1 | tee "ci-logs/openwrt/${{ matrix.package_arch }}/verify.log"
+            "${{ matrix.package_kind }}" \
+            2>&1 | tee "ci-logs/openwrt/${{ matrix.openwrt_version }}/${{ matrix.package_arch }}/verify.log"
 
       - name: Prepare OpenWrt artifacts
         run: |
-          package_dir="build/openwrt/${{ matrix.package_arch }}/packages"
-          client_package=$(find "${package_dir}" -maxdepth 1 -type f \
-            -name 'minitun-client-*.apk')
-          server_package=$(find "${package_dir}" -maxdepth 1 -type f \
-            -name 'minitun-server-*.apk')
+          sdk_dir="build/openwrt/${{ matrix.openwrt_version }}/${{ matrix.package_arch }}/sdk"
+          package_dir="build/openwrt/${{ matrix.openwrt_version }}/${{ matrix.package_arch }}/packages"
+          if [[ "${{ matrix.package_kind }}" == "ipk" ]]; then
+            client_package=$(find "${package_dir}" -maxdepth 1 -type f -name 'minitun-client_*.ipk')
+            server_package=$(find "${package_dir}" -maxdepth 1 -type f -name 'minitun-server_*.ipk')
+            package_extension=ipk
+          else
+            client_package=$(find "${package_dir}" -maxdepth 1 -type f -name 'minitun-client-*.apk')
+            server_package=$(find "${package_dir}" -maxdepth 1 -type f -name 'minitun-server-*.apk')
+            package_extension=apk
+          fi
           test -n "${client_package}"
           test -n "${server_package}"
 
           artifact_version=${ARTIFACT_VERSION}
 
-          dist_dir="dist/openwrt/${{ matrix.package_arch }}"
+          dist_dir="dist/openwrt/${OPENWRT_VERSION}/${{ matrix.target }}/${{ matrix.subtarget }}/packages"
           install -d "${dist_dir}"
           install -m 0644 "${client_package}" \
-            "${dist_dir}/minitun-client-${artifact_version}-openwrt-${OPENWRT_VERSION}-${{ matrix.package_arch }}.apk"
+            "${dist_dir}/minitun-client-${artifact_version}-openwrt-${OPENWRT_VERSION}-${{ matrix.package_arch }}.${package_extension}"
           install -m 0644 "${server_package}" \
-            "${dist_dir}/minitun-server-${artifact_version}-openwrt-${OPENWRT_VERSION}-${{ matrix.package_arch }}.apk"
+            "${dist_dir}/minitun-server-${artifact_version}-openwrt-${OPENWRT_VERSION}-${{ matrix.package_arch }}.${package_extension}"
           (cd "${dist_dir}" && \
-            sha256sum ./*.apk >"SHA256SUMS-${{ matrix.package_arch }}")
+            sha256sum ./*.${package_extension} >"SHA256SUMS-${OPENWRT_VERSION}-${{ matrix.package_arch }}")
+
+          # Copy the unsigned repository index generated by make package/index;
+          # the release pipeline signs it with the MiniTun repository key.
+          index_dir=$(dirname "$(find "${sdk_dir}/bin/packages" -type f \
+            \( -name 'minitun-client-*.apk' -o -name 'minitun-client_*.ipk' \) \
+            | head -1)")
+          if [[ "${{ matrix.package_kind }}" == "ipk" ]]; then
+            install -m 0644 "${index_dir}/Packages" "${dist_dir}/"
+            install -m 0644 "${index_dir}/Packages.gz" "${dist_dir}/"
+          else
+            install -m 0644 "${index_dir}/packages.adb" "${dist_dir}/"
+          fi
 
       - name: Upload OpenWrt packages
         uses: actions/upload-artifact@v7
         with:
-          name: minitun-openwrt-apk-${{ matrix.package_arch }}
+          name: minitun-openwrt-${{ matrix.openwrt_version }}-${{ matrix.package_arch }}
           if-no-files-found: error
           retention-days: 14
-          path: dist/openwrt/${{ matrix.package_arch }}/
+          path: dist/openwrt/
 
       - name: Upload OpenWrt logs
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: minitun-openwrt-${{ matrix.package_arch }}-logs
+          name: minitun-openwrt-${{ matrix.openwrt_version }}-${{ matrix.package_arch }}-logs
           if-no-files-found: warn
           retention-days: 14
           path: |
-            ci-logs/openwrt/${{ matrix.package_arch }}/
-            build/openwrt/${{ matrix.package_arch }}/sdk/logs/package/minitun/
+            ci-logs/openwrt/${{ matrix.openwrt_version }}/${{ matrix.package_arch }}/
+            build/openwrt/${{ matrix.openwrt_version }}/${{ matrix.package_arch }}/sdk/logs/package/minitun/
+
+  oci:
+    name: OCI server/client images
+    if: inputs.publish_oci
+    needs:
+      - resolve-version
+      - deb
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      PACKAGE_VERSION: ${{ needs.resolve-version.outputs.package_version }}
+      ARTIFACT_VERSION: ${{ needs.resolve-version.outputs.artifact_version }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Download DEB artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: minitun-deb-*
+          merge-multiple: true
+          path: deb-artifacts
+
+      - name: Register QEMU for cross-architecture image builds
+        run: |
+          docker run --privileged --rm tonistiigi/binfmt --install arm64,arm,riscv64
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push per-architecture images
+        run: |
+          set -euo pipefail
+          version=${ARTIFACT_VERSION}
+          for entry in \
+            "amd64:linux/amd64:amd64" \
+            "arm64:linux/arm64:arm64" \
+            "armhf:linux/arm/v7:armv7" \
+            "riscv64:linux/riscv64:riscv64"; do
+            deb_arch=${entry%%:*}
+            rest=${entry#*:}
+            platform=${rest%%:*}
+            suffix=${rest#*:}
+            client_deb=$(find "deb-artifacts" -maxdepth 1 -type f \
+              -name "minitun-client-*-linux-${deb_arch}.deb")
+            server_deb=$(find "deb-artifacts" -maxdepth 1 -type f \
+              -name "minitun-server-*-linux-${deb_arch}.deb")
+            test -n "${client_deb}"
+            test -n "${server_deb}"
+
+            server_ctx="oci-context/${suffix}/server"
+            client_ctx="oci-context/${suffix}/client"
+            install -d "${server_ctx}" "${client_ctx}"
+            dpkg-deb -x "${server_deb}" "${server_ctx}"
+            dpkg-deb -x "${client_deb}" "${client_ctx}"
+            mv "${server_ctx}/usr/bin/minitun-server" "${server_ctx}/minitun-server"
+            mv "${client_ctx}/usr/bin/minitun" "${client_ctx}/minitun"
+            mv "${client_ctx}/usr/libexec/minitun/minitund" "${client_ctx}/minitund"
+
+            docker build \
+              --platform "${platform}" \
+              -t "ghcr.io/lmtinsuzhou/minitun-server:${version}-linux-${suffix}" \
+              -f packaging/oci/Dockerfile.server \
+              "${server_ctx}"
+            docker build \
+              --platform "${platform}" \
+              -t "ghcr.io/lmtinsuzhou/minitun-client:${version}-linux-${suffix}" \
+              -f packaging/oci/Dockerfile.client \
+              "${client_ctx}"
+            docker push "ghcr.io/lmtinsuzhou/minitun-server:${version}-linux-${suffix}"
+            docker push "ghcr.io/lmtinsuzhou/minitun-client:${version}-linux-${suffix}"
+          done
+
+      - name: Create and push multi-architecture manifests
+        run: |
+          set -euo pipefail
+          version=${ARTIFACT_VERSION}
+          suffixes=(amd64 arm64 armv7 riscv64)
+          for image in minitun-server minitun-client; do
+            manifest_args=()
+            for suffix in "${suffixes[@]}"; do
+              manifest_args+=(--amend "ghcr.io/lmtinsuzhou/${image}:${version}-linux-${suffix}")
+            done
+            docker manifest create \
+              "ghcr.io/lmtinsuzhou/${image}:${version}" \
+              "${manifest_args[@]}"
+            docker manifest push "ghcr.io/lmtinsuzhou/${image}:${version}"
+            if [[ "${PACKAGE_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              docker manifest create \
+                "ghcr.io/lmtinsuzhou/${image}:latest" \
+                "${manifest_args[@]}"
+              docker manifest push "ghcr.io/lmtinsuzhou/${image}:latest"
+            fi
+          done

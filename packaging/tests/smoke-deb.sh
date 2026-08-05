@@ -1,9 +1,10 @@
 #!/bin/sh
 set -eu
 
-package_directory=${1:?usage: smoke-deb.sh PACKAGE_DIRECTORY}
-client_package=$(find "$package_directory" -maxdepth 1 -type f -name 'minitun-client_*_amd64.deb')
-server_package=$(find "$package_directory" -maxdepth 1 -type f -name 'minitun-server_*_amd64.deb')
+package_directory=${1:?usage: smoke-deb.sh PACKAGE_DIRECTORY [ARCH]}
+expected_arch=${2:-amd64}
+client_package=$(find "$package_directory" -maxdepth 1 -type f -name "minitun-client_*_${expected_arch}.deb")
+server_package=$(find "$package_directory" -maxdepth 1 -type f -name "minitun-server_*_${expected_arch}.deb")
 [ -n "$client_package" ]
 [ -n "$server_package" ]
 

@@ -61,15 +61,89 @@ jobs:
     needs: validate-tag
     permissions:
       contents: read
+      packages: write
     uses: ./.github/workflows/package.yml
     with:
       package_version: ${{ needs.validate-tag.outputs.package_version }}
+      publish_oci: true
+
+  openwrt-repo:
+    name: Publish signed OpenWrt repository
+    needs:
+      - validate-tag
+      - packages
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    env:
+      PACKAGE_VERSION: ${{ needs.validate-tag.outputs.package_version }}
+
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Download OpenWrt artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: minitun-openwrt-*
+          merge-multiple: true
+          path: openwrt-artifacts
+
+      - name: Build usign
+        run: |
+          git clone --depth 1 https://git.openwrt.org/project/usign.git usign-src
+          cmake -S usign-src -B usign-build
+          cmake --build usign-build
+
+      - name: Materialize repository signing key
+        env:
+          MINITUN_OPENWRT_SIGN_KEY: ${{ secrets.MINITUN_OPENWRT_SIGN_KEY }}
+          MINITUN_OPENWRT_SIGN_PUB: ${{ secrets.MINITUN_OPENWRT_SIGN_PUB }}
+        run: |
+          if [[ -z "${MINITUN_OPENWRT_SIGN_KEY}" || -z "${MINITUN_OPENWRT_SIGN_PUB}" ]]; then
+            echo "MINITUN_OPENWRT_SIGN_KEY and MINITUN_OPENWRT_SIGN_PUB secrets are required" >&2
+            exit 1
+          fi
+          printf '%s\n' "${MINITUN_OPENWRT_SIGN_KEY}" | base64 -d > key-build
+          printf '%s\n' "${MINITUN_OPENWRT_SIGN_PUB}" | base64 -d > key-build.pub
+          chmod 0600 key-build
+          chmod 0644 key-build.pub
+
+      - name: Assemble and sign OpenWrt repository
+        run: |
+          packaging/openwrt/build-repo.sh \
+            "$PWD/openwrt-artifacts/dist" \
+            "$PWD/repo" \
+            "$PWD/key-build" \
+            "$PWD/key-build.pub" \
+            "$PWD/usign-build/usign"
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: repo
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
 
   publish:
     name: Publish GitHub Release
     needs:
       - validate-tag
       - packages
+      - openwrt-repo
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -77,22 +151,29 @@ jobs:
       contents: write
 
     steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
       - name: Download DEB artifacts
         uses: actions/download-artifact@v8
         with:
-          name: minitun-deb-amd64
+          pattern: minitun-deb-*
+          merge-multiple: true
           path: release-assets/deb
 
       - name: Download RPM artifacts
         uses: actions/download-artifact@v8
         with:
-          name: minitun-rpm-x86_64
+          pattern: minitun-rpm-*
+          merge-multiple: true
           path: release-assets/rpm
 
       - name: Download OpenWrt artifacts
         uses: actions/download-artifact@v8
         with:
-          pattern: minitun-openwrt-apk-*
+          pattern: minitun-openwrt-*
           merge-multiple: true
           path: release-assets/openwrt
 
@@ -100,39 +181,63 @@ jobs:
         env:
           PACKAGE_VERSION: ${{ needs.validate-tag.outputs.package_version }}
         run: |
-          client_deb="release-assets/deb/minitun-client-${PACKAGE_VERSION}-linux-amd64.deb"
-          server_deb="release-assets/deb/minitun-server-${PACKAGE_VERSION}-linux-amd64.deb"
-          client_rpm="release-assets/rpm/minitun-client-${PACKAGE_VERSION}-linux-x86_64.rpm"
-          server_rpm="release-assets/rpm/minitun-server-${PACKAGE_VERSION}-linux-x86_64.rpm"
+          artifact_version=${PACKAGE_VERSION//~/-}
+          dist_dir="release-assets/dist"
+          install -d "${dist_dir}"
 
-          test -f "${client_deb}"
-          test -f "${server_deb}"
-          test -f "${client_rpm}"
-          test -f "${server_rpm}"
+          # Deterministic source tarball that the OpenWrt feed consumes.
+          git archive \
+            --format=tar.gz \
+            --prefix="minitun-${PACKAGE_VERSION}/" \
+            -o "${dist_dir}/minitun-${PACKAGE_VERSION}.tar.gz" \
+            HEAD
+          actual_hash=$(sha256sum \
+            "${dist_dir}/minitun-${PACKAGE_VERSION}.tar.gz" | awk '{ print $1 }')
+          expected_hash=$(awk -F':=' '$1 == "PKG_HASH" { print $2; exit }' \
+            packaging/openwrt/Makefile)
+          if [[ -z "${expected_hash}" || "${actual_hash}" != "${expected_hash}" ]]; then
+            echo "source tarball hash ${actual_hash} does not match PKG_HASH ${expected_hash}" >&2
+            exit 1
+          fi
 
-          openwrt_arches=(
-            x86_64
-            aarch64_generic
-            arm_cortex-a15_neon-vfpv4
-            mips_24kc
-            mipsel_24kc
-            riscv64_generic
-          )
-          for arch in "${openwrt_arches[@]}"; do
-            test -f "release-assets/openwrt/minitun-client-${PACKAGE_VERSION}-openwrt-25.12.5-${arch}.apk"
-            test -f "release-assets/openwrt/minitun-server-${PACKAGE_VERSION}-openwrt-25.12.5-${arch}.apk"
+          deb_count=0
+          for package in release-assets/deb/minitun-client-*.deb \
+                         release-assets/deb/minitun-server-*.deb; do
+            [ -f "$package" ] || continue
+            install -m 0644 "$package" "${dist_dir}/"
+            deb_count=$((deb_count + 1))
           done
-          test "$(find release-assets/openwrt -maxdepth 1 -type f -name '*.apk' | wc -l)" -eq 12
+          [ "$deb_count" -eq 8 ] || {
+            echo "expected 8 DEB packages, found ${deb_count}" >&2
+            exit 1
+          }
 
-          install -d release-assets/dist
-          install -m 0644 "${client_deb}" release-assets/dist/
-          install -m 0644 "${server_deb}" release-assets/dist/
-          install -m 0644 "${client_rpm}" release-assets/dist/
-          install -m 0644 "${server_rpm}" release-assets/dist/
-          install -m 0644 release-assets/openwrt/*.apk release-assets/dist/
-          (cd release-assets/dist && \
-            sha256sum ./*.apk ./*.deb ./*.rpm >SHA256SUMS)
-          (cd release-assets/dist && sha256sum --check SHA256SUMS)
+          rpm_count=0
+          for package in release-assets/rpm/minitun-client-*.rpm \
+                         release-assets/rpm/minitun-server-*.rpm; do
+            [ -f "$package" ] || continue
+            install -m 0644 "$package" "${dist_dir}/"
+            rpm_count=$((rpm_count + 1))
+          done
+          [ "$rpm_count" -eq 8 ] || {
+            echo "expected 8 RPM packages, found ${rpm_count}" >&2
+            exit 1
+          }
+
+          openwrt_count=0
+          while IFS= read -r package; do
+            install -m 0644 "$package" "${dist_dir}/"
+            openwrt_count=$((openwrt_count + 1))
+          done < <(find release-assets/openwrt -type f \
+            \( -name '*.apk' -o -name '*.ipk' \) | sort)
+          [ "$openwrt_count" -eq 24 ] || {
+            echo "expected 24 OpenWrt packages, found ${openwrt_count}" >&2
+            exit 1
+          }
+
+          (cd "${dist_dir}" && \
+            sha256sum ./*.tar.gz ./*.deb ./*.rpm ./*.apk ./*.ipk >SHA256SUMS)
+          (cd "${dist_dir}" && sha256sum --check SHA256SUMS)
 
       - name: Upload assembled release artifact
         uses: actions/upload-artifact@v7

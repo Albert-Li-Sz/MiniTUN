@@ -62,9 +62,10 @@ TLS Worker 承载。
 
 | 软件包 | 运行环境 | 发布架构 |
 | --- | --- | --- |
-| DEB | Debian/Ubuntu | `amd64` |
-| RPM | Fedora/RHEL 系 | `x86_64` |
-| APK | OpenWrt 25.12 | `x86_64`、`aarch64_generic`、`arm_cortex-a15_neon-vfpv4`、`mips_24kc`、`mipsel_24kc`、`riscv64_generic` |
+| DEB | Debian/Ubuntu | `amd64`、`arm64`、`armhf`、`riscv64` |
+| RPM | Fedora/RHEL 系 | `x86_64`、`aarch64`、`armv7hl`、`riscv64` |
+| IPK | OpenWrt 24.10（opkg） | `x86_64`、`aarch64_generic`、`arm_cortex-a15_neon-vfpv4`、`mips_24kc`、`mipsel_24kc`、`riscv64_generic` |
+| APK | OpenWrt 25.12（apk） | `x86_64`、`aarch64_generic`、`arm_cortex-a15_neon-vfpv4`、`mips_24kc`、`mipsel_24kc`、`riscv64_generic` |
 
 ### 1. 获取并安装软件包
 
@@ -79,7 +80,8 @@ sha256sum --ignore-missing --check SHA256SUMS
 Debian/Ubuntu：
 
 ```bash
-# 公网服务器
+# 公网服务器；以下示例为 amd64，其他架构替换文件名中的 amd64 为
+# arm64 / armhf / riscv64
 sudo apt install ./minitun-server-0.3.0-linux-amd64.deb
 
 # 内网客户端
@@ -89,35 +91,96 @@ sudo apt install ./minitun-client-0.3.0-linux-amd64.deb
 Fedora/RHEL 系：
 
 ```bash
-# 公网服务器
+# 公网服务器；以下示例为 x86_64，其他架构替换文件名中的 x86_64 为
+# aarch64 / armv7hl / riscv64
 sudo dnf install ./minitun-server-0.3.0-linux-x86_64.rpm
 
 # 内网客户端
 sudo dnf install ./minitun-client-0.3.0-linux-x86_64.rpm
 ```
 
-OpenWrt 25.12 使用 APK v3。先查看设备的包架构，再安装同架构的
-服务端或客户端包：
+OpenWrt 的推荐安装方式是添加 MiniTun 签名软件源，无需 `--allow-untrusted`。
+软件源与公钥托管在 GitHub Pages（`https://lmtinsuzhou.github.io/MiniTUN/`），
+仓库结构镜像官方 OpenWrt 布局：`openwrt/<版本>/<target>/<subtarget>/packages/`。
+请将下面的 `<target>/<subtarget>` 替换为设备对应的目标（例如 `x86/64`、
+`armsr/armv8`、`armsr/armv7`、`ath79/generic`、`ramips/mt7621`、
+`sifiveu/generic`），`<key-id>` 为 16 位十六进制密钥 ID（即软件源目录中公钥文件的
+文件名，见仓库根目录 `README.txt`）。
+
+OpenWrt 24.10（opkg）：
+
+```sh
+opkg print-architecture
+
+# 安装签名公钥（文件名必须保持为密钥 ID）
+wget -O /etc/opkg/keys/<key-id> \
+  https://lmtinsuzhou.github.io/MiniTUN/openwrt/24.10.8/<target>/<subtarget>/packages/<key-id>
+
+# 添加签名软件源
+echo 'src/gz minitun https://lmtinsuzhou.github.io/MiniTUN/openwrt/24.10.8/<target>/<subtarget>/packages' \
+  >> /etc/opkg/customfeeds.conf
+
+opkg update
+opkg install minitun-server   # 或 minitun-client
+```
+
+OpenWrt 25.12（apk v3）：
 
 ```sh
 apk --print-arch
 
-# 公网设备；以 aarch64_generic 为例
+# 安装签名公钥
+wget -O /etc/apk/keys/minitun-build.pem \
+  https://lmtinsuzhou.github.io/MiniTUN/openwrt/25.12.5/<target>/<subtarget>/packages/minitun-build.pem
+
+# 添加软件源并安装（依赖会自动从官方 OpenWrt 软件源解析）
+apk add --repository \
+  https://lmtinsuzhou.github.io/MiniTUN/openwrt/25.12.5/<target>/<subtarget>/packages \
+  minitun-server   # 或 minitun-client
+```
+
+密钥轮换时，新版本会使用新密钥；请同时移除
+`/etc/opkg/keys/<旧 key-id>` 与 `/etc/apk/keys/minitun-build.pem`。
+
+也可以绕过软件源，直接安装 GitHub Release 中的独立产物。此时无法自动验证签名，
+必须先校验 `SHA256SUMS`：25.12 的 APK 本地安装仍需 `--allow-untrusted`，
+24.10 的 IPK 使用 `opkg install <文件>`：
+
+```sh
 grep 'minitun-server-0.3.0-openwrt-25.12.5-aarch64_generic.apk$' \
   SHA256SUMS | sha256sum -c -
 apk add --allow-untrusted \
   ./minitun-server-0.3.0-openwrt-25.12.5-aarch64_generic.apk
 
-# 内网设备
-grep 'minitun-client-0.3.0-openwrt-25.12.5-aarch64_generic.apk$' \
+grep 'minitun-server-0.3.0-openwrt-24.10.8-aarch64_generic.ipk$' \
   SHA256SUMS | sha256sum -c -
-apk add --allow-untrusted \
-  ./minitun-client-0.3.0-openwrt-25.12.5-aarch64_generic.apk
+opkg install ./minitun-server-0.3.0-openwrt-24.10.8-aarch64_generic.ipk
 ```
 
-GitHub Release 中的 APK 是独立发布产物，不属于 OpenWrt 官方签名软件源，
-因此安装本地包时需要 `--allow-untrusted`；安装前必须先校验 `SHA256SUMS`。
 所有软件包都会创建专用服务账户，但不会生成凭据，也不会自动启动服务。
+
+### 容器镜像（OCI）
+
+Release 同时发布最小 OCI 镜像（`ghcr.io/lmtinsuzhou/minitun-server` 与
+`ghcr.io/lmtinsuzhou/minitun-client`），多架构清单覆盖 `linux/amd64`、
+`linux/arm64`、`linux/arm/v7` 与 `linux/riscv64`。镜像以非 root 用户
+（UID 65532）运行，客户端镜像内置系统 CA 信任库。
+
+```bash
+# 公网服务端：挂载证书、私钥与 Token
+docker run -d --name minitun-server \
+  -v /etc/minitun-server:/etc/minitun-server:ro \
+  -p 2333:2333 \
+  ghcr.io/lmtinsuzhou/minitun-server:0.3.0
+
+# 内网客户端：挂载状态卷（state.db 与 credentials.db）
+docker run -d --name minitund \
+  -v minitun-state:/var/lib/minitun \
+  ghcr.io/lmtinsuzhou/minitun-client:0.3.0
+```
+
+需要覆盖默认路径或参数时，在镜像名后追加命令行参数（例如
+`ghcr.io/lmtinsuzhou/minitun-server:0.3.0 --listen 0.0.0.0:4433`）。
 
 ### 2. 配置公网服务端
 

@@ -2,8 +2,8 @@
 
 set -eu
 
-if [ "$#" -lt 4 ] || [ "$#" -gt 5 ]; then
-	echo "usage: verify-openwrt.sh SDK_DIR PACKAGE_DIR VERSION ARCH [QEMU]" >&2
+if [ "$#" -lt 4 ] || [ "$#" -gt 6 ]; then
+	echo "usage: verify-openwrt.sh SDK_DIR PACKAGE_DIR VERSION ARCH [QEMU] [KIND]" >&2
 	exit 2
 fi
 
@@ -12,17 +12,39 @@ package_dir=$2
 expected_version=$3
 expected_arch=$4
 qemu_binary=${5:-}
-apk_tool="$sdk_dir/staging_dir/host/bin/apk"
+package_kind=${6:-}
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 
-[ -x "$apk_tool" ] || {
-	echo "OpenWrt SDK apk tool not found: $apk_tool" >&2
-	exit 2
-}
 command -v jq >/dev/null 2>&1 || {
 	echo "jq is required" >&2
 	exit 2
 }
+
+if [ -z "$package_kind" ]; then
+	if find "$package_dir" -maxdepth 1 -type f -name '*.apk' | grep -q .; then
+		package_kind=apk
+	elif find "$package_dir" -maxdepth 1 -type f -name '*.ipk' | grep -q .; then
+		package_kind=ipk
+	else
+		echo "no .apk or .ipk packages found in $package_dir" >&2
+		exit 2
+	fi
+fi
+
+apk_tool="$sdk_dir/staging_dir/host/bin/apk"
+case "$package_kind" in
+	apk)
+		[ -x "$apk_tool" ] || {
+			echo "OpenWrt SDK apk tool not found: $apk_tool" >&2
+			exit 2
+		}
+		;;
+	ipk) ;;
+	*)
+		echo "package kind must be apk or ipk, got: $package_kind" >&2
+		exit 2
+		;;
+esac
 
 find_one_package() {
 	pattern=$1
@@ -40,18 +62,64 @@ find_one_package() {
 	printf '%s\n' "$result"
 }
 
+control_field() {
+	package=$1
+	field=$2
+	temp_dir=$(mktemp -d)
+	ar p "$package" control.tar.gz | tar -xz -C "$temp_dir"
+	awk -v field="$field" \
+		'$1 == field ":" { $1=""; sub(/^ /, ""); print; exit }' \
+		"$temp_dir/control"
+	status=$?
+	rm -rf "$temp_dir"
+	return "$status"
+}
+
 check_metadata() {
 	package=$1
 	name=$2
 	metadata=$3
 
-	"$apk_tool" --allow-untrusted verify "$package"
-	"$apk_tool" adbdump --format json "$package" >"$metadata"
-	jq -e --arg value "$name" '.info.name == $value' "$metadata" >/dev/null
-	jq -e --arg value "${expected_version}-r1" \
-		'.info.version == $value' "$metadata" >/dev/null
-	jq -e --arg value "$expected_arch" '.info.arch == $value' \
-		"$metadata" >/dev/null
+	case "$package_kind" in
+		apk)
+			"$apk_tool" --allow-untrusted verify "$package"
+			"$apk_tool" adbdump --format json "$package" >"$metadata"
+			jq -e --arg value "$name" '.info.name == $value' "$metadata" >/dev/null
+			jq -e --arg value "${expected_version}-r1" \
+				'.info.version == $value' "$metadata" >/dev/null
+			jq -e --arg value "$expected_arch" '.info.arch == $value' \
+				"$metadata" >/dev/null
+			;;
+		ipk)
+			[ "$(control_field "$package" Package)" = "$name" ] || {
+				echo "$package has an unexpected Package field" >&2
+				exit 1
+			}
+			[ "$(control_field "$package" Version)" = "${expected_version}-r1" ] || {
+				echo "$package has an unexpected Version field" >&2
+				exit 1
+			}
+			[ "$(control_field "$package" Architecture)" = "$expected_arch" ] || {
+				echo "$package has an unexpected Architecture field" >&2
+				exit 1
+			}
+			;;
+	esac
+}
+
+extract_package() {
+	package=$1
+	destination=$2
+	case "$package_kind" in
+		apk)
+			"$apk_tool" --allow-untrusted extract --destination "$destination" \
+				"$package"
+			;;
+		ipk)
+			mkdir -p "$destination"
+			ar p "$package" data.tar.gz | tar -xz -C "$destination"
+			;;
+	esac
 }
 
 check_mode() {
@@ -64,8 +132,16 @@ check_mode() {
 	}
 }
 
-client_package=$(find_one_package 'minitun-client-*.apk')
-server_package=$(find_one_package 'minitun-server-*.apk')
+case "$package_kind" in
+	apk)
+		client_package=$(find_one_package 'minitun-client-*.apk')
+		server_package=$(find_one_package 'minitun-server-*.apk')
+		;;
+	ipk)
+		client_package=$(find_one_package 'minitun-client_*.ipk')
+		server_package=$(find_one_package 'minitun-server_*.ipk')
+		;;
+esac
 
 temporary_dir=$(mktemp -d)
 trap 'rm -rf "$temporary_dir"' EXIT HUP INT TERM
@@ -76,10 +152,8 @@ mkdir -p "$client_root" "$server_root"
 check_metadata "$client_package" minitun-client "$temporary_dir/client.json"
 check_metadata "$server_package" minitun-server "$temporary_dir/server.json"
 
-"$apk_tool" --allow-untrusted extract --destination "$client_root" \
-	"$client_package"
-"$apk_tool" --allow-untrusted extract --destination "$server_root" \
-	"$server_package"
+extract_package "$client_package" "$client_root"
+extract_package "$server_package" "$server_root"
 
 for path in \
 	"$client_root/usr/bin/minitun" \

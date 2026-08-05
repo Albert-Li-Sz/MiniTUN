@@ -6,7 +6,19 @@ MiniTun 的所有重要变更都会记录在此文件中。本文档以
 
 ## [未发布]
 
-暂无未发布变更。
+### 新增
+
+- OpenWrt 打包改为标准 feed/source tarball（`PKG_SOURCE`/`PKG_HASH`），新增
+  OpenWrt 24.10.8（opkg，`.ipk`）六架构发布，与 25.12.5（apk v3，`.apk`）并列；
+  Release 附带确定性源 tarball 与 `SHA256SUMS`。
+- Release 组装并签名 OpenWrt 软件源（usign Ed25519：`Packages.sig` 与
+  `packages.adb.sig`）发布到 GitHub Pages，24.10/25.12 均可添加签名软件源安装，
+  不再需要 `--allow-untrusted`；公钥同时提供 opkg 与 apk 两种形态。
+- DEB 新增 `arm64`/`armhf`/`riscv64`，RPM 新增 `aarch64`/`armv7hl`/`riscv64`
+  交叉编译与 QEMU 容器安装冒烟测试。
+- 新增最小 OCI server/client 镜像（`debian:stable-slim` 基座、非 root 运行、
+  client 内置 CA），Release 发布 `ghcr.io/lmtinsuzhou/minitun-server` 与
+  `minitun-client` 的 amd64/arm64/arm/v7/riscv64 多架构清单。
 
 ## [0.3.0] - 2026-08-05
 

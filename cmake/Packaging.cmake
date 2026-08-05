@@ -46,6 +46,15 @@ set(CPACK_COMPONENT_SERVER_DESCRIPTION
     "Public TLS server for MiniTun reverse TCP tunnels"
 )
 
+# Explicit architecture overrides for cross-compiled packages. Leave empty to
+# let CPack infer the architecture from CMAKE_SYSTEM_PROCESSOR (native builds).
+set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "" CACHE STRING
+    "Explicit Debian package architecture (e.g. arm64, armhf, riscv64)"
+)
+set(CPACK_RPM_PACKAGE_ARCHITECTURE "" CACHE STRING
+    "Explicit RPM package architecture (e.g. aarch64, armv7hl, riscv64)"
+)
+
 set(CPACK_DEB_COMPONENT_INSTALL ON)
 set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)
 set(CPACK_DEBIAN_PACKAGE_MAINTAINER "MiniTun maintainers")
@@ -56,8 +65,12 @@ set(CPACK_DEBIAN_PACKAGE_VERSION "${minitun_debian_version}")
 
 set(CPACK_DEBIAN_CLIENT_PACKAGE_NAME "minitun-client")
 set(CPACK_DEBIAN_CLIENT_PACKAGE_SECTION net)
-set(CPACK_DEBIAN_CLIENT_PACKAGE_DEPENDS systemd)
-set(CPACK_DEBIAN_CLIENT_PACKAGE_SHLIBDEPS ON)
+set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON CACHE BOOL
+    "Derive DEB dependencies with dpkg-shlibdeps"
+)
+set(CPACK_DEBIAN_CLIENT_PACKAGE_DEPENDS systemd CACHE STRING
+    "Runtime dependencies for the minitun-client DEB"
+)
 set(CPACK_DEBIAN_CLIENT_PACKAGE_CONTROL_EXTRA
     "${PROJECT_SOURCE_DIR}/packaging/debian/postinst"
     "${PROJECT_SOURCE_DIR}/packaging/debian/client/postrm"
@@ -65,8 +78,9 @@ set(CPACK_DEBIAN_CLIENT_PACKAGE_CONTROL_EXTRA
 
 set(CPACK_DEBIAN_SERVER_PACKAGE_NAME "minitun-server")
 set(CPACK_DEBIAN_SERVER_PACKAGE_SECTION net)
-set(CPACK_DEBIAN_SERVER_PACKAGE_DEPENDS systemd)
-set(CPACK_DEBIAN_SERVER_PACKAGE_SHLIBDEPS ON)
+set(CPACK_DEBIAN_SERVER_PACKAGE_DEPENDS systemd CACHE STRING
+    "Runtime dependencies for the minitun-server DEB"
+)
 set(CPACK_DEBIAN_SERVER_PACKAGE_CONTROL_EXTRA
     "${PROJECT_SOURCE_DIR}/packaging/debian/postinst"
     "${PROJECT_SOURCE_DIR}/packaging/debian/server/postrm"
@@ -80,10 +94,14 @@ set(CPACK_RPM_PACKAGE_GROUP "Applications/Internet")
 set(CPACK_RPM_PACKAGE_VERSION "${minitun_rpm_version}")
 set(CPACK_RPM_PACKAGE_RELEASE "${minitun_rpm_release}")
 set(CPACK_RPM_PACKAGE_RELOCATABLE OFF)
-set(CPACK_RPM_PACKAGE_AUTOREQ ON)
+set(CPACK_RPM_PACKAGE_AUTOREQ ON CACHE BOOL
+    "Derive RPM requirements from ELF dependencies"
+)
 
 set(CPACK_RPM_CLIENT_PACKAGE_NAME "minitun-client")
-set(CPACK_RPM_CLIENT_PACKAGE_REQUIRES systemd)
+set(CPACK_RPM_CLIENT_PACKAGE_REQUIRES systemd CACHE STRING
+    "Runtime dependencies for the minitun-client RPM"
+)
 set(CPACK_RPM_CLIENT_POST_INSTALL_SCRIPT_FILE
     "${PROJECT_SOURCE_DIR}/packaging/rpm/post-install.sh"
 )
@@ -92,7 +110,9 @@ set(CPACK_RPM_CLIENT_POST_UNINSTALL_SCRIPT_FILE
 )
 
 set(CPACK_RPM_SERVER_PACKAGE_NAME "minitun-server")
-set(CPACK_RPM_SERVER_PACKAGE_REQUIRES systemd)
+set(CPACK_RPM_SERVER_PACKAGE_REQUIRES systemd CACHE STRING
+    "Runtime dependencies for the minitun-server RPM"
+)
 set(CPACK_RPM_SERVER_POST_INSTALL_SCRIPT_FILE
     "${PROJECT_SOURCE_DIR}/packaging/rpm/post-install.sh"
 )
