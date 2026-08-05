@@ -235,7 +235,7 @@ jobs:
             2>&1 | tee ci-logs/deb/configure.log
 
       - name: Configure DEB build (cross)
-        if: !matrix.native
+        if: matrix.native == false
         run: |
           mkdir -p ci-logs/deb
           version_arguments=()
@@ -282,7 +282,7 @@ jobs:
             2>&1 | tee ci-logs/deb/verify.log
 
       - name: Register QEMU for foreign-architecture containers
-        if: !matrix.native
+        if: matrix.native == false
         run: |
           docker run --privileged --rm tonistiigi/binfmt --install arm64,arm,riscv64
 
@@ -451,7 +451,7 @@ jobs:
             2>&1 | tee ci-logs/rpm/smoke.log
 
       - name: Install RPM cross build dependencies
-        if: !matrix.native
+        if: matrix.native == false
         run: |
           # Default Ubuntu mirrors 404 for armhf/riscv64 and security updates
           # for arm64; ports.ubuntu.com hosts every architecture including
@@ -478,14 +478,14 @@ jobs:
             rpm
 
       - name: Restore fetched dependencies
-        if: !matrix.native
+        if: matrix.native == false
         uses: actions/cache@v6
         with:
           path: ~/.cache/minitun-fetchcontent/package-rpm
           key: package-rpm-fetchcontent-${{ matrix.rpm_arch }}-${{ hashFiles('cmake/Dependencies.cmake') }}
 
       - name: Configure RPM build (cross)
-        if: !matrix.native
+        if: matrix.native == false
         run: |
           mkdir -p ci-logs/rpm
           version_arguments=()
@@ -508,25 +508,25 @@ jobs:
             2>&1 | tee ci-logs/rpm/configure.log
 
       - name: Build RPM binaries
-        if: !matrix.native
+        if: matrix.native == false
         run: |
           cmake --build --preset package-rpm --parallel 2 \
             2>&1 | tee ci-logs/rpm/build.log
 
       - name: Generate RPM packages
-        if: !matrix.native
+        if: matrix.native == false
         run: |
           cpack --config build/package-rpm/CPackConfig.cmake -G RPM \
             2>&1 | tee ci-logs/rpm/cpack.log
 
       - name: Verify RPM metadata and contents
-        if: !matrix.native
+        if: matrix.native == false
         run: |
           packaging/tests/verify-rpm.sh build/package-rpm "${RPM_ARCH}" \
             2>&1 | tee ci-logs/rpm/verify.log
 
       - name: Register QEMU for foreign-architecture containers
-        if: !matrix.native
+        if: matrix.native == false
         run: |
           docker run --privileged --rm tonistiigi/binfmt --install arm64,arm,riscv64
 
