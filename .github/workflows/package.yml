@@ -187,11 +187,16 @@ jobs:
               pkg-config \
               python3
           else
+            # Default Ubuntu mirrors do not carry armhf/riscv64 (and
+            # security.ubuntu.com even 404s arm64), so switch to
+            # ports.ubuntu.com which hosts every architecture including amd64.
+            sudo mv /etc/apt/sources.list.d/ubuntu.sources \
+              /etc/apt/sources.list.d/ubuntu.sources.disabled
+            printf 'Types: deb\nURIs: http://ports.ubuntu.com/ubuntu-ports\nSuites: noble noble-updates noble-backports noble-security\nComponents: main universe restricted multiverse\nArchitectures: amd64 %s\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n' \
+              "${DEB_ARCH}" |
+              sudo tee /etc/apt/sources.list.d/minitun-ports.sources >/dev/null
             sudo dpkg --add-architecture "${DEB_ARCH}"
-            if [[ "${DEB_ARCH}" == "riscv64" ]]; then
-              echo "deb [arch=riscv64] http://ports.ubuntu.com/ubuntu-ports noble main universe" | \
-                sudo tee /etc/apt/sources.list.d/riscv64.list >/dev/null
-            fi
+            sudo apt-get update
             sudo apt-get install --no-install-recommends --yes \
               "gcc-${TRIPLET}" \
               "g++-${TRIPLET}" \
@@ -214,7 +219,7 @@ jobs:
           key: package-deb-fetchcontent-${{ matrix.deb_arch }}-${{ hashFiles('cmake/Dependencies.cmake') }}
 
       - name: Configure DEB build (native)
-        if: matrix.native == 'true'
+        if: matrix.native
         env:
           CC: clang
           CXX: clang++
@@ -230,7 +235,7 @@ jobs:
             2>&1 | tee ci-logs/deb/configure.log
 
       - name: Configure DEB build (cross)
-        if: matrix.native != 'true'
+        if: !matrix.native
         run: |
           mkdir -p ci-logs/deb
           version_arguments=()
@@ -261,7 +266,7 @@ jobs:
             2>&1 | tee ci-logs/deb/build.log
 
       - name: Test DEB build
-        if: matrix.native == 'true'
+        if: matrix.native
         run: |
           ctest --test-dir build/package-deb --output-on-failure --no-tests=error \
             2>&1 | tee ci-logs/deb/ctest.log
@@ -277,7 +282,7 @@ jobs:
             2>&1 | tee ci-logs/deb/verify.log
 
       - name: Register QEMU for foreign-architecture containers
-        if: matrix.native != 'true'
+        if: !matrix.native
         run: |
           docker run --privileged --rm tonistiigi/binfmt --install arm64,arm,riscv64
 
@@ -390,7 +395,7 @@ jobs:
           fi
 
       - name: Build, test, and inspect RPM packages in Fedora
-        if: matrix.native == 'true'
+        if: matrix.native
         run: |
           mkdir -p ci-logs/rpm
           docker run --rm --platform linux/amd64 \
@@ -436,7 +441,7 @@ jobs:
             ' 2>&1 | tee ci-logs/rpm/build-test-package.log
 
       - name: Smoke test RPM packages in clean Fedora
-        if: matrix.native == 'true'
+        if: matrix.native
         run: |
           docker run --rm --platform linux/amd64 \
             -v "${PWD}/build/package-rpm:/packages:ro" \
@@ -446,14 +451,17 @@ jobs:
             2>&1 | tee ci-logs/rpm/smoke.log
 
       - name: Install RPM cross build dependencies
-        if: matrix.native != 'true'
+        if: !matrix.native
         run: |
-          sudo apt-get update
+          # Default Ubuntu mirrors 404 for armhf/riscv64 and security updates
+          # for arm64; ports.ubuntu.com hosts every architecture including
+          # amd64, so switch the runner to it for cross builds.
+          sudo mv /etc/apt/sources.list.d/ubuntu.sources \
+            /etc/apt/sources.list.d/ubuntu.sources.disabled
+          printf 'Types: deb\nURIs: http://ports.ubuntu.com/ubuntu-ports\nSuites: noble noble-updates noble-backports noble-security\nComponents: main universe restricted multiverse\nArchitectures: amd64 %s\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n' \
+            "${DEB_ARCH}" |
+            sudo tee /etc/apt/sources.list.d/minitun-ports.sources >/dev/null
           sudo dpkg --add-architecture "${DEB_ARCH}"
-          if [[ "${DEB_ARCH}" == "riscv64" ]]; then
-            echo "deb [arch=riscv64] http://ports.ubuntu.com/ubuntu-ports noble main universe" | \
-              sudo tee /etc/apt/sources.list.d/riscv64.list >/dev/null
-          fi
           sudo apt-get update
           sudo apt-get install --no-install-recommends --yes \
             "gcc-${TRIPLET}" \
@@ -470,14 +478,14 @@ jobs:
             rpm
 
       - name: Restore fetched dependencies
-        if: matrix.native != 'true'
+        if: !matrix.native
         uses: actions/cache@v6
         with:
           path: ~/.cache/minitun-fetchcontent/package-rpm
           key: package-rpm-fetchcontent-${{ matrix.rpm_arch }}-${{ hashFiles('cmake/Dependencies.cmake') }}
 
       - name: Configure RPM build (cross)
-        if: matrix.native != 'true'
+        if: !matrix.native
         run: |
           mkdir -p ci-logs/rpm
           version_arguments=()
@@ -500,25 +508,25 @@ jobs:
             2>&1 | tee ci-logs/rpm/configure.log
 
       - name: Build RPM binaries
-        if: matrix.native != 'true'
+        if: !matrix.native
         run: |
           cmake --build --preset package-rpm --parallel 2 \
             2>&1 | tee ci-logs/rpm/build.log
 
       - name: Generate RPM packages
-        if: matrix.native != 'true'
+        if: !matrix.native
         run: |
           cpack --config build/package-rpm/CPackConfig.cmake -G RPM \
             2>&1 | tee ci-logs/rpm/cpack.log
 
       - name: Verify RPM metadata and contents
-        if: matrix.native != 'true'
+        if: !matrix.native
         run: |
           packaging/tests/verify-rpm.sh build/package-rpm "${RPM_ARCH}" \
             2>&1 | tee ci-logs/rpm/verify.log
 
       - name: Register QEMU for foreign-architecture containers
-        if: matrix.native != 'true'
+        if: !matrix.native
         run: |
           docker run --privileged --rm tonistiigi/binfmt --install arm64,arm,riscv64
 

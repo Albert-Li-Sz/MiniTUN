@@ -161,6 +161,12 @@ fi
 
 # Generate the repository index (Packages/Packages.gz for 24.10 opkg,
 # packages.adb for 25.12 apk). The release pipeline signs these indexes.
-make package/index
+if ! make package/index; then
+	echo "make package/index failed; retrying verbosely for diagnostics" >&2
+	make -j1 V=sc package/index || true
+	echo "bin/packages layout:" >&2
+	find bin/packages -maxdepth 3 -print 2>/dev/null | sort | head -100 >&2
+	exit 1
+fi
 
 printf 'built MiniTun %s from %s\n' "$package_version" "$source_tarball"
