@@ -256,6 +256,7 @@ jobs:
             -DCMAKE_SYSTEM_PROCESSOR="${SYSTEM_PROCESSOR}" \
             -DCMAKE_C_COMPILER="${TRIPLET}-gcc" \
             -DCMAKE_CXX_COMPILER="${TRIPLET}-g++" \
+            -DCMAKE_LIBRARY_ARCHITECTURE="${TRIPLET}" \
             -DCMAKE_FIND_ROOT_PATH=/usr \
             -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER \
             -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY \
@@ -513,11 +514,13 @@ jobs:
             -DCMAKE_SYSTEM_PROCESSOR="${SYSTEM_PROCESSOR}" \
             -DCMAKE_C_COMPILER="${TRIPLET}-gcc" \
             -DCMAKE_CXX_COMPILER="${TRIPLET}-g++" \
+            -DCMAKE_LIBRARY_ARCHITECTURE="${TRIPLET}" \
             -DCMAKE_FIND_ROOT_PATH=/usr \
             -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER \
             -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY \
             -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY \
             -DCPACK_RPM_PACKAGE_ARCHITECTURE="${RPM_ARCH}" \
+            -DMINITUN_USE_SYSTEM_DEPS=OFF \
             -DMINITUN_BUILD_TESTS=OFF \
             "${version_arguments[@]}" \
             2>&1 | tee ci-logs/rpm/configure.log

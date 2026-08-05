@@ -149,6 +149,11 @@ sed_replace .config \
 	printf '%s\n' '# CONFIG_ALL is not set'
 	printf '%s\n' '# CONFIG_ALL_KMODS is not set'
 	printf '%s\n' '# CONFIG_ALL_NONSHARED is not set'
+	# The SDK defaults to CONFIG_SIGNED_PACKAGES=y, which makes
+	# `make package/index` require a key-build signing key. Indexes are
+	# intentionally generated unsigned here; the release pipeline signs them
+	# with the MiniTun repository key.
+	printf '%s\n' '# CONFIG_SIGNED_PACKAGES is not set'
 	printf '%s\n' 'CONFIG_PACKAGE_minitun-client=m'
 	printf '%s\n' 'CONFIG_PACKAGE_minitun-server=m'
 } >>.config
