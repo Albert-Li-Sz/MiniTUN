@@ -658,6 +658,9 @@ jobs:
             target: sifiveu
             subtarget: generic
             package_arch: riscv64_generic
+            # OpenWrt 24.10 opkg names the sifiveu package architecture
+            # riscv64_riscv64; apk v3 (25.12) uses riscv64_generic.
+            verify_arch: riscv64_riscv64
             package_kind: ipk
             qemu: qemu-riscv64-static
             sdk_file: openwrt-sdk-24.10.8-sifiveu-generic_gcc-13.3.0_musl.Linux-x86_64.tar.zst
@@ -813,7 +816,7 @@ jobs:
             "${sdk_dir}" \
             "${package_dir}" \
             "${artifact_version}" \
-            "${{ matrix.package_arch }}" \
+            "${{ matrix.verify_arch || matrix.package_arch }}" \
             "${{ matrix.qemu }}" \
             "${{ matrix.package_kind }}" \
             2>&1 | tee "ci-logs/openwrt/${{ matrix.openwrt_version }}/${{ matrix.package_arch }}/verify.log"
