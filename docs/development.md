@@ -301,8 +301,8 @@ GitHub Actions 包含四条工作流：
 必须与 `CMakeLists.txt` 中的项目版本一致：
 
 ```bash
-git tag -a v0.3.1 -m "MiniTun v0.3.1"
-git push origin v0.3.1
+git tag -a v0.4.0 -m "MiniTun v0.4.0"
+git push origin v0.4.0
 ```
 
 发布工作流仅在全部软件包测试通过后创建 GitHub Release。每个版本包含
