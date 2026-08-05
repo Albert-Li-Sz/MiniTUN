@@ -12,7 +12,7 @@ PKG_RELEASE:=1
 # locally and patch PKG_HASH through packaging/openwrt/build-sdk.sh.
 PKG_SOURCE:=minitun-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=https://github.com/LMTINSUZHOU/MiniTUN/releases/download/v$(PKG_VERSION)/
-PKG_HASH:=fee1e4c929748d8ccea8dd3af5441f32d266319af90c68b32cb80d422e08b94d
+PKG_HASH:=448a891fc6000ed41aa89d741429ddfe0bd145185dce06ebcf7e98939f3d36f5
 
 PKG_LICENSE:=MIT
 PKG_LICENSE_FILES:=LICENSE
