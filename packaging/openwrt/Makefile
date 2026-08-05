@@ -18,6 +18,13 @@ ASIO_SOURCE:=minitun-asio-1.38.2.tar.bz2
 include $(INCLUDE_DIR)/package.mk
 include $(INCLUDE_DIR)/cmake.mk
 
+# MIPS toolchains keep some std::atomic operations in libatomic. The package
+# dependency above covers runtime installation; pass the library explicitly
+# so the cross-link step succeeds for both big- and little-endian targets.
+ifneq ($(filter mips%,$(ARCH)),)
+TARGET_LDFLAGS += -latomic
+endif
+
 define Package/minitun/default
   SECTION:=net
   CATEGORY:=Network

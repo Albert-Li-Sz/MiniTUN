@@ -134,10 +134,10 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                     asio::co_spawn(
                         self->strand_,
                         self->persist_state(storage::ServerActualState::error,
-                                            common::Error{common::ErrorCode::internal_error,
-                                                          "remote session failed unexpectedly"},
+                                            {common::ErrorCode::internal_error,
+                                             "remote session failed unexpectedly"},
                                             self->backoff_.attempt()),
-                        [self](const std::exception_ptr) {});
+                        [self](const std::exception_ptr, common::Result<void>) {});
                     common::log_error("remote server session ended with an exception",
                                       self->log_context(common::ErrorCode::internal_error));
                 }
@@ -233,6 +233,13 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
             common::Error error{common::ErrorCode::connection_failed, "remote server disconnected"};
         };
 
+        // GCC 12 may duplicate destruction of owning temporaries in a co_await
+        // call expression. Copy views into owning DB tasks only in non-coroutine helpers.
+        struct PersistenceErrorView final {
+            std::optional<common::ErrorCode> code;
+            std::string_view message;
+        };
+
         [[nodiscard]] asio::awaitable<void> run() {
             while (!stopping_) {
                 terminal_state_.store(TerminalState::running);
@@ -240,23 +247,27 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                 stop_worker_pool();
                 close_transport();
                 session_generation_ = 0U;
-                co_await mark_tunnels_pending(
-                    stopping_ ? std::nullopt : std::optional<common::Error>{result.error});
+                static_cast<void>(co_await mark_tunnels_pending(
+                    stopping_ ? PersistenceErrorView{}
+                              : PersistenceErrorView{result.error.code(),
+                                                     result.error.message()}));
                 if (stopping_ || result.kind == AttemptKind::stopped) {
                     terminal_state_.store(TerminalState::stopped);
                     co_return;
                 }
                 if (result.kind == AttemptKind::authentication_failed) {
                     terminal_state_.store(TerminalState::authentication_failed);
-                    co_await persist_state(storage::ServerActualState::not_authenticated,
-                                           result.error, backoff_.attempt());
+                    static_cast<void>(co_await persist_state(
+                        storage::ServerActualState::not_authenticated,
+                        {result.error.code(), result.error.message()}, backoff_.attempt()));
                     co_return;
                 }
 
                 const auto delay = backoff_.next_delay();
                 metrics_->reconnects.fetch_add(1U, std::memory_order_relaxed);
-                co_await persist_state(storage::ServerActualState::backoff, result.error,
-                                       backoff_.attempt());
+                static_cast<void>(co_await persist_state(
+                    storage::ServerActualState::backoff,
+                    {result.error.code(), result.error.message()}, backoff_.attempt()));
                 common::log_warn("remote server connection entered backoff",
                                  log_context(result.error.code()));
                 reconnect_timer_.expires_after(delay);
@@ -275,8 +286,8 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
             protocol::StateMachine state{protocol::PeerRole::client,
                                          protocol::ConnectionKind::control};
             stream_ = std::make_unique<protocol::TlsStream>(strand_, *tls_context_);
-            co_await persist_state(storage::ServerActualState::connecting, std::nullopt,
-                                   backoff_.attempt());
+            static_cast<void>(co_await persist_state(storage::ServerActualState::connecting, {},
+                                                     backoff_.attempt()));
 
             arm_operation_timeout(options_.connect_timeout);
             asio::error_code error;
@@ -298,8 +309,8 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
             if (!configured) {
                 co_return disconnected(configured.error().code(), configured.error().message());
             }
-            co_await persist_state(storage::ServerActualState::tls_handshake, std::nullopt,
-                                   backoff_.attempt());
+            static_cast<void>(co_await persist_state(storage::ServerActualState::tls_handshake, {},
+                                                     backoff_.attempt()));
             arm_operation_timeout(options_.handshake_timeout);
             co_await stream_->async_handshake(asio::ssl::stream_base::client,
                                               asio::redirect_error(asio::use_awaitable, error));
@@ -309,8 +320,8 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                                        "TLS peer verification or handshake failed");
             }
 
-            co_await persist_state(storage::ServerActualState::authenticating, std::nullopt,
-                                   backoff_.attempt());
+            static_cast<void>(co_await persist_state(storage::ServerActualState::authenticating, {},
+                                                     backoff_.attempt()));
             auto token =
                 co_await run_db([this] { return credentials_.get(credential_key(server_)); });
             if (!token) {
@@ -430,8 +441,8 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
             backoff_.reset();
             const auto latency = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - attempt_started);
-            co_await persist_state(storage::ServerActualState::online, std::nullopt, 0U,
-                                   latency.count(), remote_server_id_);
+            static_cast<void>(co_await persist_state(storage::ServerActualState::online, {}, 0U,
+                                                     latency.count(), remote_server_id_));
             common::log_info("remote server session is online", log_context());
 
             const auto heartbeat_interval =
@@ -669,21 +680,17 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                     auto parsed = common::Id::parse(tunnel_id, common::IdKind::tunnel);
                     if (parsed) {
                         const common::Id parsed_id = *parsed;
-                        auto current = co_await run_db([this, parsed_id] {
-                            return repository_.tunnels().get_by_id(parsed_id);
-                        });
+                        auto current = co_await load_tunnel(parsed_id);
                         if (current) {
                             if (current->desired_state == storage::TunnelDesiredState::removed) {
-                                auto erased = co_await run_db([this, parsed_id] {
-                                    return repository_.tunnels().erase(parsed_id);
-                                });
+                                auto erased = co_await erase_tunnel(parsed_id);
                                 if (!erased &&
                                     erased.error().code() != common::ErrorCode::not_found) {
                                     co_return erased;
                                 }
                             } else {
                                 auto updated = co_await persist_tunnel_state(
-                                    *parsed, storage::TunnelActualState::disabled, std::nullopt,
+                                    *parsed, storage::TunnelActualState::disabled, {},
                                     true);
                                 if (!updated) {
                                     co_return updated;
@@ -699,9 +706,7 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                 if (tunnel.desired_state != storage::TunnelDesiredState::removed) {
                     continue;
                 }
-                auto erased = co_await run_db([this, tunnel_id = tunnel.id] {
-                    return repository_.tunnels().erase(tunnel_id);
-                });
+                auto erased = co_await erase_tunnel(tunnel.id);
                 if (!erased && erased.error().code() != common::ErrorCode::not_found) {
                     co_return erased;
                 }
@@ -718,7 +723,7 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                     local_endpoints_.insert_or_assign(tunnel_id, tunnel.local_endpoint);
                     if (tunnel.actual_state != storage::TunnelActualState::active) {
                         auto updated = co_await persist_tunnel_state(
-                            tunnel.id, storage::TunnelActualState::active, std::nullopt, true);
+                            tunnel.id, storage::TunnelActualState::active, {}, true);
                         if (!updated) {
                             co_return updated;
                         }
@@ -736,7 +741,7 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                     const auto& tunnel = pending_registrations[index];
                     const std::string tunnel_id = tunnel.id.str();
                     auto updating = co_await persist_tunnel_state(
-                        tunnel.id, storage::TunnelActualState::registering, std::nullopt);
+                        tunnel.id, storage::TunnelActualState::registering, {});
                     if (!updating) {
                         co_return updating;
                     }
@@ -773,7 +778,7 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                         registered_tunnels_.insert(tunnel_id);
                         local_endpoints_.insert_or_assign(tunnel_id, tunnel.local_endpoint);
                         auto updated = co_await persist_tunnel_state(
-                            tunnel.id, storage::TunnelActualState::active, std::nullopt, true);
+                            tunnel.id, storage::TunnelActualState::active, {}, true);
                         if (!updated) {
                             co_return updated;
                         }
@@ -788,8 +793,8 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                         }
                         auto updated = co_await persist_tunnel_state(
                             tunnel.id, storage::TunnelActualState::failed,
-                            common::Error{rejected->code,
-                                          "remote tunnel registration was rejected"},
+                            PersistenceErrorView{rejected->code,
+                                                 "remote tunnel registration was rejected"},
                             true);
                         if (!updated) {
                             co_return updated;
@@ -1012,11 +1017,23 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
             return value;
         }
 
+        [[nodiscard]] asio::awaitable<common::Result<storage::TunnelRecord>>
+        load_tunnel(const common::Id& tunnel_id) {
+            return run_db(
+                [this, tunnel_id] { return repository_.tunnels().get_by_id(tunnel_id); });
+        }
+
+        [[nodiscard]] asio::awaitable<common::Result<void>>
+        erase_tunnel(const common::Id& tunnel_id) {
+            return run_db([this, tunnel_id] { return repository_.tunnels().erase(tunnel_id); });
+        }
+
         [[nodiscard]] asio::awaitable<common::Result<void>>
         persist_tunnel_state(const common::Id& tunnel_id, const storage::TunnelActualState state,
-                             const std::optional<common::Error>& error,
+                             const PersistenceErrorView error = {},
                              const bool synchronized = false) {
-            auto persisted = co_await run_db([this, tunnel_id, state, error, synchronized] {
+            return run_db([this, tunnel_id, state, error_code = error.code,
+                           error_message = std::string{error.message}, synchronized] {
                 try {
                     const std::scoped_lock lock{persistence_mutex_};
                     if (!persistence_allowed_) {
@@ -1034,9 +1051,9 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                                                              "tunnel belongs to another server");
                     }
                     current->actual_state = state;
-                    if (error.has_value()) {
-                        current->last_error_code = error->code();
-                        current->last_error_message = error->message();
+                    if (error_code.has_value()) {
+                        current->last_error_code = *error_code;
+                        current->last_error_message = error_message;
                     } else {
                         current->last_error_code.reset();
                         current->last_error_message.reset();
@@ -1065,21 +1082,25 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                                                          "failed to persist tunnel state");
                 }
             });
-            co_return persisted;
         }
 
-        [[nodiscard]] asio::awaitable<void>
-        mark_tunnels_pending(const std::optional<common::Error>& error) {
+        [[nodiscard]] asio::awaitable<common::Result<void>>
+        mark_tunnels_pending(const PersistenceErrorView error = {}) {
             registered_tunnels_.clear();
             local_endpoints_.clear();
-            auto persisted = co_await run_db([this, error] {
+            return run_db([this, error_code = error.code,
+                           error_message = std::string{error.message}] {
                 try {
                     const std::scoped_lock lock{persistence_mutex_};
                     if (!persistence_allowed_) {
                         return common::Result<void>::success();
                     }
+                    std::optional<common::Error> persistence_error;
+                    if (error_code.has_value()) {
+                        persistence_error.emplace(*error_code, error_message);
+                    }
                     auto updated = repository_.tunnels().mark_active_pending_by_server(
-                        server_.id, error, common::unix_milliseconds_now());
+                        server_.id, persistence_error, common::unix_milliseconds_now());
                     if (!updated) {
                         metrics_->persistence_errors.fetch_add(1U, std::memory_order_relaxed);
                         common::log_error(
@@ -1098,17 +1119,18 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                                                          "failed to persist pending tunnel states");
                 }
             });
-            static_cast<void>(persisted);
         }
 
-        [[nodiscard]] asio::awaitable<void>
+        [[nodiscard]] asio::awaitable<common::Result<void>>
         persist_state(const storage::ServerActualState state,
-                      const std::optional<common::Error> error,
+                      const PersistenceErrorView error,
                       const std::uint32_t reconnect_attempt,
                       const std::optional<std::int64_t> latency_ms = std::nullopt,
-                      const std::optional<std::string> remote_server_id = std::nullopt) {
-            auto persisted = co_await run_db(
-                [this, state, error, reconnect_attempt, latency_ms, remote_server_id] {
+                      const std::string_view remote_server_id = {}) {
+            return run_db(
+                [this, state, error_code = error.code,
+                 error_message = std::string{error.message}, reconnect_attempt, latency_ms,
+                 remote_server_id = std::string{remote_server_id}] {
                     try {
                         const std::scoped_lock lock{persistence_mutex_};
                         if (!persistence_allowed_) {
@@ -1136,12 +1158,12 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                         current->actual_state = state;
                         current->reconnect_attempt = reconnect_attempt;
                         current->latency_ms = latency_ms;
-                        if (remote_server_id.has_value()) {
+                        if (!remote_server_id.empty()) {
                             current->remote_server_id = remote_server_id;
                         }
-                        if (error.has_value()) {
-                            current->last_error_code = error->code();
-                            current->last_error_message = error->message();
+                        if (error_code.has_value()) {
+                            current->last_error_code = *error_code;
+                            current->last_error_message = error_message;
                         } else {
                             current->last_error_code.reset();
                             current->last_error_message.reset();
@@ -1172,7 +1194,6 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                                                              "failed to persist server state");
                     }
                 });
-            static_cast<void>(persisted);
         }
 
         [[nodiscard]] AttemptResult disconnected(const common::ErrorCode code,
