@@ -536,6 +536,10 @@ jobs:
       - name: Generate RPM packages
         if: matrix.native == false
         run: |
+          # rpmbuild's brp-strip runs the host strip, which cannot process
+          # cross-compiled ELF binaries. Disable the os install post-processing
+          # hooks (compress/strip/elfperms) for cross RPMs.
+          printf '%%__os_install_post %%{nil}\n' >"${HOME}/.rpmmacros"
           cpack --config build/package-rpm/CPackConfig.cmake -G RPM \
             2>&1 | tee ci-logs/rpm/cpack.log
 
