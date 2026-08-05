@@ -189,12 +189,20 @@ jobs:
           else
             # Default Ubuntu mirrors do not carry armhf/riscv64 (and
             # security.ubuntu.com even 404s arm64), so switch to
-            # ports.ubuntu.com which hosts every architecture including amd64.
+            # archive.ubuntu.com for amd64 plus ports.ubuntu.com for the
+            # cross architecture (ports does not serve amd64).
             sudo mv /etc/apt/sources.list.d/ubuntu.sources \
               /etc/apt/sources.list.d/ubuntu.sources.disabled
-            printf 'Types: deb\nURIs: http://ports.ubuntu.com/ubuntu-ports\nSuites: noble noble-updates noble-backports noble-security\nComponents: main universe restricted multiverse\nArchitectures: amd64 %s\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n' \
-              "${DEB_ARCH}" |
-              sudo tee /etc/apt/sources.list.d/minitun-ports.sources >/dev/null
+            {
+              echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu noble main universe restricted multiverse"
+              echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu noble-updates main universe restricted multiverse"
+              echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu noble-backports main universe restricted multiverse"
+              echo "deb [arch=amd64] http://security.ubuntu.com/ubuntu noble-security main universe restricted multiverse"
+              echo "deb [arch=${DEB_ARCH}] http://ports.ubuntu.com/ubuntu-ports noble main universe restricted multiverse"
+              echo "deb [arch=${DEB_ARCH}] http://ports.ubuntu.com/ubuntu-ports noble-updates main universe restricted multiverse"
+              echo "deb [arch=${DEB_ARCH}] http://ports.ubuntu.com/ubuntu-ports noble-backports main universe restricted multiverse"
+              echo "deb [arch=${DEB_ARCH}] http://ports.ubuntu.com/ubuntu-ports noble-security main universe restricted multiverse"
+            } | sudo tee /etc/apt/sources.list.d/minitun-cross.list >/dev/null
             sudo dpkg --add-architecture "${DEB_ARCH}"
             sudo apt-get update
             sudo apt-get install --no-install-recommends --yes \
@@ -454,13 +462,20 @@ jobs:
         if: matrix.native == false
         run: |
           # Default Ubuntu mirrors 404 for armhf/riscv64 and security updates
-          # for arm64; ports.ubuntu.com hosts every architecture including
-          # amd64, so switch the runner to it for cross builds.
+          # for arm64. Use archive.ubuntu.com for amd64 plus ports.ubuntu.com
+          # for the cross architecture (ports does not serve amd64).
           sudo mv /etc/apt/sources.list.d/ubuntu.sources \
             /etc/apt/sources.list.d/ubuntu.sources.disabled
-          printf 'Types: deb\nURIs: http://ports.ubuntu.com/ubuntu-ports\nSuites: noble noble-updates noble-backports noble-security\nComponents: main universe restricted multiverse\nArchitectures: amd64 %s\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n' \
-            "${DEB_ARCH}" |
-            sudo tee /etc/apt/sources.list.d/minitun-ports.sources >/dev/null
+          {
+            echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu noble main universe restricted multiverse"
+            echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu noble-updates main universe restricted multiverse"
+            echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu noble-backports main universe restricted multiverse"
+            echo "deb [arch=amd64] http://security.ubuntu.com/ubuntu noble-security main universe restricted multiverse"
+            echo "deb [arch=${DEB_ARCH}] http://ports.ubuntu.com/ubuntu-ports noble main universe restricted multiverse"
+            echo "deb [arch=${DEB_ARCH}] http://ports.ubuntu.com/ubuntu-ports noble-updates main universe restricted multiverse"
+            echo "deb [arch=${DEB_ARCH}] http://ports.ubuntu.com/ubuntu-ports noble-backports main universe restricted multiverse"
+            echo "deb [arch=${DEB_ARCH}] http://ports.ubuntu.com/ubuntu-ports noble-security main universe restricted multiverse"
+          } | sudo tee /etc/apt/sources.list.d/minitun-cross.list >/dev/null
           sudo dpkg --add-architecture "${DEB_ARCH}"
           sudo apt-get update
           sudo apt-get install --no-install-recommends --yes \
@@ -531,7 +546,7 @@ jobs:
           docker run --privileged --rm tonistiigi/binfmt --install arm64,arm,riscv64
 
       - name: Smoke test RPM packages in clean container
-        if: matrix.native != 'true'
+        if: matrix.native == false
         run: |
           docker run --rm --platform "${{ matrix.docker_platform }}" \
             -v "${PWD}/build/package-rpm:/packages:ro" \

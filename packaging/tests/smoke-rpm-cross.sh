@@ -30,7 +30,7 @@ apt-get install -y --no-install-recommends \
 	libssl3t64 \
 	libstdc++6 \
 	rpm \
-	systemd-sysusers
+	systemd
 
 case "$expected_arch" in
 	armv7hl)
