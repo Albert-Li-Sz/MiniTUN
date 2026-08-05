@@ -145,8 +145,8 @@ uint32 网络字节序 JSON 字节长度 | UTF-8 JSON 负载
 目录语义保护条目时才允许可写祖先目录。由守护进程所有、模式为 `0600` 的伴随锁
 文件串行化陈旧路径替换，并保持锁定直至套接字清理完成。启动时拒绝符号链接和非
 套接字冲突，在替换自有的陈旧套接字前先探测，并且只删除自己创建的同一 inode。
-生产路径为 `/run/minitun/minitun.sock`。已安装的 systemd unit 或 OpenWrt procd
-服务会创建受保护的 `minitun:minitun` 运行时目录，并以该账户运行服务。
+生产路径为 `/run/minitun/minitun.sock`。已安装的 systemd unit
+会创建受保护的 `minitun:minitun` 运行时目录，并以该账户运行服务。
 
 ## 本地控制面
 
@@ -178,7 +178,7 @@ tun.add     tun.list      tun.inspect  tun.remove
 `active/pending`。
 
 凭据后端是独立 SQLite 数据库（DEB/RPM 默认位于
-`/var/lib/minitun/credentials.db`，OpenWrt 默认位于 `/etc/minitun/credentials.db`）。它通过
+`/var/lib/minitun/credentials.db`）。它通过
 `CredentialStore` 接口保存不透明键/二进制值对，强制要求由守护进程所有且模式为
 `0600` 的普通文件，使用绑定参数和事务更新，启用 SQLite 安全删除，并拒绝不支持
 或没有版本信息的非空模式。状态数据库只保存不透明键。Token 不会出现在响应、错误
@@ -281,5 +281,5 @@ Worker 预算拒绝次数；`connections.pending` 在客户端侧没有公网排
 - MiniTun 只提供 TCP 反向隧道，不实现 UDP 转发；
 - 不实现 P2P、NAT 穿透、SOCKS5 代理或通用端口转发协议；
 - 每条活动中继使用独立 TLS Worker 连接，不在单连接中复用多条数据流；
-- 生产服务管理、账户和软件包布局面向 Linux systemd 与 OpenWrt procd；
+- 生产服务管理、账户和软件包布局面向 Linux systemd；
 - 管理员负责 CA、证书、私钥、Token、防火墙和端口白名单策略。

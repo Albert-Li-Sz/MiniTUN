@@ -260,115 +260,7 @@ packaging/tests/smoke-rpm.sh "$PWD/build/package-rpm"
 普通升级和卸载保留状态目录；Debian purge 删除状态目录，RPM 卸载则始终保留状态。
 软件包不会携带或覆盖管理员提供的证书、私钥和 Token。
 
-## 构建 OpenWrt 软件包
-
-MiniTun 同时发布 OpenWrt 24.10.8（opkg，`.ipk`）与 25.12.5（apk v3，`.apk`）
-软件包。每个 SDK 只能为对应的 target/subtarget 交叉编译，因此不应仅根据 CPU
-名称交换不同 OpenWrt 目标的包。官方发布矩阵如下（两个版本使用同一组目标）：
-
-| target/subtarget | APK 架构 | 指令集 |
-| --- | --- | --- |
-| `x86/64` | `x86_64` | x86-64 |
-| `armsr/armv8` | `aarch64_generic` | AArch64 |
-| `armsr/armv7` | `arm_cortex-a15_neon-vfpv4` | ARMv7-A |
-| `ath79/generic` | `mips_24kc` | MIPS32 大端 |
-| `ramips/mt7621` | `mipsel_24kc` | MIPS32 小端 |
-| `sifiveu/generic` | `riscv64_generic` | RISC-V 64 |
-
-包由标准 feed 机制构建：`packaging/openwrt/Makefile` 声明
-`PKG_SOURCE`/`PKG_SOURCE_URL`/`PKG_HASH`，指向随 GitHub Release 发布的
-`minitun-<版本>.tar.gz` 源 tarball（用 `git archive --format=tar.gz` 确定性生成）。
-源 tarball 排除 `packaging/openwrt/Makefile` 本身，避免 `PKG_HASH` 自引用；
-并用 `packaging/openwrt/strip-tar-pax.py` 剥离 `git archive` 写入的
-`pax_global_header`（含提交 ID），使哈希只取决于归档内容与提交时间；
-生成统一走 `packaging/openwrt/make-source-tarball.sh`，与 `release.yml`、
-`build-sdk.sh` 保持一致。
-CLI11、nlohmann/json、spdlog 与 Asio 四个固定版本依赖仍由 OpenWrt `Download/`
-下载并解包到 `third_party/`，与 CMake FetchContent 的版本一致。
-
-在 x86_64 Linux 构建主机上安装 SDK 前置依赖：
-
-```bash
-sudo apt-get update
-sudo apt-get install --no-install-recommends --yes \
-  build-essential ca-certificates cmake curl file gawk gettext git jq \
-  libncurses-dev ninja-build openssl python3 qemu-user-static rsync unzip wget zstd
-```
-
-从 [OpenWrt 官方目录](https://downloads.openwrt.org/releases/)
-下载与目标完全匹配的 SDK（24.10.8 或 25.12.5）及 `sha256sums`。
-以 25.12.5 `x86/64` 为例：
-
-```bash
-export MINITUN_SDK_ARCHIVE="$PWD/openwrt-sdk-25.12.5-x86-64_gcc-14.3.0_musl.Linux-x86_64.tar.zst"
-sha256sum --check sha256sums --ignore-missing
-
-mkdir -p build/openwrt/x86_64/sdk
-tar --zstd --extract --file "$MINITUN_SDK_ARCHIVE" \
-  --directory build/openwrt/x86_64/sdk --strip-components=1
-
-MINITUN_OPENWRT_JOBS=2 \
-  packaging/openwrt/build-sdk.sh \
-    "$PWD/build/openwrt/x86_64/sdk" "$PWD" 0.3.1
-```
-
-`build-sdk.sh` 会按 SDK 内锁定的 feed 提交安装 OpenSSL、SQLite 与 CA 依赖，
-并先从源码 checkout 生成确定性源 tarball 放入 SDK 的 `dl/`，再自动把
-`package/minitun/Makefile` 中的 `PKG_VERSION` 与 `PKG_HASH` 修正为与本地 tarball
-一致（未发布版本不需要等待 GitHub Release 资产）。CLI11、nlohmann/json、spdlog
-与 Asio 的固定版本源码由 OpenWrt 下载系统获取和校验；CMake 随后以完全离线模式
-使用这些源码。脚本会清理 SDK 中的全包默认选项，然后仅编译 `minitun-client` 和
-`minitun-server`，最后执行 `make package/index` 生成仓库索引
-（24.10 为 `Packages`/`Packages.gz`，25.12 为 `packages.adb`）。
-为防止混入上一次构建的配置，脚本要求 SDK 中不存在 `package/minitun`；
-重复构建时应重新解压 SDK。
-
-软件包位于 SDK 的 `bin/packages/` 目录。可使用 SDK 自带的工具、`file` 与 QEMU
-同时验证包元数据、布局、架构和可执行文件启动；最后一个参数指定包格式
-（`apk` 或 `ipk`）：
-
-```bash
-mkdir -p build/openwrt/x86_64/packages
-find build/openwrt/x86_64/sdk/bin/packages -type f \
-  -name 'minitun-*.apk' \
-  -exec cp {} build/openwrt/x86_64/packages/ \;
-
-packaging/tests/verify-openwrt.sh \
-  "$PWD/build/openwrt/x86_64/sdk" \
-  "$PWD/build/openwrt/x86_64/packages" \
-  0.3.1 x86_64 qemu-x86_64-static apk
-```
-
-OpenWrt 包默认不启用服务。客户端和服务端分别使用
-`/etc/config/minitun` 与 `/etc/config/minitun-server`，由 procd 以专用非特权账户
-运行。服务端默认不向 `--allow-ports` 传值，因此应用层允许
-`1-65535`；实际可绑定范围仍受进程权限、防火墙与设备资源限制。
-
-### 签名软件源与密钥轮换
-
-Release 工作流会把各架构的软件包和未签名索引组装为
-`openwrt/<版本>/<target>/<subtarget>/packages/`，并用同一把 usign Ed25519 密钥
-签名：24.10 的 `Packages` → `Packages.sig`，25.12 的 `packages.adb` →
-`packages.adb.sig`，然后发布到 GitHub Pages。公钥同时以两种形态提供：
-`minitun-build.pub`（usign，用于 opkg `/etc/opkg/keys/<key-id>`）与
-`minitun-build.pem`（Ed25519 SPKI PEM，用于 apk `/etc/apk/keys/`）。
-
-本地组装并签名仓库：
-
-```bash
-git clone https://git.openwrt.org/project/usign.git /tmp/usign
-cmake -S /tmp/usign -B /tmp/usign/build && cmake --build /tmp/usign/build
-
-packaging/openwrt/build-repo.sh \
-  "$PWD/openwrt-artifacts/dist" "$PWD/repo" \
-  "$PWD/key-build" "$PWD/key-build.pub" \
-  /tmp/usign/build/usign
-```
-
-密钥只由维护者持有，私钥经 base64 编码后存入 GitHub Actions Secret
-`MINITUN_OPENWRT_SIGN_KEY`，公钥存入 `MINITUN_OPENWRT_SIGN_PUB`。轮换时生成
-新密钥对并替换两个 Secret，下一个 Release 自动使用新密钥签名；已安装旧密钥的
-设备需要同步更换 `/etc/opkg/keys/` 与 `/etc/apk/keys/` 中的公钥。
+## 交叉编译 DEB/RPM 与 OCI 镜像
 
 ### 交叉编译 DEB/RPM
 
@@ -399,8 +291,8 @@ GitHub Actions 包含四条工作流：
 | --- | --- |
 | `ci.yml` | GCC/Clang 构建、完整 CTest 与 CLI 冒烟测试 |
 | `sanitizers.yml` | ASan、UBSan、TSan 与有界 fuzz 测试 |
-| `package.yml` | DEB/RPM 四架构（amd64/arm64/armhf/riscv64 与 x86_64/aarch64/armv7hl/riscv64）验收；OpenWrt 24.10.8 与 25.12.5 × 六架构交叉编译、IPK/APK 检查与 QEMU 运行测试；AArch64 两个版本各执行 TLS、SQLite 与真实 TCP 隧道端到端验证；Release 时构建并发布 OCI 镜像 |
-| `release.yml` | 校验版本 tag，复用打包工作流，生成并校验源 tarball，组装并签名 OpenWrt 软件源发布到 GitHub Pages，创建 GitHub Release |
+| `package.yml` | DEB/RPM 四架构（amd64/arm64/armhf/riscv64 与 x86_64/aarch64/armv7hl/riscv64）交叉编译与 QEMU 容器安装冒烟；Release 时构建并发布 OCI 镜像 |
+| `release.yml` | 校验版本 tag，复用打包工作流并创建 GitHub Release |
 
 `main` 分支触发的包使用 `MAJOR.MINOR.PATCH_pre<运行号>~<提交号>` 开发版本；
 文件名中的 `~` 会替换为 `-`。这些产物只用于持续验收，不与正式 Release 共用包版本。
@@ -415,10 +307,7 @@ git push origin v0.3.1
 
 发布工作流仅在全部软件包测试通过后创建 GitHub Release。每个版本包含
 四个架构的 Client/Server DEB（共八个）、四个架构的 Client/Server RPM（共八个）、
-两种 OpenWrt 版本 × 六种架构的 Client/Server 软件包（共二十四个）、确定性源
-tarball `minitun-<版本>.tar.gz`（其 SHA-256 与 `packaging/openwrt/Makefile` 的
-`PKG_HASH` 严格一致，供 OpenWrt feed 使用）和一份覆盖全部产物的 `SHA256SUMS`。
-Release 还会把签名 OpenWrt 软件源发布到 GitHub Pages。
+一份覆盖全部产物的 `SHA256SUMS`，以及发布到 `ghcr.io` 的 OCI 多架构镜像。
 
 ## 开发排障
 

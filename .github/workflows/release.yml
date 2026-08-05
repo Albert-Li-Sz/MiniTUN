@@ -67,83 +67,11 @@ jobs:
       package_version: ${{ needs.validate-tag.outputs.package_version }}
       publish_oci: true
 
-  openwrt-repo:
-    name: Publish signed OpenWrt repository
-    needs:
-      - validate-tag
-      - packages
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    permissions:
-      contents: read
-      pages: write
-      id-token: write
-    env:
-      PACKAGE_VERSION: ${{ needs.validate-tag.outputs.package_version }}
-
-    steps:
-      - name: Check out tagged source
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - name: Download OpenWrt artifacts
-        uses: actions/download-artifact@v8
-        with:
-          pattern: minitun-openwrt-*
-          merge-multiple: true
-          path: openwrt-artifacts
-
-      - name: Build usign
-        run: |
-          git clone --depth 1 https://git.openwrt.org/project/usign.git usign-src
-          cmake -S usign-src -B usign-build
-          cmake --build usign-build
-
-      - name: Materialize repository signing key
-        env:
-          MINITUN_OPENWRT_SIGN_KEY: ${{ secrets.MINITUN_OPENWRT_SIGN_KEY }}
-          MINITUN_OPENWRT_SIGN_PUB: ${{ secrets.MINITUN_OPENWRT_SIGN_PUB }}
-        run: |
-          if [[ -z "${MINITUN_OPENWRT_SIGN_KEY}" || -z "${MINITUN_OPENWRT_SIGN_PUB}" ]]; then
-            echo "MINITUN_OPENWRT_SIGN_KEY and MINITUN_OPENWRT_SIGN_PUB secrets are required" >&2
-            exit 1
-          fi
-          printf '%s\n' "${MINITUN_OPENWRT_SIGN_KEY}" | base64 -d > key-build
-          printf '%s\n' "${MINITUN_OPENWRT_SIGN_PUB}" | base64 -d > key-build.pub
-          chmod 0600 key-build
-          chmod 0644 key-build.pub
-
-      - name: Assemble and sign OpenWrt repository
-        run: |
-          packaging/openwrt/build-repo.sh \
-            "$PWD/openwrt-artifacts/dist" \
-            "$PWD/repo" \
-            "$PWD/key-build" \
-            "$PWD/key-build.pub" \
-            "$PWD/usign-build/usign"
-
-      - name: Configure GitHub Pages
-        uses: actions/configure-pages@v5
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: repo
-
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
-
   publish:
     name: Publish GitHub Release
     needs:
       - validate-tag
       - packages
-      - openwrt-repo
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -170,13 +98,6 @@ jobs:
           merge-multiple: true
           path: release-assets/rpm
 
-      - name: Download OpenWrt artifacts
-        uses: actions/download-artifact@v8
-        with:
-          pattern: minitun-openwrt-*
-          merge-multiple: true
-          path: release-assets/openwrt
-
       - name: Assemble and verify release assets
         env:
           PACKAGE_VERSION: ${{ needs.validate-tag.outputs.package_version }}
@@ -184,20 +105,6 @@ jobs:
           artifact_version=${PACKAGE_VERSION//~/-}
           dist_dir="release-assets/dist"
           install -d "${dist_dir}"
-
-          # Deterministic source tarball that the OpenWrt feed consumes.
-          packaging/openwrt/make-source-tarball.sh \
-            "${PWD}" \
-            "${PACKAGE_VERSION}" \
-            "${dist_dir}/minitun-${PACKAGE_VERSION}.tar.gz"
-          actual_hash=$(sha256sum \
-            "${dist_dir}/minitun-${PACKAGE_VERSION}.tar.gz" | awk '{ print $1 }')
-          expected_hash=$(awk -F':=' '$1 == "PKG_HASH" { print $2; exit }' \
-            packaging/openwrt/Makefile)
-          if [[ -z "${expected_hash}" || "${actual_hash}" != "${expected_hash}" ]]; then
-            echo "source tarball hash ${actual_hash} does not match PKG_HASH ${expected_hash}" >&2
-            exit 1
-          fi
 
           deb_count=0
           for package in release-assets/deb/minitun-client-*.deb \
@@ -223,19 +130,8 @@ jobs:
             exit 1
           }
 
-          openwrt_count=0
-          while IFS= read -r package; do
-            install -m 0644 "$package" "${dist_dir}/"
-            openwrt_count=$((openwrt_count + 1))
-          done < <(find release-assets/openwrt -type f \
-            \( -name '*.apk' -o -name '*.ipk' \) | sort)
-          [ "$openwrt_count" -eq 24 ] || {
-            echo "expected 24 OpenWrt packages, found ${openwrt_count}" >&2
-            exit 1
-          }
-
           (cd "${dist_dir}" && \
-            sha256sum ./*.tar.gz ./*.deb ./*.rpm ./*.apk ./*.ipk >SHA256SUMS)
+            sha256sum ./*.deb ./*.rpm >SHA256SUMS)
           (cd "${dist_dir}" && sha256sum --check SHA256SUMS)
 
       - name: Upload assembled release artifact
