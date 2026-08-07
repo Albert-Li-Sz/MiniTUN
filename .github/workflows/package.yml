@@ -631,7 +631,7 @@ jobs:
           docker run --privileged --rm tonistiigi/binfmt --install arm64,arm,riscv64
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
