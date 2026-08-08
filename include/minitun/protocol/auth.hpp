@@ -37,7 +37,7 @@ class NonceReplayCache final {
     explicit NonceReplayCache(NonceReplayCacheOptions options = {});
 
     [[nodiscard]] common::Result<bool>
-    consume(const AuthenticationNonce& nonce,
+    consume(std::string_view client_id, const AuthenticationNonce& nonce,
             std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
 
     [[nodiscard]] std::size_t size() const;
@@ -49,6 +49,12 @@ class NonceReplayCache final {
     mutable std::mutex mutex_;
     std::unordered_map<std::string, std::chrono::steady_clock::time_point> entries_;
 };
+
+[[nodiscard]] common::Result<bool> verify_and_consume_authentication_data(
+    NonceReplayCache& replay_cache, std::string_view token, std::string_view client_id,
+    std::int64_t timestamp_seconds, const AuthenticationNonce& nonce,
+    const AuthenticationData& candidate,
+    std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
 
 struct AuthRateLimiterOptions final {
     std::size_t max_entries{4'096U};

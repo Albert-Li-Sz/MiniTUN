@@ -63,18 +63,47 @@ TEST(RemoteAuthTest, GeneratesNonZeroIndependentCryptographicValues) {
 TEST(RemoteAuthTest, ReplayCacheRejectsDuplicatesExpiresAndStaysBounded) {
     using Clock = std::chrono::steady_clock;
     const auto now = Clock::time_point{std::chrono::seconds{100}};
-    NonceReplayCache cache{{.max_entries = 1U, .retention = std::chrono::seconds{10}}};
+    NonceReplayCache cache{{.max_entries = 2U, .retention = std::chrono::seconds{10}}};
+    const std::string id = client_id();
+    const std::string other_id = client_id();
     AuthenticationNonce first{};
     AuthenticationNonce second{};
     second[0] = 1U;
 
-    EXPECT_EQ(*cache.consume(first, now), true);
-    EXPECT_EQ(*cache.consume(first, now + std::chrono::seconds{1}), false);
-    const auto full = cache.consume(second, now + std::chrono::seconds{1});
+    EXPECT_EQ(*cache.consume(id, first, now), true);
+    EXPECT_EQ(*cache.consume(id, first, now + std::chrono::seconds{1}), false);
+    // The same nonce from a different client must not collide.
+    EXPECT_EQ(*cache.consume(other_id, first, now + std::chrono::seconds{1}), true);
+    const auto full = cache.consume(id, second, now + std::chrono::seconds{1});
     ASSERT_FALSE(full);
     EXPECT_EQ(full.error().code(), common::ErrorCode::resource_exhausted);
+    EXPECT_EQ(cache.size(), 2U);
+    EXPECT_EQ(*cache.consume(id, second, now + std::chrono::seconds{11}), true);
+}
+
+TEST(RemoteAuthTest, FailedVerificationDoesNotConsumeNonce) {
+    using Clock = std::chrono::steady_clock;
+    const auto now = Clock::time_point{std::chrono::seconds{100}};
+    const std::string id = client_id();
+    AuthenticationNonce nonce{};
+    nonce.fill(0x5aU);
+    const auto bad = compute_authentication_data("wrong token", id, 123456, nonce);
+    const auto good = compute_authentication_data("correct token", id, 123456, nonce);
+    ASSERT_TRUE(bad) << bad.error();
+    ASSERT_TRUE(good) << good.error();
+
+    NonceReplayCache cache{};
+    const auto rejected = verify_and_consume_authentication_data(
+        cache, "correct token", id, 123456, nonce, *bad, now);
+    ASSERT_TRUE(rejected) << rejected.error();
+    EXPECT_FALSE(*rejected);
+    EXPECT_EQ(cache.size(), 0U);
+
+    const auto accepted = verify_and_consume_authentication_data(
+        cache, "correct token", id, 123456, nonce, *good, now);
+    ASSERT_TRUE(accepted) << accepted.error();
+    EXPECT_TRUE(*accepted);
     EXPECT_EQ(cache.size(), 1U);
-    EXPECT_EQ(*cache.consume(second, now + std::chrono::seconds{11}), true);
 }
 
 TEST(RemoteAuthTest, RateLimiterBlocksAtThresholdAndRecovers) {

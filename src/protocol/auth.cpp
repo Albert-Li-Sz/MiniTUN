@@ -18,8 +18,14 @@
 namespace minitun::protocol {
 namespace {
 
-[[nodiscard]] std::string nonce_key(const AuthenticationNonce& nonce) {
-    return {reinterpret_cast<const char*>(nonce.data()), nonce.size()};
+[[nodiscard]] std::string replay_key(const std::string_view client_id,
+                                     const AuthenticationNonce& nonce) {
+    std::string key;
+    key.reserve(client_id.size() + 1U + nonce.size());
+    key.append(client_id);
+    key.push_back(':');
+    key.append(reinterpret_cast<const char*>(nonce.data()), nonce.size());
+    return key;
 }
 
 } // namespace
@@ -123,11 +129,16 @@ NonceReplayCache::NonceReplayCache(NonceReplayCacheOptions options)
 }
 
 common::Result<bool>
-NonceReplayCache::consume(const AuthenticationNonce& nonce,
+NonceReplayCache::consume(const std::string_view client_id, const AuthenticationNonce& nonce,
                           const std::chrono::steady_clock::time_point now) {
+    if (!common::Id::parse(client_id, common::IdKind::client)) {
+        return common::Result<bool>::failure(
+            common::ErrorCode::invalid_argument,
+            "authentication replay client ID is invalid");
+    }
     std::scoped_lock lock{mutex_};
     remove_expired(now);
-    const std::string key = nonce_key(nonce);
+    const std::string key = replay_key(client_id, nonce);
     if (entries_.contains(key)) {
         return false;
     }
@@ -153,6 +164,19 @@ void NonceReplayCache::remove_expired(const std::chrono::steady_clock::time_poin
             ++iterator;
         }
     }
+}
+
+common::Result<bool> verify_and_consume_authentication_data(
+    NonceReplayCache& replay_cache, const std::string_view token,
+    const std::string_view client_id, const std::int64_t timestamp_seconds,
+    const AuthenticationNonce& nonce, const AuthenticationData& candidate,
+    const std::chrono::steady_clock::time_point now) {
+    auto verified =
+        verify_authentication_data(token, client_id, timestamp_seconds, nonce, candidate);
+    if (!verified || !*verified) {
+        return verified;
+    }
+    return replay_cache.consume(client_id, nonce, now);
 }
 
 AuthRateLimiter::AuthRateLimiter(AuthRateLimiterOptions options) : options_(std::move(options)) {

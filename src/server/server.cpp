@@ -650,13 +650,9 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
                 accepted = skew && *skew;
             }
             if (accepted) {
-                auto fresh = server_->nonce_cache_.consume(auth->nonce, now);
-                accepted = fresh && *fresh;
-            }
-            if (accepted) {
-                auto verified = protocol::verify_authentication_data(
-                    token_owner_->view(), auth->client_id, auth->timestamp_seconds, auth->nonce,
-                    auth->authentication_data);
+                auto verified = protocol::verify_and_consume_authentication_data(
+                    server_->nonce_cache_, token_owner_->view(), auth->client_id,
+                    auth->timestamp_seconds, auth->nonce, auth->authentication_data, now);
                 accepted = verified && *verified;
             }
             if (!accepted) {
