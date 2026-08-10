@@ -26,6 +26,12 @@ option(MINITUN_BUILD_PACKAGES "Enable package-generation support" OFF)
 set(MINITUN_PACKAGE_VERSION "" CACHE STRING
     "Optional release or CI development package version override"
 )
+
+# Static libraries linked into libminitun-client must use position-independent
+# code so TLS models and relocations stay valid in the shared object across
+# GCC, Clang, and system Asio variants.
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
 if(MINITUN_PACKAGE_VERSION STREQUAL "")
     set(MINITUN_PACKAGE_VERSION "${PROJECT_VERSION}")
 endif()

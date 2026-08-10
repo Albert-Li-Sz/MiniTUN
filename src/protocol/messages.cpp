@@ -754,7 +754,10 @@ decode_local_connect_error(const std::vector<std::uint8_t>& payload) {
     PayloadReader reader{payload};
     auto connection_id = reader.read_string(kMaxProtocolIdentifierBytes);
     auto code_text = reader.read_string(64U);
-    const auto code = code_text ? common::error_code_from_string(*code_text) : std::nullopt;
+    std::optional<common::ErrorCode> code = std::nullopt;
+    if (code_text) {
+        code = common::error_code_from_string(*code_text);
+    }
     if (!connection_id || !validate_connection_id(*connection_id) || !code.has_value() ||
         *code == common::ErrorCode::ok || !reader.require_end()) {
         return common::Result<LocalConnectErrorMessage>::failure(

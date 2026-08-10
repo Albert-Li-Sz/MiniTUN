@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <string>
 #include <string_view>
@@ -405,15 +406,18 @@ class ClientPolicyStore::AtomicSnapshot final {
         : value_(std::move(value)) {}
 
     [[nodiscard]] std::shared_ptr<const ClientPolicySnapshot> load() const noexcept {
-        return value_.load(std::memory_order_acquire);
+        const std::scoped_lock lock{mutex_};
+        return value_;
     }
 
     void store(std::shared_ptr<const ClientPolicySnapshot> value) noexcept {
-        value_.store(std::move(value), std::memory_order_release);
+        const std::scoped_lock lock{mutex_};
+        value_ = std::move(value);
     }
 
   private:
-    std::atomic<std::shared_ptr<const ClientPolicySnapshot>> value_;
+    mutable std::mutex mutex_;
+    std::shared_ptr<const ClientPolicySnapshot> value_;
 };
 
 namespace {
