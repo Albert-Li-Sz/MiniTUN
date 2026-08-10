@@ -97,7 +97,7 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
   private:
     class WorkerSession final : public std::enable_shared_from_this<WorkerSession> {
       public:
-        WorkerSession(std::shared_ptr<Impl> pool, std::string worker_id,
+        WorkerSession(const std::shared_ptr<Impl>& pool, std::string worker_id,
                       std::shared_ptr<WorkerBudget> connection_budget)
             : pool_(pool), worker_id_(std::move(worker_id)), server_id_(pool->options_.server_id),
               remote_endpoint_(pool->options_.endpoint.to_string()), resolver_(pool->executor_),
@@ -452,7 +452,7 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
             }
             if (!self->sessions_.empty()) {
                 self->shutdown_timer_.expires_after(self->options_.graceful_shutdown_timeout);
-                auto shutdown_self = self;
+                const auto& shutdown_self = self;
                 self->shutdown_timer_.async_wait([shutdown_self](const asio::error_code& error) {
                     if (!error) {
                         shutdown_self->force_stop();
