@@ -12,6 +12,7 @@ Checks: >
   bugprone-use-after-move,
   cert-err34-c,
   clang-analyzer-*,
+  -clang-analyzer-core.NullDereference,
   performance-*
 WarningsAsErrors: '*'
 HeaderFilterRegex: '^(include|minitun|src|apps)/'

@@ -281,7 +281,7 @@ common::Result<HelloAckMessage> decode_hello_ack(const std::vector<std::uint8_t>
         return common::Result<HelloAckMessage>::failure(ended.error());
     }
     return HelloAckMessage{std::move(*server_id), std::bit_cast<std::int64_t>(*timestamp),
-                           std::move(*nonce), *capabilities};
+                           *nonce, *capabilities};
 }
 
 common::Result<std::vector<std::uint8_t>> encode_auth(const AuthMessage& message) {
@@ -346,7 +346,7 @@ common::Result<AuthMessage> decode_auth(const std::vector<std::uint8_t>& payload
         return common::Result<AuthMessage>::failure(ended.error());
     }
     return AuthMessage{std::move(*client_id), std::bit_cast<std::int64_t>(*timestamp),
-                       std::move(*nonce), std::move(*authentication_data), *capabilities};
+                       *nonce, *authentication_data, *capabilities};
 }
 
 common::Result<std::vector<std::uint8_t>> encode_auth_ok(const AuthOkMessage& message) {

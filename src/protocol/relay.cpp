@@ -63,7 +63,7 @@ class RelayOperation final : public std::enable_shared_from_this<RelayOperation>
         completion_timer_.expires_at(std::chrono::steady_clock::time_point::max());
         auto self = shared_from_this();
         asio::co_spawn(tls_stream_.get_executor(), pump_tls_to_tcp(),
-                       [self](const std::exception_ptr failure) {
+                       [self](const std::exception_ptr& failure) {
                            if (failure) {
                                self->finish_direction(
                                    common::Error{common::ErrorCode::internal_error,
@@ -71,7 +71,7 @@ class RelayOperation final : public std::enable_shared_from_this<RelayOperation>
                            }
                        });
         asio::co_spawn(tls_stream_.get_executor(), pump_tcp_to_tls(),
-                       [self](const std::exception_ptr failure) {
+                       [self](const std::exception_ptr& failure) {
                            if (failure) {
                                self->finish_direction(
                                    common::Error{common::ErrorCode::internal_error,
@@ -79,7 +79,7 @@ class RelayOperation final : public std::enable_shared_from_this<RelayOperation>
                            }
                        });
         asio::co_spawn(tls_stream_.get_executor(), watch_inactivity(),
-                       [self](const std::exception_ptr failure) {
+                       [self](const std::exception_ptr& failure) {
                            if (failure) {
                                self->set_failure(
                                    common::Error{common::ErrorCode::internal_error,
