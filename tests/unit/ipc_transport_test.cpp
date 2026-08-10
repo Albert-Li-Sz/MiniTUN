@@ -815,7 +815,7 @@ TEST(IpcTransportTest, DestructionWaitsForAcceptedDispatcherWork) {
                                                 LocalServerOptions{.socket_path = socket_path});
     const auto started = server->start();
     ASSERT_TRUE(started) << started.error();
-    std::jthread io_worker{[&io_context] { io_context.run(); }};
+    std::thread io_worker{[&io_context] { io_context.run(); }};
     LocalClient client{LocalClientOptions{
         .socket_path = socket_path,
         .request_timeout = 2s,
@@ -830,6 +830,7 @@ TEST(IpcTransportTest, DestructionWaitsForAcceptedDispatcherWork) {
         server->stop();
         io_context.stop();
         static_cast<void>(client_call.wait_for(2s));
+        io_worker.join();
         FAIL() << "dispatcher handler did not start";
         return;
     }
@@ -842,6 +843,7 @@ TEST(IpcTransportTest, DestructionWaitsForAcceptedDispatcherWork) {
     io_context.stop();
     ASSERT_EQ(client_call.wait_for(2s), std::future_status::ready);
     EXPECT_FALSE(client_call.get());
+    io_worker.join();
 }
 
 TEST(IpcTransportTest, RefusesAnActiveSocketButReplacesAStaleOwnedSocket) {

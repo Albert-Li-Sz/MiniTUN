@@ -202,7 +202,7 @@ int run_server(const minitun::server::ServerOptions& options,
     };
     signals.async_wait(*signal_handler);
 
-    std::vector<std::jthread> workers;
+    std::vector<std::thread> workers;
     workers.reserve(io_threads > 0U ? io_threads - 1U : 0U);
     std::mutex failure_mutex;
     std::exception_ptr worker_failure;

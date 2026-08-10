@@ -442,11 +442,11 @@ TEST(TunnelRepositoryTest, RejectsEveryInvalidRecordAndTransitionArgument) {
 
     const TunnelRecord tunnel = make_tunnel(150, server.id, 7'100U, "conditional");
     ASSERT_TRUE((*repository)->tunnels().create(tunnel));
-    const auto conditional = [&repository, &tunnel,
-                              &server](const common::Id& id, const common::Id& server_id,
-                                       const std::uint64_t revision, const TunnelActualState state,
-                                       const std::optional<common::Error>& error,
-                                       const std::int64_t updated_at) {
+    const auto conditional = [&repository](const common::Id& id, const common::Id& server_id,
+                                           const std::uint64_t revision,
+                                           const TunnelActualState state,
+                                           const std::optional<common::Error>& error,
+                                           const std::int64_t updated_at) {
         return (*repository)
             ->tunnels()
             .update_runtime_state_if_revision(id, server_id, revision, state, error, updated_at,

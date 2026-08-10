@@ -395,7 +395,7 @@ int run_daemon_impl(const std::string& socket_path, const std::string& database_
     minitun::common::log_info("local IPC service started");
     std::exception_ptr worker_failure;
     std::mutex worker_failure_mutex;
-    std::vector<std::jthread> workers;
+    std::vector<std::thread> workers;
     workers.reserve(io_threads > 0U ? io_threads - 1U : 0U);
     for (std::size_t index = 1U; index < io_threads; ++index) {
         workers.emplace_back([&io_context, &worker_failure, &worker_failure_mutex] {

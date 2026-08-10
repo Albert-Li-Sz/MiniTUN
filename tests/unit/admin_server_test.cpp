@@ -115,7 +115,7 @@ class RunningAdminServer final {
             return;
         }
         port_ = server_->listening_port();
-        worker_ = std::jthread{[this] { io_context_.run(); }};
+        worker_ = std::thread{[this] { io_context_.run(); }};
     }
 
     ~RunningAdminServer() {
@@ -123,6 +123,9 @@ class RunningAdminServer final {
             server_->stop();
         }
         io_context_.stop();
+        if (worker_.joinable()) {
+            worker_.join();
+        }
     }
 
     [[nodiscard]] std::uint16_t port() const noexcept { return port_; }
@@ -131,7 +134,7 @@ class RunningAdminServer final {
     asio::io_context io_context_;
     std::unique_ptr<Server> server_;
     std::uint16_t port_{0U};
-    std::jthread worker_;
+    std::thread worker_;
 };
 
 TEST(AdminServerTest, ServesBoundedHealthReadinessAndMetricsSurface) {

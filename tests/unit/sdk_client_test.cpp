@@ -156,12 +156,15 @@ class FakeDaemon final {
         if (!started) {
             throw std::runtime_error{"failed to start fake SDK daemon"};
         }
-        worker_ = std::jthread([this] { io_context_.run(); });
+        worker_ = std::thread([this] { io_context_.run(); });
     }
 
     ~FakeDaemon() noexcept {
         server_.stop();
         io_context_.stop();
+        if (worker_.joinable()) {
+            worker_.join();
+        }
     }
 
     FakeDaemon(const FakeDaemon&) = delete;
@@ -246,7 +249,7 @@ class FakeDaemon final {
     asio::io_context io_context_;
     std::shared_ptr<ipc::Dispatcher> dispatcher_;
     ipc::LocalServer server_;
-    std::jthread worker_;
+    std::thread worker_;
     std::mutex mutex_;
     std::map<std::string, std::variant<Json, Error>, std::less<>> overrides_;
 };
@@ -457,73 +460,115 @@ TEST_F(SdkClientTest, RejectsInvalidArgumentsActionsAndCredentialFiles) {
     minitun_error* error = nullptr;
     minitun_client* output_client = nullptr;
     minitun_client_options small_options{0U, daemon_.socket_path().c_str()};
-    expect_error(minitun_client_create(&small_options, &output_client, &error), error,
-                 MINITUN_ERROR_UNSUPPORTED_VERSION);
+    {
+    const int sdk_call_status = minitun_client_create(&small_options, &output_client, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_UNSUPPORTED_VERSION);
+}
     EXPECT_EQ(output_client, nullptr);
-    expect_error(minitun_client_create(nullptr, nullptr, &error), error,
-                 MINITUN_ERROR_INVALID_ARGUMENT);
+    {
+    const int sdk_call_status = minitun_client_create(nullptr, nullptr, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_INVALID_ARGUMENT);
+}
 
     minitun_client_options empty_path{sizeof(empty_path), ""};
-    expect_error(minitun_client_create(&empty_path, &output_client, &error), error,
-                 MINITUN_ERROR_INVALID_ARGUMENT);
+    {
+    const int sdk_call_status = minitun_client_create(&empty_path, &output_client, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_INVALID_ARGUMENT);
+}
     const std::string long_path(4'097U, 'x');
     minitun_client_options oversized_path{sizeof(oversized_path), long_path.c_str()};
-    expect_error(minitun_client_create(&oversized_path, &output_client, &error), error,
-                 MINITUN_ERROR_INVALID_ARGUMENT);
+    {
+    const int sdk_call_status = minitun_client_create(&oversized_path, &output_client, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_INVALID_ARGUMENT);
+}
 
     minitun_identity identity{};
-    expect_error(minitun_client_identity_get(client_, nullptr, &error), error,
-                 MINITUN_ERROR_INVALID_ARGUMENT);
-    expect_error(minitun_client_identity_get(nullptr, &identity, &error), error,
-                 MINITUN_ERROR_INVALID_ARGUMENT);
+    {
+    const int sdk_call_status = minitun_client_identity_get(client_, nullptr, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_INVALID_ARGUMENT);
+}
+    {
+    const int sdk_call_status = minitun_client_identity_get(nullptr, &identity, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_INVALID_ARGUMENT);
+}
     minitun_status status{};
-    expect_error(minitun_client_status_get(client_, nullptr, &error), error,
-                 MINITUN_ERROR_INVALID_ARGUMENT);
-    expect_error(minitun_client_status_get(nullptr, &status, &error), error,
-                 MINITUN_ERROR_INVALID_ARGUMENT);
+    {
+    const int sdk_call_status = minitun_client_status_get(client_, nullptr, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_INVALID_ARGUMENT);
+}
+    {
+    const int sdk_call_status = minitun_client_status_get(nullptr, &status, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_INVALID_ARGUMENT);
+}
 
     minitun_server_info server{};
     minitun_server_create_request server_create{sizeof(server_create), nullptr, nullptr};
-    expect_error(minitun_client_server_create(client_, nullptr, &server, &error), error,
-                 MINITUN_ERROR_INVALID_ARGUMENT);
-    expect_error(minitun_client_server_create(client_, &server_create, &server, &error), error,
-                 MINITUN_ERROR_INVALID_ARGUMENT);
+    {
+    const int sdk_call_status = minitun_client_server_create(client_, nullptr, &server, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_INVALID_ARGUMENT);
+}
+    {
+    const int sdk_call_status = minitun_client_server_create(client_, &server_create, &server, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_INVALID_ARGUMENT);
+}
     server_create.endpoint = "127.0.0.1:1";
     server_create.struct_size = 0U;
-    expect_error(minitun_client_server_create(client_, &server_create, &server, &error), error,
-                 MINITUN_ERROR_INVALID_ARGUMENT);
+    {
+    const int sdk_call_status = minitun_client_server_create(client_, &server_create, &server, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_INVALID_ARGUMENT);
+}
     server_create.struct_size = sizeof(server_create);
-    expect_error(minitun_client_server_create(client_, &server_create, nullptr, &error), error,
-                 MINITUN_ERROR_INVALID_ARGUMENT);
+    {
+    const int sdk_call_status = minitun_client_server_create(client_, &server_create, nullptr, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_INVALID_ARGUMENT);
+}
     server_create.name = "";
-    expect_error(minitun_client_server_create(client_, &server_create, &server, &error), error,
-                 MINITUN_ERROR_INVALID_ARGUMENT);
+    {
+    const int sdk_call_status = minitun_client_server_create(client_, &server_create, &server, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_INVALID_ARGUMENT);
+}
 
-    expect_error(minitun_client_server_login(client_, "primary", "secret", nullptr, &error), error,
-                 MINITUN_ERROR_INVALID_ARGUMENT);
-    expect_error(minitun_client_server_login(client_, nullptr, "secret", &server, &error), error,
-                 MINITUN_ERROR_INVALID_ARGUMENT);
-    expect_error(minitun_client_server_login(client_, "primary", nullptr, &server, &error), error,
-                 MINITUN_ERROR_INVALID_ARGUMENT);
+    {
+    const int sdk_call_status = minitun_client_server_login(client_, "primary", "secret", nullptr, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_INVALID_ARGUMENT);
+}
+    {
+    const int sdk_call_status = minitun_client_server_login(client_, nullptr, "secret", &server, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_INVALID_ARGUMENT);
+}
+    {
+    const int sdk_call_status = minitun_client_server_login(client_, "primary", nullptr, &server, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_INVALID_ARGUMENT);
+}
 
     minitun_server_update_request server_update{sizeof(server_update), "primary", 0U, nullptr,
                                                  nullptr, nullptr, nullptr, nullptr, nullptr};
-    expect_error(minitun_client_server_update(client_, nullptr, &server, &error), error,
-                 MINITUN_ERROR_INVALID_ARGUMENT);
+    {
+    const int sdk_call_status = minitun_client_server_update(client_, nullptr, &server, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_INVALID_ARGUMENT);
+}
     server_update.struct_size = 0U;
-    expect_error(minitun_client_server_update(client_, &server_update, &server, &error), error,
-                 MINITUN_ERROR_INVALID_ARGUMENT);
+    {
+    const int sdk_call_status = minitun_client_server_update(client_, &server_update, &server, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_INVALID_ARGUMENT);
+}
     server_update.struct_size = sizeof(server_update);
-    expect_error(minitun_client_server_update(client_, &server_update, nullptr, &error), error,
-                 MINITUN_ERROR_INVALID_ARGUMENT);
+    {
+    const int sdk_call_status = minitun_client_server_update(client_, &server_update, nullptr, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_INVALID_ARGUMENT);
+}
     server_update.identifier = nullptr;
-    expect_error(minitun_client_server_update(client_, &server_update, &server, &error), error,
-                 MINITUN_ERROR_INVALID_ARGUMENT);
+    {
+    const int sdk_call_status = minitun_client_server_update(client_, &server_update, &server, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_INVALID_ARGUMENT);
+}
     server_update.identifier = "primary";
     server_update.field_mask = MINITUN_SERVER_UPDATE_ENDPOINT;
     server_update.endpoint = "";
-    expect_error(minitun_client_server_update(client_, &server_update, &server, &error), error,
-                 MINITUN_ERROR_INVALID_ARGUMENT);
+    {
+    const int sdk_call_status = minitun_client_server_update(client_, &server_update, &server, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_INVALID_ARGUMENT);
+}
 
     const auto empty_file = daemon_.temporary().write("empty", "", 0600);
     const auto loose_file = daemon_.temporary().write("loose", "secret", 0666);
@@ -545,77 +590,119 @@ TEST_F(SdkClientTest, RejectsInvalidArgumentsActionsAndCredentialFiles) {
         error = nullptr;
     }
 
-    expect_error(minitun_client_server_execute(client_, nullptr, MINITUN_SERVER_ENABLE, &server,
-                                                &error),
-                 error, MINITUN_ERROR_INVALID_ARGUMENT);
-    expect_error(minitun_client_server_execute(
-                     client_, "primary", static_cast<minitun_server_action>(0), &server, &error),
-                 error, MINITUN_ERROR_INVALID_ARGUMENT);
-    expect_error(minitun_client_server_list(client_, nullptr, &error), error,
-                 MINITUN_ERROR_INVALID_ARGUMENT);
+    {
+    const int sdk_call_status = minitun_client_server_execute(client_, nullptr, MINITUN_SERVER_ENABLE, &server,
+                                                &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_INVALID_ARGUMENT);
+}
+    {
+    const int sdk_call_status = minitun_client_server_execute(
+                     client_, "primary", static_cast<minitun_server_action>(0), &server, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_INVALID_ARGUMENT);
+}
+    {
+    const int sdk_call_status = minitun_client_server_list(client_, nullptr, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_INVALID_ARGUMENT);
+}
 
     minitun_tunnel_info tunnel{};
     minitun_tunnel_create_request tunnel_create{sizeof(tunnel_create), "primary", nullptr, nullptr,
                                                  0U, 1U};
-    expect_error(minitun_client_tunnel_create(client_, &tunnel_create, &tunnel, &error), error,
-                 MINITUN_ERROR_INVALID_ARGUMENT);
+    {
+    const int sdk_call_status = minitun_client_tunnel_create(client_, &tunnel_create, &tunnel, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_INVALID_ARGUMENT);
+}
     tunnel_create.local_port = 1U;
     tunnel_create.remote_port = 0U;
-    expect_error(minitun_client_tunnel_create(client_, &tunnel_create, &tunnel, &error), error,
-                 MINITUN_ERROR_INVALID_ARGUMENT);
+    {
+    const int sdk_call_status = minitun_client_tunnel_create(client_, &tunnel_create, &tunnel, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_INVALID_ARGUMENT);
+}
     tunnel_create.remote_port = 2U;
     tunnel_create.server = nullptr;
-    expect_error(minitun_client_tunnel_create(client_, &tunnel_create, &tunnel, &error), error,
-                 MINITUN_ERROR_INVALID_ARGUMENT);
+    {
+    const int sdk_call_status = minitun_client_tunnel_create(client_, &tunnel_create, &tunnel, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_INVALID_ARGUMENT);
+}
     tunnel_create.server = "primary";
     tunnel_create.name = "";
-    expect_error(minitun_client_tunnel_create(client_, &tunnel_create, &tunnel, &error), error,
-                 MINITUN_ERROR_INVALID_ARGUMENT);
+    {
+    const int sdk_call_status = minitun_client_tunnel_create(client_, &tunnel_create, &tunnel, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_INVALID_ARGUMENT);
+}
     tunnel_create.name = nullptr;
     tunnel_create.local_host = "";
-    expect_error(minitun_client_tunnel_create(client_, &tunnel_create, &tunnel, &error), error,
-                 MINITUN_ERROR_INVALID_ARGUMENT);
+    {
+    const int sdk_call_status = minitun_client_tunnel_create(client_, &tunnel_create, &tunnel, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_INVALID_ARGUMENT);
+}
 
     minitun_tunnel_update_request tunnel_update{sizeof(tunnel_update), "ssh", 0U, nullptr, nullptr,
                                                  0U, 0U};
-    expect_error(minitun_client_tunnel_update(client_, nullptr, &tunnel, &error), error,
-                 MINITUN_ERROR_INVALID_ARGUMENT);
+    {
+    const int sdk_call_status = minitun_client_tunnel_update(client_, nullptr, &tunnel, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_INVALID_ARGUMENT);
+}
     tunnel_update.struct_size = 0U;
-    expect_error(minitun_client_tunnel_update(client_, &tunnel_update, &tunnel, &error), error,
-                 MINITUN_ERROR_INVALID_ARGUMENT);
+    {
+    const int sdk_call_status = minitun_client_tunnel_update(client_, &tunnel_update, &tunnel, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_INVALID_ARGUMENT);
+}
     tunnel_update.struct_size = sizeof(tunnel_update);
     tunnel_update.identifier = nullptr;
-    expect_error(minitun_client_tunnel_update(client_, &tunnel_update, &tunnel, &error), error,
-                 MINITUN_ERROR_INVALID_ARGUMENT);
+    {
+    const int sdk_call_status = minitun_client_tunnel_update(client_, &tunnel_update, &tunnel, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_INVALID_ARGUMENT);
+}
     tunnel_update.identifier = "ssh";
     tunnel_update.field_mask = MINITUN_TUNNEL_UPDATE_LOCAL_HOST;
-    expect_error(minitun_client_tunnel_update(client_, &tunnel_update, &tunnel, &error), error,
-                 MINITUN_ERROR_INVALID_ARGUMENT);
+    {
+    const int sdk_call_status = minitun_client_tunnel_update(client_, &tunnel_update, &tunnel, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_INVALID_ARGUMENT);
+}
     tunnel_update.field_mask = MINITUN_TUNNEL_UPDATE_LOCAL_PORT;
-    expect_error(minitun_client_tunnel_update(client_, &tunnel_update, &tunnel, &error), error,
-                 MINITUN_ERROR_INVALID_ARGUMENT);
+    {
+    const int sdk_call_status = minitun_client_tunnel_update(client_, &tunnel_update, &tunnel, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_INVALID_ARGUMENT);
+}
     tunnel_update.field_mask = MINITUN_TUNNEL_UPDATE_REMOTE_PORT;
-    expect_error(minitun_client_tunnel_update(client_, &tunnel_update, &tunnel, &error), error,
-                 MINITUN_ERROR_INVALID_ARGUMENT);
-    expect_error(minitun_client_tunnel_execute(
-                     client_, "ssh", static_cast<minitun_tunnel_action>(0), &tunnel, &error),
-                 error, MINITUN_ERROR_INVALID_ARGUMENT);
-    expect_error(minitun_client_tunnel_list(client_, "", nullptr, &error), error,
-                 MINITUN_ERROR_INVALID_ARGUMENT);
+    {
+    const int sdk_call_status = minitun_client_tunnel_update(client_, &tunnel_update, &tunnel, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_INVALID_ARGUMENT);
+}
+    {
+    const int sdk_call_status = minitun_client_tunnel_execute(
+                     client_, "ssh", static_cast<minitun_tunnel_action>(0), &tunnel, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_INVALID_ARGUMENT);
+}
+    {
+    const int sdk_call_status = minitun_client_tunnel_list(client_, "", nullptr, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_INVALID_ARGUMENT);
+}
 
     minitun_config_plan_result plan{};
-    expect_error(minitun_client_config_plan(client_, nullptr, 0U, &plan, &error), error,
-                 MINITUN_ERROR_INVALID_ARGUMENT);
-    expect_error(minitun_client_config_plan(client_, "/tmp/config", 0U, nullptr, &error), error,
-                 MINITUN_ERROR_INVALID_ARGUMENT);
-    expect_error(minitun_client_config_apply(client_, nullptr, 0U, &plan, &error), error,
-                 MINITUN_ERROR_INVALID_ARGUMENT);
+    {
+    const int sdk_call_status = minitun_client_config_plan(client_, nullptr, 0U, &plan, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_INVALID_ARGUMENT);
+}
+    {
+    const int sdk_call_status = minitun_client_config_plan(client_, "/tmp/config", 0U, nullptr, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_INVALID_ARGUMENT);
+}
+    {
+    const int sdk_call_status = minitun_client_config_apply(client_, nullptr, 0U, &plan, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_INVALID_ARGUMENT);
+}
     minitun_config_snapshot snapshot{};
-    expect_error(minitun_client_config_export(client_, nullptr, &error), error,
-                 MINITUN_ERROR_INVALID_ARGUMENT);
+    {
+    const int sdk_call_status = minitun_client_config_export(client_, nullptr, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_INVALID_ARGUMENT);
+}
     minitun_diagnostics diagnostics{};
-    expect_error(minitun_client_diagnostics_get(client_, nullptr, &error), error,
-                 MINITUN_ERROR_INVALID_ARGUMENT);
+    {
+    const int sdk_call_status = minitun_client_diagnostics_get(client_, nullptr, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_INVALID_ARGUMENT);
+}
 
     minitun_server_info_free(nullptr);
     minitun_tunnel_info_free(nullptr);
@@ -652,22 +739,28 @@ TEST_F(SdkClientTest, MapsDaemonErrorsAndRejectsMalformedTypedResults) {
         daemon_.set_error("daemon.identity", mapping.internal);
         minitun_identity identity{};
         minitun_error* error = nullptr;
-        expect_error(minitun_client_identity_get(client_, &identity, &error), error,
-                     mapping.external);
+        {
+    const int sdk_call_status = minitun_client_identity_get(client_, &identity, &error);
+    expect_error(sdk_call_status, error, mapping.external);
+}
     }
     daemon_.clear("daemon.identity");
 
     minitun_error* error = nullptr;
     minitun_identity identity{};
     daemon_.set_json("daemon.identity", Json{{"client_id", 7}});
-    expect_error(minitun_client_identity_get(client_, &identity, &error), error,
-                 MINITUN_ERROR_PROTOCOL);
+    {
+    const int sdk_call_status = minitun_client_identity_get(client_, &identity, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_PROTOCOL);
+}
     daemon_.clear("daemon.identity");
 
     minitun_status status{};
     daemon_.set_json("status", Json::object());
-    expect_error(minitun_client_status_get(client_, &status, &error), error,
-                 MINITUN_ERROR_PROTOCOL);
+    {
+    const int sdk_call_status = minitun_client_status_get(client_, &status, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_PROTOCOL);
+}
     daemon_.set_json(
         "status",
         Json{{"servers", Json{{"total", -1}, {"online", 1}}},
@@ -675,8 +768,10 @@ TEST_F(SdkClientTest, MapsDaemonErrorsAndRejectsMalformedTypedResults) {
              {"runtime", Json{{"sessions", Json{{"active", 1}}},
                               {"workers", Json{{"idle", 1}, {"active", 1}}},
                               {"connections", Json{{"active", 1}}}}}});
-    expect_error(minitun_client_status_get(client_, &status, &error), error,
-                 MINITUN_ERROR_PROTOCOL);
+    {
+    const int sdk_call_status = minitun_client_status_get(client_, &status, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_PROTOCOL);
+}
     daemon_.clear("status");
 
     minitun_server_info server{};
@@ -687,27 +782,35 @@ TEST_F(SdkClientTest, MapsDaemonErrorsAndRejectsMalformedTypedResults) {
                                    "client_certificate_configured", "managed_by_config"};
     for (const std::string_view field : server_fields) {
         Json invalid = server_record();
-        invalid.erase(field);
+        invalid.erase(std::string{field});
         daemon_.set_json("server.add", Json{{"server", std::move(invalid)}});
-        expect_error(minitun_client_server_create(client_, &create, &server, &error), error,
-                     MINITUN_ERROR_PROTOCOL);
+        {
+    const int sdk_call_status = minitun_client_server_create(client_, &create, &server, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_PROTOCOL);
+}
     }
     for (const std::string_view field : {std::string_view{"name"},
                                          std::string_view{"tls_server_name"}}) {
         Json invalid = server_record();
-        invalid[field] = 1;
+        invalid[std::string{field}] = 1;
         daemon_.set_json("server.add", Json{{"server", std::move(invalid)}});
-        expect_error(minitun_client_server_create(client_, &create, &server, &error), error,
-                     MINITUN_ERROR_PROTOCOL);
+        {
+    const int sdk_call_status = minitun_client_server_create(client_, &create, &server, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_PROTOCOL);
+}
     }
     daemon_.set_json("server.list", Json{{"servers", 1}});
     minitun_server_list servers{};
-    expect_error(minitun_client_server_list(client_, &servers, &error), error,
-                 MINITUN_ERROR_PROTOCOL);
+    {
+    const int sdk_call_status = minitun_client_server_list(client_, &servers, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_PROTOCOL);
+}
     daemon_.set_json("server.list",
                      Json{{"servers", Json::array({server_record(), Json::object()})}});
-    expect_error(minitun_client_server_list(client_, &servers, &error), error,
-                 MINITUN_ERROR_PROTOCOL);
+    {
+    const int sdk_call_status = minitun_client_server_list(client_, &servers, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_PROTOCOL);
+}
     daemon_.clear("server.add");
     daemon_.clear("server.list");
 
@@ -719,24 +822,32 @@ TEST_F(SdkClientTest, MapsDaemonErrorsAndRejectsMalformedTypedResults) {
                                    "config_revision", "managed_by_config"};
     for (const std::string_view field : tunnel_fields) {
         Json invalid = tunnel_record();
-        invalid.erase(field);
+        invalid.erase(std::string{field});
         daemon_.set_json("tun.add", Json{{"tunnel", std::move(invalid)}});
-        expect_error(minitun_client_tunnel_create(client_, &tunnel_create, &tunnel, &error), error,
-                     MINITUN_ERROR_PROTOCOL);
+        {
+    const int sdk_call_status = minitun_client_tunnel_create(client_, &tunnel_create, &tunnel, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_PROTOCOL);
+}
     }
     Json invalid_tunnel = tunnel_record();
     invalid_tunnel["name"] = false;
     daemon_.set_json("tun.add", Json{{"tunnel", std::move(invalid_tunnel)}});
-    expect_error(minitun_client_tunnel_create(client_, &tunnel_create, &tunnel, &error), error,
-                 MINITUN_ERROR_PROTOCOL);
+    {
+    const int sdk_call_status = minitun_client_tunnel_create(client_, &tunnel_create, &tunnel, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_PROTOCOL);
+}
     daemon_.set_json("tun.list", Json{{"tunnels", false}});
     minitun_tunnel_list tunnels{};
-    expect_error(minitun_client_tunnel_list(client_, nullptr, &tunnels, &error), error,
-                 MINITUN_ERROR_PROTOCOL);
+    {
+    const int sdk_call_status = minitun_client_tunnel_list(client_, nullptr, &tunnels, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_PROTOCOL);
+}
     daemon_.set_json("tun.list",
                      Json{{"tunnels", Json::array({tunnel_record(), Json::object()})}});
-    expect_error(minitun_client_tunnel_list(client_, nullptr, &tunnels, &error), error,
-                 MINITUN_ERROR_PROTOCOL);
+    {
+    const int sdk_call_status = minitun_client_tunnel_list(client_, nullptr, &tunnels, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_PROTOCOL);
+}
     daemon_.clear("tun.add");
     daemon_.clear("tun.list");
 
@@ -758,34 +869,46 @@ TEST_F(SdkClientTest, MapsDaemonErrorsAndRejectsMalformedTypedResults) {
                                              {"name", nullptr}}})},
                {"prune", false}}}) {
         daemon_.set_json("config.plan", invalid);
-        expect_error(minitun_client_config_plan(client_, "/tmp/config", 0U, &plan, &error), error,
-                     MINITUN_ERROR_PROTOCOL);
+        {
+    const int sdk_call_status = minitun_client_config_plan(client_, "/tmp/config", 0U, &plan, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_PROTOCOL);
+}
     }
     daemon_.clear("config.plan");
 
     minitun_config_snapshot snapshot{};
     daemon_.set_error("server.list", ErrorCode::database_error);
-    expect_error(minitun_client_config_export(client_, &snapshot, &error), error,
-                 MINITUN_ERROR_INTERNAL);
+    {
+    const int sdk_call_status = minitun_client_config_export(client_, &snapshot, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_INTERNAL);
+}
     daemon_.clear("server.list");
     daemon_.set_error("tun.list", ErrorCode::database_error);
-    expect_error(minitun_client_config_export(client_, &snapshot, &error), error,
-                 MINITUN_ERROR_INTERNAL);
+    {
+    const int sdk_call_status = minitun_client_config_export(client_, &snapshot, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_INTERNAL);
+}
     daemon_.clear("tun.list");
 
     minitun_diagnostics diagnostics{};
     daemon_.set_error("health", ErrorCode::database_error);
-    expect_error(minitun_client_diagnostics_get(client_, &diagnostics, &error), error,
-                 MINITUN_ERROR_DATABASE);
+    {
+    const int sdk_call_status = minitun_client_diagnostics_get(client_, &diagnostics, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_DATABASE);
+}
     daemon_.clear("health");
     daemon_.set_error("readiness", ErrorCode::ipc_error);
-    expect_error(minitun_client_diagnostics_get(client_, &diagnostics, &error), error,
-                 MINITUN_ERROR_IPC);
+    {
+    const int sdk_call_status = minitun_client_diagnostics_get(client_, &diagnostics, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_IPC);
+}
     daemon_.clear("readiness");
     daemon_.set_json("health", Json{{"status", 1}, {"state_db", true},
                                      {"credentials_db", true}});
-    expect_error(minitun_client_diagnostics_get(client_, &diagnostics, &error), error,
-                 MINITUN_ERROR_PROTOCOL);
+    {
+    const int sdk_call_status = minitun_client_diagnostics_get(client_, &diagnostics, &error);
+    expect_error(sdk_call_status, error, MINITUN_ERROR_PROTOCOL);
+}
 }
 
 TEST_F(SdkClientTest, CppWrapperOwnsResultsAndCoversEveryAction) {
@@ -864,7 +987,7 @@ TEST_F(SdkClientTest, CppWrapperOwnsResultsAndCoversEveryAction) {
 
 TEST_F(SdkClientTest, SupportsConcurrentCallsThroughOneHandle) {
     std::atomic_uint failures{0U};
-    std::vector<std::jthread> callers;
+    std::vector<std::thread> callers;
     for (std::size_t index = 0U; index < 8U; ++index) {
         callers.emplace_back([this, &failures] {
             for (std::size_t iteration = 0U; iteration < 10U; ++iteration) {
@@ -877,6 +1000,9 @@ TEST_F(SdkClientTest, SupportsConcurrentCallsThroughOneHandle) {
                 minitun_error_free(error);
             }
         });
+    }
+    for (auto& caller : callers) {
+        caller.join();
     }
     callers.clear();
     EXPECT_EQ(failures.load(std::memory_order_relaxed), 0U);
