@@ -188,9 +188,10 @@ struct Request final {
 class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
   public:
     Impl(asio::io_context& io_context, tcp::endpoint endpoint, ServerOptions options,
-         Providers providers, std::shared_ptr<const common::SecureString> token,
+        Providers providers, std::shared_ptr<const common::SecureString> token,
          const bool authentication_required)
-        : strand_(asio::make_strand(io_context)), acceptor_(strand_), endpoint_(endpoint),
+        : strand_(asio::make_strand(io_context)), acceptor_(strand_),
+          endpoint_(std::move(endpoint)),
           options_(std::move(options)), providers_(std::move(providers)), token_(std::move(token)),
           authentication_required_(authentication_required) {}
 

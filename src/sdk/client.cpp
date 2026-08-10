@@ -114,6 +114,9 @@ void publish_error(const Error& source, minitun_error** const output) noexcept {
     if (output == nullptr) {
         return;
     }
+    if (*output != nullptr) {
+        minitun_error_free(*output);
+    }
     *output = nullptr;
     try {
         auto error = std::make_unique<minitun_error>();
@@ -135,6 +138,9 @@ void publish_error(const Error& source, minitun_error** const output) noexcept {
 
 void initialize_error(minitun_error** const error) noexcept {
     if (error != nullptr) {
+        if (*error != nullptr) {
+            minitun_error_free(*error);
+        }
         *error = nullptr;
     }
 }
@@ -986,6 +992,7 @@ int minitun_client_config_export(minitun_client* client, minitun_config_snapshot
             minitun_error_free(nested_error);
             return converted;
         }
+        nested_error = nullptr;
         const int tunnels =
             minitun_client_tunnel_list(client, nullptr, &output->tunnels, &nested_error);
         if (tunnels != 0) {
@@ -997,6 +1004,7 @@ int minitun_client_config_export(minitun_client* client, minitun_config_snapshot
             minitun_error_free(nested_error);
             return converted;
         }
+        minitun_error_free(nested_error);
         return Result<void>::success();
     });
 }
