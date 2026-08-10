@@ -35,6 +35,7 @@ apt-get install -y --no-install-recommends \
 	libsqlite3-0 \
 	libssl3t64 \
 	libstdc++6 \
+	pkg-config \
 	rpm \
 	systemd
 

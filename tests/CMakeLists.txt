@@ -70,10 +70,12 @@ minitun_apply_lto(minitun_tls_auth_client)
 add_executable(minitun_c_sdk_smoke sdk/c_client_smoke.c)
 target_link_libraries(minitun_c_sdk_smoke PRIVATE MiniTun::Client)
 set_target_properties(minitun_c_sdk_smoke PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED YES)
+minitun_apply_sanitizers(minitun_c_sdk_smoke)
 
 add_executable(minitun_cpp_sdk_smoke sdk/cpp_client_smoke.cpp)
 target_link_libraries(minitun_cpp_sdk_smoke PRIVATE MiniTun::Client minitun_project_warnings)
 set_target_properties(minitun_cpp_sdk_smoke PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED YES)
+minitun_apply_sanitizers(minitun_cpp_sdk_smoke)
 
 add_test(NAME sdk.c11-smoke COMMAND minitun_c_sdk_smoke)
 set_tests_properties(sdk.c11-smoke PROPERTIES LABELS "sdk;smoke")
@@ -85,6 +87,24 @@ add_test(NAME sdk.find-package
         "-DMINITUN_SOURCE_DIR=${CMAKE_SOURCE_DIR}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/integration/sdk_downstream.cmake"
 )
+set(minitun_sdk_sanitizer_flags "")
+if(MINITUN_ENABLE_ASAN)
+    list(APPEND minitun_sdk_sanitizer_flags "address")
+endif()
+if(MINITUN_ENABLE_UBSAN)
+    list(APPEND minitun_sdk_sanitizer_flags "undefined")
+endif()
+if(MINITUN_ENABLE_TSAN)
+    list(APPEND minitun_sdk_sanitizer_flags "thread")
+endif()
+if(minitun_sdk_sanitizer_flags)
+    list(JOIN minitun_sdk_sanitizer_flags "," minitun_sdk_sanitizer_joined)
+    set(minitun_sdk_sanitizer_compile_flags
+        "-fsanitize=${minitun_sdk_sanitizer_joined} -fno-omit-frame-pointer")
+    set_tests_properties(sdk.find-package PROPERTIES
+        ENVIRONMENT "MINITUN_SDK_C_FLAGS=${minitun_sdk_sanitizer_compile_flags};MINITUN_SDK_CXX_FLAGS=${minitun_sdk_sanitizer_compile_flags}"
+    )
+endif()
 set_tests_properties(sdk.find-package PROPERTIES LABELS "sdk;install" TIMEOUT 60)
 add_test(NAME sdk.abi-baseline
     COMMAND "${CMAKE_COMMAND}"

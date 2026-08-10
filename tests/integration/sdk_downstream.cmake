@@ -25,6 +25,8 @@ endif()
 execute_process(
     COMMAND "${CMAKE_COMMAND}" -S "${MINITUN_SOURCE_DIR}/tests/sdk/downstream" -B "${build}"
             "-DCMAKE_PREFIX_PATH=${prefix}"
+            "-DCMAKE_C_FLAGS=$ENV{MINITUN_SDK_C_FLAGS}"
+            "-DCMAKE_CXX_FLAGS=$ENV{MINITUN_SDK_CXX_FLAGS}"
     RESULT_VARIABLE configure_result
 )
 if(NOT configure_result EQUAL 0)

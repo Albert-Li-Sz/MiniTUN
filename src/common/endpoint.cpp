@@ -226,7 +226,7 @@ Result<Endpoint> Endpoint::parse(const std::string_view value) {
 
         auto port = parse_port(port_text);
         if (!port) {
-            return Result<Endpoint>::failure(std::move(port).error());
+            return Result<Endpoint>::failure(port.error());
         }
         return Endpoint{address.to_string(), *port, EndpointKind::ipv6};
     }
@@ -240,7 +240,7 @@ Result<Endpoint> Endpoint::parse(const std::string_view value) {
     port_text = value.substr(separator + 1);
     auto port = parse_port(port_text);
     if (!port) {
-        return Result<Endpoint>::failure(std::move(port).error());
+        return Result<Endpoint>::failure(port.error());
     }
 
     if (is_valid_ipv4_text(host)) {

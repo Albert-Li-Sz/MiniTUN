@@ -14,7 +14,8 @@ sdk_development_package=$(find "$package_directory" -maxdepth 1 -type f -name "l
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y "$client_package" "$server_package" "$sdk_library_package" "$sdk_development_package"
+apt-get install -y pkg-config \
+	"$client_package" "$server_package" "$sdk_library_package" "$sdk_development_package"
 
 minitun version
 /usr/libexec/minitun/minitund --version

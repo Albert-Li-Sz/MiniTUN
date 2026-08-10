@@ -127,6 +127,13 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
         void stop() noexcept { close(); }
 
       private:
+#if defined(__GNUC__) && !defined(__clang__)
+        // GCC 13 reports mismatched-new-delete on coroutine frames for this
+        // long-running worker coroutine even though the frame is allocated and
+        // released by the Asio awaitable machinery with matching sizes.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmismatched-new-delete"
+#endif
         [[nodiscard]] asio::awaitable<void> run() {
             auto pool = pool_.lock();
             if (!pool || !pool->running_.load()) {
@@ -274,6 +281,9 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
                                  log_context(relayed.error().code()));
             }
         }
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
         [[nodiscard]] asio::awaitable<void> send_local_error(const std::string& connection_id,
                                                              const std::uint64_t request_id,
