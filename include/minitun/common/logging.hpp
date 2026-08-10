@@ -16,7 +16,7 @@ inline constexpr std::size_t kMaxLogIdentifierBytes = 128;
 inline constexpr std::size_t kMaxLogEndpointBytes = 260;
 inline constexpr std::size_t kMaxLogMessageBytes = 4096;
 
-enum class LogLevel {
+enum class LogLevel : std::uint8_t {
     trace,
     debug,
     info,

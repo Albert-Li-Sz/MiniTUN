@@ -15,7 +15,7 @@
 
 namespace minitun::storage::internal {
 
-enum class StepResult {
+enum class StepResult : std::uint8_t {
     row,
     done,
 };

@@ -39,7 +39,7 @@ constexpr int kRemoteFailureExitCode = 5;
 constexpr int kInternalErrorExitCode = 10;
 constexpr std::size_t kMaxCredentialBytes = 64U * 1024U;
 
-enum class FailureOrigin {
+enum class FailureOrigin : std::uint8_t {
     local_transport,
     daemon,
 };
