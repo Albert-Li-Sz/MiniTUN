@@ -10,8 +10,7 @@ namespace {
 
 [[nodiscard]] bool fits_time_t(const std::int64_t timestamp) noexcept {
     if constexpr (std::numeric_limits<std::time_t>::is_signed) {
-        if constexpr (std::numeric_limits<std::time_t>::digits >=
-                      std::numeric_limits<std::int64_t>::digits) {
+        if constexpr (std::numeric_limits<std::time_t>::digits >= 63) {
             return true;
         } else {
             return timestamp >=
@@ -22,8 +21,7 @@ namespace {
         if (timestamp < 0) {
             return false;
         }
-        if constexpr (std::numeric_limits<std::time_t>::digits >=
-                      std::numeric_limits<std::uint64_t>::digits) {
+        if constexpr (std::numeric_limits<std::time_t>::digits >= 64) {
             return true;
         } else {
             return static_cast<std::uint64_t>(timestamp) <=

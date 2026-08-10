@@ -375,7 +375,8 @@ template <typename T> [[nodiscard]] common::Result<T> internal_json_error() {
 } // namespace
 
 Response Response::success(common::Id request_id, Json result) {
-    return Response{std::move(request_id), std::move(result)};
+    return Response{std::move(request_id),
+                    std::variant<Json, common::Error>{std::move(result)}};
 }
 
 Response Response::failure(common::Id request_id, common::Error error) {
