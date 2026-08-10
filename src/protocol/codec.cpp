@@ -62,7 +62,7 @@ common::Result<void> PayloadWriter::write_bytes(const std::span<const std::uint8
         return fail(common::ErrorCode::invalid_argument,
                     "remote message byte field exceeds the protocol limit");
     }
-    const auto length_result = write_u16(static_cast<std::uint16_t>(value.size()));
+    auto length_result = write_u16(static_cast<std::uint16_t>(value.size()));
     if (!length_result) {
         return length_result;
     }
