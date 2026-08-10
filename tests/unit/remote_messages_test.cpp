@@ -293,8 +293,7 @@ TEST(RemoteMessagesTest, RejectsEverySemanticWireInvariant) {
     AuthenticationNonce nonce{};
     AuthenticationData digest{};
 
-    const auto hello_wire = [&client_id](const std::string_view id,
-                                         const CapabilitySet capabilities) {
+    const auto hello_wire = [](const std::string_view id, const CapabilitySet capabilities) {
         return wire_payload([&](PayloadWriter& writer) {
             return writer.write_string(id) && writer.write_u64(capabilities);
         });
@@ -348,8 +347,8 @@ TEST(RemoteMessagesTest, RejectsEverySemanticWireInvariant) {
     EXPECT_FALSE(decode_auth_error(error_wire("unknown")));
     EXPECT_FALSE(decode_auth_error(error_wire("ok")));
 
-    const auto tunnel_revision_wire = [&tunnel_id](const std::string_view id,
-                                                   const std::uint64_t revision) {
+    const auto tunnel_revision_wire = [](const std::string_view id,
+                                         const std::uint64_t revision) {
         return wire_payload([&](PayloadWriter& writer) {
             return writer.write_string(id) && writer.write_u64(revision);
         });
@@ -360,9 +359,8 @@ TEST(RemoteMessagesTest, RejectsEverySemanticWireInvariant) {
     EXPECT_FALSE(encode_unregister_tunnel({"tun_invalid", 1U}));
     EXPECT_FALSE(encode_unregister_tunnel_ok({tunnel_id, 0U}));
 
-    const auto register_wire = [&tunnel_id](const std::string_view id, const std::string_view host,
-                                            const std::uint16_t port,
-                                            const std::uint64_t revision) {
+    const auto register_wire = [](const std::string_view id, const std::string_view host,
+                                  const std::uint16_t port, const std::uint64_t revision) {
         return wire_payload([&](PayloadWriter& writer) {
             return writer.write_string(id) && writer.write_string(host) && writer.write_u16(port) &&
                    writer.write_u64(revision);
