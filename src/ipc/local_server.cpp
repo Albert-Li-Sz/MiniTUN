@@ -267,7 +267,7 @@ class SocketPathLock final {
     return lock;
 }
 
-enum class SocketProbeResult {
+enum class SocketProbeResult : std::uint8_t {
     live,
     stale,
     disappeared,
@@ -688,7 +688,7 @@ class Session final : public std::enable_shared_from_this<Session> {
                     return;
                 }
                 try {
-                    asio::post(self->strand_, [self, response = std::move(response)]() mutable {
+                    asio::post(self->strand_, [self, response]() mutable {
                         self->on_dispatch(std::move(response));
                     });
                 } catch (...) {
@@ -699,7 +699,7 @@ class Session final : public std::enable_shared_from_this<Session> {
         }
     }
 
-    void on_dispatch(Response response) noexcept {
+    void on_dispatch(const Response& response) noexcept {
         try {
             if (closed_) {
                 return;

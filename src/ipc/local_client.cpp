@@ -223,7 +223,7 @@ class ClientOperation final : public std::enable_shared_from_this<ClientOperatio
         outbound_.clear();
     }
 
-    enum class Phase {
+    enum class Phase : std::uint8_t {
         idle,
         connecting,
         requesting,

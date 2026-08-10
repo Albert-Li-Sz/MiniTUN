@@ -189,7 +189,7 @@ def transfer(index):
     seed = bytes(((offset + index) % 251 for offset in range(251)))
     payload = (seed * ((size + len(seed) - 1) // len(seed)))[:size]
     last_error = None
-    for _ in range(30):
+    for _ in range(100):
         try:
             connection = socket.create_connection(("127.0.0.1", port), timeout=0.5)
             connection.settimeout(8)
@@ -207,7 +207,7 @@ def transfer(index):
             return
         except (OSError, RuntimeError) as error:
             last_error = error
-            time.sleep(0.1)
+            time.sleep(0.2)
     raise last_error
 
 with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:

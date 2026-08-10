@@ -38,7 +38,16 @@ test ! -e /etc/minitun-server/server.key
 test ! -e /etc/minitun-server/token
 test -f /usr/include/minitun/client.h
 test -f /usr/include/minitun/client.hpp
-pkg-config --exact-version="$(minitun version | awk 'NR == 1 {print $2}')" minitun-client
+pc_version=$(pkg-config --modversion minitun-client)
+package_version=$(dpkg-deb -f "$sdk_development_package" Version)
+case "$package_version" in
+    "$pc_version"|"$pc_version"*) ;;
+    *)
+        printf 'pkg-config version %s does not match package version %s\n' \
+            "$pc_version" "$package_version" >&2
+        exit 1
+        ;;
+esac
 getent passwd minitun >/dev/null
 getent passwd minitun-server >/dev/null
 
