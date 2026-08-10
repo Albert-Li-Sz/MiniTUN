@@ -507,7 +507,7 @@ load_snapshot(const std::string& config_path, const ClientPolicyLimits& limits) 
                     common::ErrorCode::invalid_argument,
                     "client policy contains an invalid allowed port range");
             }
-            policy.allowed_ports.push_back(std::move(*range));
+            policy.allowed_ports.push_back(*range);
         }
         std::sort(policy.allowed_ports.begin(), policy.allowed_ports.end(),
                   [](const auto& left, const auto& right) { return left.start() < right.start(); });

@@ -20,9 +20,10 @@ enum class ClientCertificateBindingKind : std::uint8_t {
     san,
 };
 
+// NOLINTNEXTLINE(clang-analyzer-core.uninitialized.Assign)
 struct ClientCertificateBinding final {
     ClientCertificateBindingKind kind{ClientCertificateBindingKind::none};
-    std::string value;
+    std::string value{};
 
     friend bool operator==(const ClientCertificateBinding&,
                            const ClientCertificateBinding&) = default;
