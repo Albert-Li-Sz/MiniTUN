@@ -689,7 +689,7 @@ class Session final : public std::enable_shared_from_this<Session> {
                 }
                 try {
                     asio::post(self->strand_, [self, response]() mutable {
-                        self->on_dispatch(std::move(response));
+                        self->on_dispatch(response);
                     });
                 } catch (...) {
                 }

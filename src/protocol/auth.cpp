@@ -224,7 +224,7 @@ verify_worker_authentication_data(const std::string_view token,
 }
 
 NonceReplayCache::NonceReplayCache(NonceReplayCacheOptions options)
-    : options_(std::move(options)) {
+    : options_(options) {
     options_.max_entries = std::max<std::size_t>(options_.max_entries, 1U);
     if (options_.retention <= std::chrono::seconds::zero()) {
         options_.retention = std::chrono::seconds{1};
@@ -299,7 +299,7 @@ common::Result<bool> verify_and_consume_worker_authentication_data(
     return replay_cache.consume(client_id, nonce, now);
 }
 
-AuthRateLimiter::AuthRateLimiter(AuthRateLimiterOptions options) : options_(std::move(options)) {
+AuthRateLimiter::AuthRateLimiter(AuthRateLimiterOptions options) : options_(options) {
     options_.max_entries = std::max<std::size_t>(options_.max_entries, 1U);
     options_.max_failures = std::max<std::size_t>(options_.max_failures, 1U);
     if (options_.failure_window <= std::chrono::seconds::zero()) {
