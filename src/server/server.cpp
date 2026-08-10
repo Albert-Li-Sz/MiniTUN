@@ -621,7 +621,7 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
 
         void start() {
             auto self = shared_from_this();
-            asio::co_spawn(stream_.get_executor(), run(), [self](const std::exception_ptr failure) {
+            asio::co_spawn(stream_.get_executor(), run(), [self](const std::exception_ptr& failure) {
                 if (failure) {
                     common::log_warn("remote control session ended with an exception",
                                      self->log_context(common::ErrorCode::internal_error));
@@ -1415,7 +1415,7 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
             asio::co_spawn(
                 stream_.get_executor(),
                 protocol::async_write_frame(stream_, {protocol::MessageType::goaway, 0U, 0U, {}}),
-                [self](const std::exception_ptr, common::Result<void>) {
+                [self](const std::exception_ptr&, const common::Result<void>&) {
                     self->goaway_in_progress_ = false;
                     self->cancel_timers();
                     self->close_transport();

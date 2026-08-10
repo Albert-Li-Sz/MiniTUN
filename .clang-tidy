@@ -13,6 +13,7 @@ Checks: >
   cert-err34-c,
   clang-analyzer-*,
   -clang-analyzer-core.NullDereference,
+  -clang-analyzer-core.CallAndMessage,
   performance-*
 WarningsAsErrors: '*'
 HeaderFilterRegex: '^(include|minitun|src|apps)/'

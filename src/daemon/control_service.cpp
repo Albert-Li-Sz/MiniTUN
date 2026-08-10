@@ -60,7 +60,7 @@ class StagedCredentials final {
   public:
     explicit StagedCredentials(storage::CredentialStore& store) noexcept : store_(store) {}
 
-    [[nodiscard]] Result<void> put(std::string key, const std::string_view value) {
+    [[nodiscard]] Result<void> put(const std::string& key, const std::string_view value) {
         try {
             keys_.push_back(key);
         } catch (...) {

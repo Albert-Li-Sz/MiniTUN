@@ -112,7 +112,7 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
 
         void start() {
             auto self = shared_from_this();
-            asio::co_spawn(stream_.get_executor(), run(), [self](const std::exception_ptr failure) {
+            asio::co_spawn(stream_.get_executor(), run(), [self](const std::exception_ptr& failure) {
                 if (failure) {
                     common::log_warn("worker session ended with an exception",
                                      self->log_context(common::ErrorCode::internal_error));

@@ -136,7 +136,7 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
 
         void start() {
             auto self = shared_from_this();
-            asio::co_spawn(strand_, run(), [self](const std::exception_ptr failure) {
+            asio::co_spawn(strand_, run(), [self](const std::exception_ptr& failure) {
                 if (failure) {
                     self->terminal_state_.store(TerminalState::stopped);
                     asio::co_spawn(
@@ -145,7 +145,7 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                                             {common::ErrorCode::internal_error,
                                              "remote session failed unexpectedly"},
                                             self->backoff_.attempt()),
-                        [self](const std::exception_ptr, common::Result<void>) {});
+                        [self](const std::exception_ptr&, const common::Result<void>&) {});
                     common::log_error("remote server session ended with an exception",
                                       self->log_context(common::ErrorCode::internal_error));
                 }
@@ -1050,7 +1050,7 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                 asio::co_spawn(strand_,
                                protocol::async_write_frame(
                                    *stream_, {protocol::MessageType::goaway, 0U, 0U, {}}),
-                               [self](const std::exception_ptr, common::Result<void>) {
+                               [self](const std::exception_ptr&, const common::Result<void>&) {
                                    self->goaway_in_progress_ = false;
                                    self->resolver_.cancel();
                                    self->cancel_timers();
