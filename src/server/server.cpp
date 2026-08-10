@@ -301,7 +301,7 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
         return std::shared_ptr<Impl>{new Impl(io_context, std::move(options),
                                               asio::ip::tcp::endpoint{address, endpoint->port()},
                                               std::move(*tls_context), std::move(*client_policies),
-                                              server_id->str(), std::move(*allowed_ports))};
+                                              server_id->str(), *allowed_ports)};
     }
 
     ~Impl() noexcept { stop(); }
@@ -514,7 +514,7 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
             asio::use_awaitable);
     }
 
-    [[nodiscard]] asio::awaitable<bool> remove_worker(std::string worker_id) {
+    [[nodiscard]] asio::awaitable<bool> remove_worker(const std::string& worker_id) {
         return async_run_on_control_strand(
             [this, worker_id] {
                 worker_pool_.remove(worker_id);
@@ -524,7 +524,7 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
             asio::use_awaitable);
     }
 
-    [[nodiscard]] asio::awaitable<std::size_t> idle_worker_count(std::string client_id,
+    [[nodiscard]] asio::awaitable<std::size_t> idle_worker_count(const std::string& client_id,
                                                                  const std::uint64_t generation) {
         return async_run_on_control_strand(
             [this, client_id, generation] {
@@ -534,7 +534,7 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
     }
 
     [[nodiscard]] asio::awaitable<common::Result<void>>
-    register_tunnel(std::shared_ptr<const ClientPolicy> policy, TunnelBinding binding) {
+    register_tunnel(std::shared_ptr<const ClientPolicy> policy, const TunnelBinding& binding) {
         return async_run_on_control_strand(
             [this, policy = std::move(policy), binding] {
                 const auto started = std::chrono::steady_clock::now();
@@ -582,9 +582,9 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
             asio::use_awaitable);
     }
 
-    [[nodiscard]] asio::awaitable<bool> unregister_tunnel(std::string client_id,
+    [[nodiscard]] asio::awaitable<bool> unregister_tunnel(const std::string& client_id,
                                                           const std::uint64_t generation,
-                                                          std::string tunnel_id,
+                                                          const std::string& tunnel_id,
                                                           const std::uint64_t config_revision) {
         return async_run_on_control_strand(
             [this, client_id, generation, tunnel_id, config_revision] {
@@ -1691,7 +1691,7 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
     };
 
     Impl(asio::io_context& io_context, ServerOptions options,
-         const asio::ip::tcp::endpoint listen_endpoint,
+         const asio::ip::tcp::endpoint& listen_endpoint,
          std::shared_ptr<asio::ssl::context> tls_context,
          std::shared_ptr<ClientPolicyStore> client_policies,
          std::string server_id, common::PortRange allowed_ports)
@@ -1704,7 +1704,7 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
           worker_pool_(options_.max_idle_workers, options_.max_total_idle_workers),
           connection_quota_(options_.max_connections_per_client, options_.max_total_connections),
           tunnel_registry_(
-              strand_, io_context_.get_executor(), std::move(allowed_ports),
+              strand_, io_context_.get_executor(), allowed_ports,
               options_.max_tunnels_per_client, options_.max_total_tunnels,
               [this](TunnelBinding binding, asio::ip::tcp::socket public_socket) mutable {
                   handle_public_connection(std::move(binding), std::move(public_socket));
@@ -1907,7 +1907,7 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
             // one owner alive until that strand runs again so their final
             // destruction cannot race a completion handler on another worker.
             auto session_executor = session->executor();
-            asio::post(std::move(session_executor), [session = std::move(session)] {});
+            asio::post(session_executor, [session = std::move(session)] {});
         });
     }
 
