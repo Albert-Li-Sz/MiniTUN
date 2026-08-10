@@ -54,15 +54,15 @@ if printf '%s\n' "$server_contents" | grep -Eq '/etc/minitun-server/(server\.crt
     exit 1
 fi
 
-printf '%s\n' "$sdk_library_contents" | grep -Eq '^\./usr/lib([^/]*/)?libminitun-client\.so\.1(\.|$)'
+printf '%s\n' "$sdk_library_contents" | grep -Eq '^\./usr/lib(/[^/]+)?/libminitun-client\.so\.1(\.|$)'
 if printf '%s\n' "$sdk_library_contents" | grep -Eq '/include/|libminitun-client\.so$'; then
     exit 1
 fi
 printf '%s\n' "$sdk_development_contents" | grep -qx './usr/include/minitun/client.h'
 printf '%s\n' "$sdk_development_contents" | grep -qx './usr/include/minitun/client.hpp'
-printf '%s\n' "$sdk_development_contents" | grep -Eq '^\./usr/lib([^/]*/)?pkgconfig/minitun-client\.pc$'
-printf '%s\n' "$sdk_development_contents" | grep -Eq '^\./usr/lib([^/]*/)?cmake/MiniTun/MiniTunConfig\.cmake$'
-printf '%s\n' "$sdk_development_contents" | grep -Eq '^\./usr/lib([^/]*/)?libminitun-client\.so$'
+printf '%s\n' "$sdk_development_contents" | grep -Eq '^\./usr/lib(/[^/]+)?/pkgconfig/minitun-client\.pc$'
+printf '%s\n' "$sdk_development_contents" | grep -Eq '^\./usr/lib(/[^/]+)?/cmake/MiniTun/MiniTunConfig\.cmake$'
+printf '%s\n' "$sdk_development_contents" | grep -Eq '^\./usr/lib(/[^/]+)?/libminitun-client\.so$'
 dpkg-deb -f "$sdk_development_package" Depends | grep -q 'libminitun-client1'
 
 control_directory=$(mktemp -d)

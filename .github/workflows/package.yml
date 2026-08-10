@@ -301,7 +301,7 @@ jobs:
 
       - name: Smoke test DEB packages in clean container
         run: |
-          docker run --rm --platform "${{ matrix.docker_platform }}" \
+          docker run --rm --privileged --platform "${{ matrix.docker_platform }}" \
             -v "${PWD}/build/package-deb:/packages:ro" \
             -v "${PWD}/packaging/tests:/tests:ro" \
             "${{ matrix.docker_image }}" \
@@ -570,7 +570,7 @@ jobs:
       - name: Smoke test RPM packages in clean container
         if: matrix.native == false
         run: |
-          docker run --rm --platform "${{ matrix.docker_platform }}" \
+          docker run --rm --privileged --platform "${{ matrix.docker_platform }}" \
             -v "${PWD}/build/package-rpm:/packages:ro" \
             -v "${PWD}/packaging/tests:/tests:ro" \
             ubuntu:24.04 \

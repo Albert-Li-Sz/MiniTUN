@@ -42,7 +42,10 @@ enum class ErrorCode : std::uint8_t {
 ///
 /// Error messages may be shown to users and written to logs. Callers must not
 /// include tokens, private keys, raw authentication data, or credentials.
-class Error final {
+// clang-analyzer models the Error stored in Result<T> as default-constructed
+// garbage even though Result has no default constructor; the diagnostic is a
+// false positive on the implicit copy/move constructor.
+class Error final { // NOLINT(clang-analyzer-core.uninitialized.Assign)
   public:
     explicit Error(ErrorCode code, std::string message = {});
 

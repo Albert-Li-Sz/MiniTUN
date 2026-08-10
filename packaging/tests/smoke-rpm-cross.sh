@@ -28,6 +28,14 @@ sdk_development_package=$(find "$package_directory" -maxdepth 1 -type f \
 [ -n "$sdk_library_package" ]
 [ -n "$sdk_development_package" ]
 
+# Detach the container's mounted /etc/resolv.conf before installing systemd,
+# which otherwise fails to manage the mount during its postinst.
+if command -v mountpoint >/dev/null 2>&1 && mountpoint -q /etc/resolv.conf; then
+    umount /etc/resolv.conf 2>/dev/null || true
+fi
+rm -f /etc/resolv.conf 2>/dev/null || true
+printf 'nameserver 1.1.1.1\n' > /etc/resolv.conf 2>/dev/null || true
+
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends \

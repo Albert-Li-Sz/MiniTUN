@@ -12,6 +12,15 @@ sdk_development_package=$(find "$package_directory" -maxdepth 1 -type f -name "l
 [ -n "$sdk_library_package" ]
 [ -n "$sdk_development_package" ]
 
+# The container's /etc/resolv.conf is a bind mount; systemd's postinst cannot
+# move it aside when it installs the systemd dependency. Detach it first so
+# package installation works in clean CI containers.
+if command -v mountpoint >/dev/null 2>&1 && mountpoint -q /etc/resolv.conf; then
+    umount /etc/resolv.conf 2>/dev/null || true
+fi
+rm -f /etc/resolv.conf 2>/dev/null || true
+printf 'nameserver 1.1.1.1\n' > /etc/resolv.conf 2>/dev/null || true
+
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y pkg-config \
