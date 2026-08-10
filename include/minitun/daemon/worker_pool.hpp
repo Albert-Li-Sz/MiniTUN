@@ -14,6 +14,8 @@
 
 #include <minitun/common/endpoint.hpp>
 #include <minitun/common/result.hpp>
+#include <minitun/common/secure_string.hpp>
+#include <minitun/protocol/tls.hpp>
 
 namespace minitun::daemon {
 
@@ -37,8 +39,14 @@ class WorkerBudget final {
 
 struct WorkerPoolOptions final {
     common::Endpoint endpoint;
+    std::string tls_server_name{};
+    /// Local stable server record ID, used for logging.
     std::string server_id;
+    /// Server identity negotiated in Protocol v2, used for worker authentication.
+    std::string remote_server_id;
     std::string client_id;
+    std::shared_ptr<const common::SecureString> psk;
+    std::shared_ptr<protocol::TlsSessionCache> tls_session_cache{};
     std::uint64_t session_generation{0U};
     std::uint16_t min_idle_workers{2U};
     std::uint16_t max_idle_workers{32U};
@@ -50,8 +58,9 @@ struct WorkerPoolOptions final {
     std::chrono::seconds relay_inactivity_timeout{300};
     std::chrono::seconds graceful_shutdown_timeout{10};
     bool insecure_skip_verify{false};
-    std::function<void()> quota_rejection_handler;
-    std::function<void(std::uint64_t bytes_in, std::uint64_t bytes_out)> relay_stats_handler;
+    std::function<void()> quota_rejection_handler{};
+    std::function<void()> tls_resumption_handler{};
+    std::function<void(std::uint64_t bytes_in, std::uint64_t bytes_out)> relay_stats_handler{};
 };
 
 class WorkerPool final {

@@ -33,8 +33,8 @@ struct LocalServerOptions final {
     /// If owner_uid is set, it must match the daemon's effective user ID.
     /// Deployments must run the daemon as the intended socket owner. group_gid
     /// may name another group when the daemon has permission to apply it.
-    std::optional<std::uint32_t> owner_uid;
-    std::optional<std::uint32_t> group_gid;
+    std::optional<std::uint32_t> owner_uid{std::nullopt};
+    std::optional<std::uint32_t> group_gid{std::nullopt};
 };
 
 /// Concurrent Unix-domain-socket server for the local IPC protocol.

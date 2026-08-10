@@ -4,6 +4,7 @@
 #include <array>
 #include <cstdint>
 #include <initializer_list>
+#include <limits>
 #include <map>
 #include <optional>
 #include <string>
@@ -19,7 +20,9 @@
 #include <minitun/common/secure_string.hpp>
 #include <minitun/common/time.hpp>
 #include <minitun/daemon/credential_keys.hpp>
+#include <minitun/daemon/declarative_config.hpp>
 #include <minitun/ipc/dispatcher.hpp>
+#include <minitun/protocol/tls.hpp>
 #include <minitun/storage/credential_store.hpp>
 #include <minitun/storage/models.hpp>
 #include <minitun/storage/state_repository.hpp>
@@ -52,6 +55,81 @@ class StringScrubber final {
   private:
     std::string& value_;
 };
+
+class StagedCredentials final {
+  public:
+    explicit StagedCredentials(storage::CredentialStore& store) noexcept : store_(store) {}
+
+    [[nodiscard]] Result<void> put(std::string key, const std::string_view value) {
+        try {
+            keys_.push_back(key);
+        } catch (...) {
+            return Error{ErrorCode::resource_exhausted,
+                         "insufficient memory while staging server credentials"};
+        }
+        auto stored = store_.put(key, value);
+        if (!stored) {
+            keys_.pop_back();
+            return stored.error();
+        }
+        return Result<void>::success();
+    }
+
+    void release() noexcept { cleanup_ = false; }
+
+    ~StagedCredentials() noexcept {
+        if (!cleanup_) {
+            return;
+        }
+        for (const auto& key : keys_) {
+            static_cast<void>(store_.remove(key));
+        }
+    }
+
+    StagedCredentials(const StagedCredentials&) = delete;
+    StagedCredentials& operator=(const StagedCredentials&) = delete;
+
+  private:
+    storage::CredentialStore& store_;
+    std::vector<std::string> keys_;
+    bool cleanup_{true};
+};
+
+[[nodiscard]] Result<common::SecureString>
+load_credential(storage::CredentialStore& credentials, const std::optional<std::string>& reference,
+                const std::string_view description) {
+    if (!reference.has_value()) {
+        return common::SecureString{};
+    }
+    auto loaded = credentials.get(*reference);
+    if (!loaded) {
+        return Error{loaded.error().code(), std::string{description} + " is unavailable"};
+    }
+    return loaded;
+}
+
+[[nodiscard]] Result<common::SecureString>
+parse_credential_material(const std::optional<std::optional<std::string>>& field,
+                          common::SecureString current, const std::string_view description) {
+    if (!field.has_value()) {
+        return current;
+    }
+    if (!field->has_value()) {
+        return common::SecureString{};
+    }
+    const std::string_view value = **field;
+    if (value.empty() || value.size() > storage::kMaxCredentialSecretBytes ||
+        value.find('\0') != std::string_view::npos) {
+        return Error{ErrorCode::invalid_argument,
+                     std::string{description} + " is outside its accepted byte-length"};
+    }
+    try {
+        return common::SecureString{value};
+    } catch (...) {
+        return Error{ErrorCode::resource_exhausted,
+                     "insufficient memory while processing server credentials"};
+    }
+}
 
 [[nodiscard]] bool contains(const std::initializer_list<std::string_view> fields,
                             const std::string_view value) {
@@ -99,6 +177,25 @@ validate_params(const Json& params, const std::initializer_list<std::string_view
     return std::optional<std::string>{value->get<std::string>()};
 }
 
+// The outer optional distinguishes an omitted field from an explicit null,
+// which is used by update methods to clear nullable configuration.
+[[nodiscard]] Result<std::optional<std::optional<std::string>>>
+optional_nullable_string(const Json& params, const std::string_view field) {
+    const auto value = params.find(field);
+    if (value == params.end()) {
+        return std::optional<std::optional<std::string>>{};
+    }
+    if (value->is_null()) {
+        return std::optional<std::optional<std::string>>{std::in_place, std::nullopt};
+    }
+    if (!value->is_string()) {
+        return Result<std::optional<std::optional<std::string>>>::failure(
+            ErrorCode::invalid_argument, "IPC parameter must be a string or null");
+    }
+    return std::optional<std::optional<std::string>>{
+        std::in_place, std::optional<std::string>{value->get<std::string>()}};
+}
+
 [[nodiscard]] Result<std::uint16_t> required_port(const Json& params,
                                                   const std::string_view field) {
     const auto value = params.find(field);
@@ -122,6 +219,30 @@ validate_params(const Json& params, const std::initializer_list<std::string_view
                                               "port must be between 1 and 65535");
     }
     return static_cast<std::uint16_t>(port);
+}
+
+[[nodiscard]] Result<std::optional<std::uint16_t>> optional_port(const Json& params,
+                                                                 const std::string_view field) {
+    if (!params.contains(field)) {
+        return std::optional<std::uint16_t>{};
+    }
+    auto port = required_port(params, field);
+    if (!port) {
+        return port.error();
+    }
+    return std::optional<std::uint16_t>{*port};
+}
+
+[[nodiscard]] Result<bool> optional_bool(const Json& params, const std::string_view field,
+                                         const bool default_value = false) {
+    const auto value = params.find(field);
+    if (value == params.end()) {
+        return default_value;
+    }
+    if (!value->is_boolean()) {
+        return Error{ErrorCode::invalid_argument, "IPC parameter must be a boolean"};
+    }
+    return value->get<bool>();
 }
 
 [[nodiscard]] std::string endpoint_text(const std::string_view host, const std::uint16_t port) {
@@ -249,7 +370,11 @@ pending_reason(const TunnelRecord& tunnel, const TunnelServerContext* const serv
         {"id", server.id.str()},
         {"name", optional_json(server.name)},
         {"endpoint", server.endpoint.to_string()},
+        {"tls_server_name", optional_json(server.tls_server_name)},
         {"credential_configured", server.credential_ref.has_value()},
+        {"ca_configured", server.ca_credential_ref.has_value()},
+        {"client_certificate_configured",
+         server.client_certificate_ref.has_value() && server.client_private_key_ref.has_value()},
         {"remote_server_id", optional_json(server.remote_server_id)},
         {"desired_state", std::string{storage::to_string(server.desired_state)}},
         {"actual_state", std::string{storage::to_string(server.actual_state)}},
@@ -257,6 +382,8 @@ pending_reason(const TunnelRecord& tunnel, const TunnelServerContext* const serv
         {"reconnect_attempt", server.reconnect_attempt},
         {"latency_ms", optional_json(server.latency_ms)},
         {"tunnel_count", tunnel_count},
+        {"config_revision", server.config_revision},
+        {"managed_by_config", server.managed_by_config},
         {"created_at", server.created_at_unix_ms},
         {"updated_at", server.updated_at_unix_ms},
     };
@@ -283,6 +410,8 @@ pending_reason(const TunnelRecord& tunnel, const TunnelServerContext* const serv
         {"created_at", tunnel.created_at_unix_ms},
         {"updated_at", tunnel.updated_at_unix_ms},
         {"last_synced_at", optional_json(tunnel.last_synced_at_unix_ms)},
+        {"config_revision", tunnel.config_revision},
+        {"managed_by_config", tunnel.managed_by_config},
     };
 }
 
@@ -299,6 +428,15 @@ tunnel_counts(const std::vector<TunnelRecord>& tunnels) {
 
 [[nodiscard]] std::int64_t update_time(const std::int64_t previous) noexcept {
     return std::max(previous, common::unix_milliseconds_now());
+}
+
+[[nodiscard]] Result<std::uint64_t> next_revision(const std::uint64_t current) {
+    constexpr auto kMaximumRevision =
+        static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+    if (current >= kMaximumRevision) {
+        return Error{ErrorCode::resource_exhausted, "configuration revision is exhausted"};
+    }
+    return current + 1U;
 }
 
 [[nodiscard]] Json diagnostics_json(const storage::DatabaseDiagnostics& diagnostics) {
@@ -347,10 +485,35 @@ void ControlService::notify_state_changed() const noexcept {
 
 common::Result<void> ControlService::register_handlers(ipc::Dispatcher& dispatcher) {
     std::vector<std::string> registered;
-    registered.reserve(16U);
+    registered.reserve(27U);
     const auto add = [&dispatcher, &registered](std::string method,
                                                 ipc::MethodHandler handler) -> Result<void> {
         std::string method_copy = method;
+        constexpr std::array<std::string_view, 15U> audited_methods{
+            "server.add",    "server.login",  "server.update", "server.enable", "server.disable",
+            "server.logout", "server.remove", "tun.add",       "tun.update",    "tun.enable",
+            "tun.disable",   "tun.remove",    "config.apply",  "doctor",        "reload",
+        };
+        const bool audited = std::find(audited_methods.begin(), audited_methods.end(), method) !=
+                             audited_methods.end();
+        if (audited) {
+            handler = [method_name = method_copy, handler = std::move(handler)](
+                          const ipc::Request& request) mutable -> Result<Json> {
+                auto result = handler(request);
+                const common::LogContext context{
+                    .component = "daemon.audit",
+                    .error_code =
+                        result ? std::nullopt : std::optional<ErrorCode>{result.error().code()},
+                };
+                if (result) {
+                    common::log_info("local management operation succeeded: " + method_name,
+                                     context);
+                } else {
+                    common::log_warn("local management operation failed: " + method_name, context);
+                }
+                return result;
+            };
+        }
         auto result = dispatcher.register_handler(std::move(method), std::move(handler));
         if (result) {
             registered.push_back(std::move(method_copy));
@@ -362,11 +525,26 @@ common::Result<void> ControlService::register_handlers(ipc::Dispatcher& dispatch
         std::pair{"daemon.status", ipc::MethodHandler{[this](const ipc::Request& request) {
                       return daemon_status(request);
                   }}},
+        std::pair{"daemon.identity", ipc::MethodHandler{[this](const ipc::Request& request) {
+                      return daemon_identity(request);
+                  }}},
         std::pair{"server.add", ipc::MethodHandler{[this](const ipc::Request& request) {
                       return server_add(request);
                   }}},
         std::pair{"server.login", ipc::MethodHandler{[this](const ipc::Request& request) {
                       return server_login(request);
+                  }}},
+        std::pair{"server.update", ipc::MethodHandler{[this](const ipc::Request& request) {
+                      return server_update(request);
+                  }}},
+        std::pair{"server.enable", ipc::MethodHandler{[this](const ipc::Request& request) {
+                      return server_enable(request);
+                  }}},
+        std::pair{"server.disable", ipc::MethodHandler{[this](const ipc::Request& request) {
+                      return server_disable(request);
+                  }}},
+        std::pair{"server.logout", ipc::MethodHandler{[this](const ipc::Request& request) {
+                      return server_logout(request);
                   }}},
         std::pair{"server.list", ipc::MethodHandler{[this](const ipc::Request& request) {
                       return server_list(request);
@@ -380,6 +558,15 @@ common::Result<void> ControlService::register_handlers(ipc::Dispatcher& dispatch
         std::pair{"tun.add", ipc::MethodHandler{[this](const ipc::Request& request) {
                       return tunnel_add(request);
                   }}},
+        std::pair{"tun.update", ipc::MethodHandler{[this](const ipc::Request& request) {
+                      return tunnel_update(request);
+                  }}},
+        std::pair{"tun.enable", ipc::MethodHandler{[this](const ipc::Request& request) {
+                      return tunnel_enable(request);
+                  }}},
+        std::pair{"tun.disable", ipc::MethodHandler{[this](const ipc::Request& request) {
+                      return tunnel_disable(request);
+                  }}},
         std::pair{"tun.list", ipc::MethodHandler{[this](const ipc::Request& request) {
                       return tunnel_list(request);
                   }}},
@@ -388,6 +575,15 @@ common::Result<void> ControlService::register_handlers(ipc::Dispatcher& dispatch
                   }}},
         std::pair{"tun.remove", ipc::MethodHandler{[this](const ipc::Request& request) {
                       return tunnel_remove(request);
+                  }}},
+        std::pair{"config.export", ipc::MethodHandler{[this](const ipc::Request& request) {
+                      return config_export(request);
+                  }}},
+        std::pair{"config.plan", ipc::MethodHandler{[this](const ipc::Request& request) {
+                      return config_plan(request);
+                  }}},
+        std::pair{"config.apply", ipc::MethodHandler{[this](const ipc::Request& request) {
+                      return config_apply(request);
                   }}},
         std::pair{"status", ipc::MethodHandler{[this](const ipc::Request& request) {
                       return status(request);
@@ -428,6 +624,17 @@ Result<Json> ControlService::daemon_status(const ipc::Request& request) const {
     return Json{{"state", "running"}, {"ipc_version", ipc::kProtocolVersion}};
 }
 
+Result<Json> ControlService::daemon_identity(const ipc::Request& request) {
+    if (auto valid = validate_params(request.params, {}); !valid) {
+        return valid.error();
+    }
+    auto identity = repository_.client_id();
+    if (!identity) {
+        return identity.error();
+    }
+    return Json{{"client_id", identity->str()}};
+}
+
 Result<Json> ControlService::server_add(const ipc::Request& request) {
     if (auto valid = validate_params(request.params, {"endpoint"}, {"name"}); !valid) {
         return valid.error();
@@ -463,6 +670,12 @@ Result<Json> ControlService::server_add(const ipc::Request& request) {
         .latency_ms = std::nullopt,
         .created_at_unix_ms = now,
         .updated_at_unix_ms = now,
+        .tls_server_name = std::nullopt,
+        .ca_credential_ref = std::nullopt,
+        .client_certificate_ref = std::nullopt,
+        .client_private_key_ref = std::nullopt,
+        .config_revision = 1U,
+        .managed_by_config = false,
     };
     auto created = repository_.servers().create(server);
     if (!created) {
@@ -473,23 +686,28 @@ Result<Json> ControlService::server_add(const ipc::Request& request) {
 }
 
 Result<Json> ControlService::server_login(const ipc::Request& request) {
-    if (auto valid = validate_params(request.params, {"identifier", "token"}); !valid) {
+    if (auto valid = validate_params(request.params, {"identifier"}, {"psk", "token"}); !valid) {
         return valid.error();
     }
+    const bool has_psk = request.params.contains("psk");
+    const bool has_legacy_token = request.params.contains("token");
+    if (has_psk == has_legacy_token) {
+        return Error{ErrorCode::invalid_argument, "server login requires exactly one PSK field"};
+    }
     auto identifier = required_string(request.params, "identifier");
-    auto token_text = required_string(request.params, "token");
+    auto psk_text = required_string(request.params, has_psk ? "psk" : "token");
     if (!identifier) {
         return identifier.error();
     }
-    if (!token_text) {
-        return token_text.error();
+    if (!psk_text) {
+        return psk_text.error();
     }
-    const StringScrubber token_scrubber{*token_text};
-    if (token_text->empty() || token_text->size() > storage::kMaxCredentialSecretBytes ||
-        token_text->find('\0') != std::string::npos) {
-        return Error{ErrorCode::invalid_argument, "token is outside its accepted byte-length"};
+    const StringScrubber psk_scrubber{*psk_text};
+    if (psk_text->empty() || psk_text->size() > storage::kMaxCredentialSecretBytes ||
+        psk_text->find('\0') != std::string::npos) {
+        return Error{ErrorCode::invalid_argument, "PSK is outside its accepted byte-length"};
     }
-    common::SecureString token{*token_text};
+    common::SecureString psk{*psk_text};
     std::unique_lock credential_operation_lock{credential_operation_mutex_};
 
     auto transaction = repository_.begin_transaction();
@@ -502,7 +720,12 @@ Result<Json> ControlService::server_login(const ipc::Request& request) {
     }
     const std::optional<std::string> previous_key = server->credential_ref;
     const std::string key = next_credential_key(*server);
+    auto revision = next_revision(server->config_revision);
+    if (!revision) {
+        return revision.error();
+    }
     server->credential_ref = key;
+    server->config_revision = *revision;
     server->actual_state = server->desired_state == ServerDesiredState::enabled
                                ? ServerActualState::disconnected
                                : ServerActualState::disabled;
@@ -521,7 +744,7 @@ Result<Json> ControlService::server_login(const ipc::Request& request) {
         return tunnels.error();
     }
     const std::size_t count = tunnel_counts(*tunnels)[server->id.str()];
-    auto stored = credentials_.put(key, token.view());
+    auto stored = credentials_.put(key, psk.view());
     if (!stored) {
         return stored.error();
     }
@@ -551,6 +774,448 @@ Result<Json> ControlService::server_login(const ipc::Request& request) {
     credential_operation_lock.unlock();
     notify_state_changed();
     return Json{{"server", server_json(*server, count)}};
+}
+
+Result<Json> ControlService::server_update(const ipc::Request& request) {
+    if (auto valid = validate_params(request.params, {"identifier"},
+                                     {"name", "endpoint", "tls_server_name", "ca_certificate",
+                                      "client_certificate", "client_private_key"});
+        !valid) {
+        return valid.error();
+    }
+    if (request.params.size() == 1U) {
+        return Error{ErrorCode::invalid_argument, "server update requires at least one field"};
+    }
+    auto identifier = required_string(request.params, "identifier");
+    auto name = optional_nullable_string(request.params, "name");
+    auto endpoint_text_value = optional_string(request.params, "endpoint");
+    auto tls_server_name = optional_nullable_string(request.params, "tls_server_name");
+    auto ca_certificate = optional_nullable_string(request.params, "ca_certificate");
+    auto client_certificate = optional_nullable_string(request.params, "client_certificate");
+    auto client_private_key = optional_nullable_string(request.params, "client_private_key");
+    if (!identifier || !name || !endpoint_text_value || !tls_server_name || !ca_certificate ||
+        !client_certificate || !client_private_key) {
+        return !identifier            ? identifier.error()
+               : !name                ? name.error()
+               : !endpoint_text_value ? endpoint_text_value.error()
+               : !tls_server_name     ? tls_server_name.error()
+               : !ca_certificate      ? ca_certificate.error()
+               : !client_certificate  ? client_certificate.error()
+                                      : client_private_key.error();
+    }
+
+    std::optional<common::Endpoint> endpoint;
+    if (endpoint_text_value->has_value()) {
+        auto parsed = common::Endpoint::parse(**endpoint_text_value);
+        if (!parsed) {
+            return parsed.error();
+        }
+        endpoint = std::move(*parsed);
+    }
+
+    std::unique_lock credential_operation_lock{credential_operation_mutex_};
+    auto transaction = repository_.begin_transaction();
+    if (!transaction) {
+        return transaction.error();
+    }
+    auto server = resolve_server(repository_, *identifier);
+    if (!server) {
+        return server.error();
+    }
+    auto tunnels = repository_.tunnels().list_by_server(server->id);
+    if (!tunnels) {
+        return tunnels.error();
+    }
+
+    const ServerRecord previous = *server;
+    auto current_ca = load_credential(credentials_, previous.ca_credential_ref, "server CA");
+    auto current_certificate =
+        load_credential(credentials_, previous.client_certificate_ref, "client certificate");
+    auto current_private_key =
+        load_credential(credentials_, previous.client_private_key_ref, "client private key");
+    if (!current_ca || !current_certificate || !current_private_key) {
+        return !current_ca            ? current_ca.error()
+               : !current_certificate ? current_certificate.error()
+                                      : current_private_key.error();
+    }
+
+    common::SecureString prospective_ca;
+    common::SecureString prospective_certificate;
+    common::SecureString prospective_private_key;
+    bool ca_changed = false;
+    bool certificate_changed = false;
+    bool private_key_changed = false;
+    if (ca_certificate->has_value()) {
+        auto parsed =
+            parse_credential_material(*ca_certificate, common::SecureString{}, "server CA");
+        if (!parsed) {
+            return parsed.error();
+        }
+        ca_changed = !parsed->equals(*current_ca);
+        prospective_ca = std::move(*parsed);
+    } else {
+        prospective_ca = std::move(*current_ca);
+    }
+    if (client_certificate->has_value()) {
+        auto parsed = parse_credential_material(*client_certificate, common::SecureString{},
+                                                "client certificate");
+        if (!parsed) {
+            return parsed.error();
+        }
+        certificate_changed = !parsed->equals(*current_certificate);
+        prospective_certificate = std::move(*parsed);
+    } else {
+        prospective_certificate = std::move(*current_certificate);
+    }
+    if (client_private_key->has_value()) {
+        auto parsed = parse_credential_material(*client_private_key, common::SecureString{},
+                                                "client private key");
+        if (!parsed) {
+            return parsed.error();
+        }
+        private_key_changed = !parsed->equals(*current_private_key);
+        prospective_private_key = std::move(*parsed);
+    } else {
+        prospective_private_key = std::move(*current_private_key);
+    }
+    if (prospective_certificate.empty() != prospective_private_key.empty()) {
+        return Error{ErrorCode::invalid_argument,
+                     "client certificate and private key must be configured together"};
+    }
+    auto validated_tls = protocol::make_client_tls_context({
+        .ca_certificate_path = {},
+        .ca_certificate_pem = prospective_ca.view(),
+        .client_certificate_pem = prospective_certificate.view(),
+        .client_private_key_pem = prospective_private_key.view(),
+    });
+    if (!validated_tls) {
+        return validated_tls.error();
+    }
+
+    StagedCredentials staged{credentials_};
+    if (ca_changed) {
+        if (prospective_ca.empty()) {
+            server->ca_credential_ref.reset();
+        } else {
+            server->ca_credential_ref =
+                next_server_credential_key(previous, ServerCredentialKind::ca_certificate);
+            auto stored = staged.put(*server->ca_credential_ref, prospective_ca.view());
+            if (!stored) {
+                return stored.error();
+            }
+        }
+    }
+    if (certificate_changed) {
+        if (prospective_certificate.empty()) {
+            server->client_certificate_ref.reset();
+        } else {
+            server->client_certificate_ref =
+                next_server_credential_key(previous, ServerCredentialKind::client_certificate);
+            auto stored =
+                staged.put(*server->client_certificate_ref, prospective_certificate.view());
+            if (!stored) {
+                return stored.error();
+            }
+        }
+    }
+    if (private_key_changed) {
+        if (prospective_private_key.empty()) {
+            server->client_private_key_ref.reset();
+        } else {
+            server->client_private_key_ref =
+                next_server_credential_key(previous, ServerCredentialKind::client_private_key);
+            auto stored =
+                staged.put(*server->client_private_key_ref, prospective_private_key.view());
+            if (!stored) {
+                return stored.error();
+            }
+        }
+    }
+
+    bool changed = false;
+    bool transport_changed = ca_changed || certificate_changed || private_key_changed;
+    changed = transport_changed;
+    if (name->has_value() && server->name != **name) {
+        server->name = **name;
+        changed = true;
+    }
+    if (endpoint.has_value() && server->endpoint != *endpoint) {
+        server->endpoint = std::move(*endpoint);
+        changed = true;
+        transport_changed = true;
+    }
+    if (tls_server_name->has_value() && server->tls_server_name != **tls_server_name) {
+        server->tls_server_name = **tls_server_name;
+        changed = true;
+        transport_changed = true;
+    }
+
+    if (changed) {
+        auto revision = next_revision(server->config_revision);
+        if (!revision) {
+            return revision.error();
+        }
+        server->config_revision = *revision;
+        server->updated_at_unix_ms = update_time(server->updated_at_unix_ms);
+        if (transport_changed) {
+            server->actual_state =
+                server->desired_state == ServerDesiredState::disabled
+                    ? ServerActualState::disabled
+                    : (server->credential_ref.has_value() ? ServerActualState::disconnected
+                                                          : ServerActualState::not_authenticated);
+            server->remote_server_id.reset();
+            server->last_error_code.reset();
+            server->last_error_message.reset();
+            server->reconnect_attempt = 0U;
+            server->latency_ms.reset();
+        }
+        auto updated = repository_.servers().update(*server, *transaction);
+        if (!updated) {
+            return updated.error();
+        }
+    }
+    auto committed = transaction->commit();
+    if (!committed) {
+        return committed.error();
+    }
+    staged.release();
+    const auto cleanup_kind = [this, &previous, &server](const ServerCredentialKind kind,
+                                                         const bool material_changed) {
+        if (!material_changed) {
+            return;
+        }
+        const auto& old_reference = credential_reference(previous, kind);
+        const auto& retained_reference = credential_reference(*server, kind);
+        auto cleaned = cleanup_server_credential_kind(
+            credentials_, server->id, kind,
+            old_reference.has_value() ? std::optional<std::string_view>{*old_reference}
+                                      : std::nullopt,
+            retained_reference.has_value() ? std::optional<std::string_view>{*retained_reference}
+                                           : std::nullopt);
+        if (!cleaned) {
+            common::log_warn("deferred cleanup of previous server TLS material",
+                             {.component = "daemon.control",
+                              .server_id = server->id.str(),
+                              .error_code = cleaned.error().code()});
+        }
+    };
+    cleanup_kind(ServerCredentialKind::ca_certificate, ca_changed);
+    cleanup_kind(ServerCredentialKind::client_certificate, certificate_changed);
+    cleanup_kind(ServerCredentialKind::client_private_key, private_key_changed);
+    credential_operation_lock.unlock();
+    if (changed) {
+        notify_state_changed();
+    }
+    const std::size_t count = tunnel_counts(*tunnels)[server->id.str()];
+    return Json{{"server", server_json(*server, count)}, {"changed", changed}};
+}
+
+Result<Json> ControlService::server_enable(const ipc::Request& request) {
+    if (auto valid = validate_params(request.params, {"identifier"}); !valid) {
+        return valid.error();
+    }
+    auto identifier = required_string(request.params, "identifier");
+    if (!identifier) {
+        return identifier.error();
+    }
+    auto transaction = repository_.begin_transaction();
+    if (!transaction) {
+        return transaction.error();
+    }
+    auto server = resolve_server(repository_, *identifier);
+    if (!server) {
+        return server.error();
+    }
+    auto tunnels = repository_.tunnels().list_by_server(server->id);
+    if (!tunnels) {
+        return tunnels.error();
+    }
+    const bool changed = server->desired_state != ServerDesiredState::enabled;
+    if (changed) {
+        auto revision = next_revision(server->config_revision);
+        if (!revision) {
+            return revision.error();
+        }
+        server->desired_state = ServerDesiredState::enabled;
+        server->actual_state = server->credential_ref.has_value()
+                                   ? ServerActualState::disconnected
+                                   : ServerActualState::not_authenticated;
+        server->config_revision = *revision;
+        server->last_error_code.reset();
+        server->last_error_message.reset();
+        server->reconnect_attempt = 0U;
+        server->latency_ms.reset();
+        server->updated_at_unix_ms = update_time(server->updated_at_unix_ms);
+        auto updated = repository_.servers().update(*server, *transaction);
+        if (!updated) {
+            return updated.error();
+        }
+        for (auto& tunnel : *tunnels) {
+            if (tunnel.desired_state == TunnelDesiredState::active) {
+                tunnel.actual_state = TunnelActualState::pending;
+                tunnel.updated_at_unix_ms = update_time(tunnel.updated_at_unix_ms);
+                auto tunnel_updated = repository_.tunnels().update(tunnel, *transaction);
+                if (!tunnel_updated) {
+                    return tunnel_updated.error();
+                }
+            }
+        }
+    }
+    auto committed = transaction->commit();
+    if (!committed) {
+        return committed.error();
+    }
+    if (changed) {
+        notify_state_changed();
+    }
+    const std::size_t count = tunnel_counts(*tunnels)[server->id.str()];
+    return Json{{"server", server_json(*server, count)}, {"changed", changed}};
+}
+
+Result<Json> ControlService::server_disable(const ipc::Request& request) {
+    if (auto valid = validate_params(request.params, {"identifier"}); !valid) {
+        return valid.error();
+    }
+    auto identifier = required_string(request.params, "identifier");
+    if (!identifier) {
+        return identifier.error();
+    }
+    auto transaction = repository_.begin_transaction();
+    if (!transaction) {
+        return transaction.error();
+    }
+    auto server = resolve_server(repository_, *identifier);
+    if (!server) {
+        return server.error();
+    }
+    auto tunnels = repository_.tunnels().list_by_server(server->id);
+    if (!tunnels) {
+        return tunnels.error();
+    }
+    const bool changed = server->desired_state != ServerDesiredState::disabled;
+    if (changed) {
+        auto revision = next_revision(server->config_revision);
+        if (!revision) {
+            return revision.error();
+        }
+        server->desired_state = ServerDesiredState::disabled;
+        server->actual_state = ServerActualState::disabled;
+        server->config_revision = *revision;
+        server->last_error_code.reset();
+        server->last_error_message.reset();
+        server->reconnect_attempt = 0U;
+        server->latency_ms.reset();
+        server->updated_at_unix_ms = update_time(server->updated_at_unix_ms);
+        auto updated = repository_.servers().update(*server, *transaction);
+        if (!updated) {
+            return updated.error();
+        }
+        for (auto& tunnel : *tunnels) {
+            if (tunnel.desired_state == TunnelDesiredState::active) {
+                tunnel.actual_state = TunnelActualState::pending;
+                tunnel.updated_at_unix_ms = update_time(tunnel.updated_at_unix_ms);
+                auto tunnel_updated = repository_.tunnels().update(tunnel, *transaction);
+                if (!tunnel_updated) {
+                    return tunnel_updated.error();
+                }
+            }
+        }
+    }
+    auto committed = transaction->commit();
+    if (!committed) {
+        return committed.error();
+    }
+    if (changed) {
+        notify_state_changed();
+    }
+    const std::size_t count = tunnel_counts(*tunnels)[server->id.str()];
+    return Json{{"server", server_json(*server, count)}, {"changed", changed}};
+}
+
+Result<Json> ControlService::server_logout(const ipc::Request& request) {
+    if (auto valid = validate_params(request.params, {"identifier"}); !valid) {
+        return valid.error();
+    }
+    auto identifier = required_string(request.params, "identifier");
+    if (!identifier) {
+        return identifier.error();
+    }
+    std::unique_lock credential_operation_lock{credential_operation_mutex_};
+    auto transaction = repository_.begin_transaction();
+    if (!transaction) {
+        return transaction.error();
+    }
+    auto server = resolve_server(repository_, *identifier);
+    if (!server) {
+        return server.error();
+    }
+    auto tunnels = repository_.tunnels().list_by_server(server->id);
+    if (!tunnels) {
+        return tunnels.error();
+    }
+    const auto psk_ref = server->credential_ref;
+    const auto certificate_ref = server->client_certificate_ref;
+    const auto private_key_ref = server->client_private_key_ref;
+    const auto logged_out_state = server->desired_state == ServerDesiredState::disabled
+                                      ? ServerActualState::disabled
+                                      : ServerActualState::not_authenticated;
+    const bool changed = psk_ref.has_value() || certificate_ref.has_value() ||
+                         private_key_ref.has_value() || server->actual_state != logged_out_state;
+    if (changed) {
+        auto revision = next_revision(server->config_revision);
+        if (!revision) {
+            return revision.error();
+        }
+        server->credential_ref.reset();
+        server->client_certificate_ref.reset();
+        server->client_private_key_ref.reset();
+        server->remote_server_id.reset();
+        server->actual_state = logged_out_state;
+        server->config_revision = *revision;
+        server->last_error_code.reset();
+        server->last_error_message.reset();
+        server->reconnect_attempt = 0U;
+        server->latency_ms.reset();
+        server->updated_at_unix_ms = update_time(server->updated_at_unix_ms);
+        auto updated = repository_.servers().update(*server, *transaction);
+        if (!updated) {
+            return updated.error();
+        }
+    }
+    auto committed = transaction->commit();
+    if (!committed) {
+        return committed.error();
+    }
+
+    auto psk_cleaned = cleanup_server_credentials(
+        credentials_, server->id,
+        psk_ref.has_value() ? std::optional<std::string_view>{*psk_ref} : std::nullopt);
+    std::optional<Error> cleanup_error;
+    if (!psk_cleaned) {
+        cleanup_error = psk_cleaned.error();
+    }
+    for (const auto& [kind, reference] :
+         {std::pair{ServerCredentialKind::client_certificate, certificate_ref},
+          std::pair{ServerCredentialKind::client_private_key, private_key_ref}}) {
+        auto removed = cleanup_server_credential_kind(
+            credentials_, server->id, kind,
+            reference.has_value() ? std::optional<std::string_view>{*reference} : std::nullopt);
+        if (!removed && !cleanup_error.has_value()) {
+            cleanup_error = removed.error();
+        }
+    }
+    if (cleanup_error.has_value()) {
+        common::log_warn("deferred credential cleanup after server logout",
+                         {.component = "daemon.control",
+                          .server_id = server->id.str(),
+                          .error_code = cleanup_error->code()});
+    }
+    credential_operation_lock.unlock();
+    if (changed) {
+        notify_state_changed();
+    }
+    const std::size_t count = tunnel_counts(*tunnels)[server->id.str()];
+    return Json{{"server", server_json(*server, count)}, {"changed", changed}};
 }
 
 Result<Json> ControlService::server_list(const ipc::Request& request) const {
@@ -651,11 +1316,7 @@ Result<Json> ControlService::server_remove(const ipc::Request& request) {
                           .server_id = server->id.str(),
                           .error_code = checkpointed.error().code()});
     }
-    auto credentials_removed =
-        cleanup_server_credentials(credentials_, server->id,
-                                   server->credential_ref.has_value()
-                                       ? std::optional<std::string_view>{*server->credential_ref}
-                                       : std::nullopt);
+    auto credentials_removed = cleanup_all_server_credentials(credentials_, *server);
     if (!credentials_removed) {
         common::log_warn("deferred credential cleanup after server removal",
                          {.component = "daemon.control",
@@ -764,6 +1425,194 @@ Result<Json> ControlService::tunnel_add(const ipc::Request& request) {
     notify_state_changed();
     const TunnelServerContext server_context{server->name, server->actual_state};
     return Json{{"tunnel", tunnel_json(tunnel, &server_context)}};
+}
+
+Result<Json> ControlService::tunnel_update(const ipc::Request& request) {
+    if (auto valid = validate_params(request.params, {"identifier"},
+                                     {"name", "local_host", "local_port", "remote_port"});
+        !valid) {
+        return valid.error();
+    }
+    if (request.params.size() == 1U) {
+        return Error{ErrorCode::invalid_argument, "tunnel update requires at least one field"};
+    }
+    auto identifier = required_string(request.params, "identifier");
+    auto name = optional_nullable_string(request.params, "name");
+    auto local_host = optional_string(request.params, "local_host");
+    auto local_port = optional_port(request.params, "local_port");
+    auto remote_port = optional_port(request.params, "remote_port");
+    if (!identifier || !name || !local_host || !local_port || !remote_port) {
+        return !identifier   ? identifier.error()
+               : !name       ? name.error()
+               : !local_host ? local_host.error()
+               : !local_port ? local_port.error()
+                             : remote_port.error();
+    }
+
+    auto transaction = repository_.begin_transaction();
+    if (!transaction) {
+        return transaction.error();
+    }
+    auto tunnel = resolve_tunnel(repository_, *identifier);
+    if (!tunnel) {
+        return tunnel.error();
+    }
+    auto server = repository_.servers().get_by_id(tunnel->server_id);
+    if (!server) {
+        return server.error();
+    }
+
+    const std::string next_local_host =
+        local_host->has_value() ? **local_host : tunnel->local_endpoint.host();
+    const std::uint16_t next_local_port =
+        local_port->has_value() ? **local_port : tunnel->local_endpoint.port();
+    const std::uint16_t next_remote_port =
+        remote_port->has_value() ? **remote_port : tunnel->remote_endpoint.port();
+    auto next_local = common::Endpoint::parse(endpoint_text(next_local_host, next_local_port));
+    auto next_remote =
+        common::Endpoint::parse(endpoint_text(tunnel->remote_endpoint.host(), next_remote_port));
+    if (!next_local) {
+        return next_local.error();
+    }
+    if (!next_remote) {
+        return next_remote.error();
+    }
+
+    bool changed = false;
+    if (name->has_value() && tunnel->name != **name) {
+        tunnel->name = **name;
+        changed = true;
+    }
+    if (tunnel->local_endpoint != *next_local) {
+        tunnel->local_endpoint = std::move(*next_local);
+        changed = true;
+    }
+    if (tunnel->remote_endpoint != *next_remote) {
+        tunnel->remote_endpoint = std::move(*next_remote);
+        changed = true;
+    }
+    if (changed) {
+        auto revision = next_revision(tunnel->config_revision);
+        if (!revision) {
+            return revision.error();
+        }
+        tunnel->config_revision = *revision;
+        tunnel->actual_state = tunnel->desired_state == TunnelDesiredState::active
+                                   ? TunnelActualState::pending
+                                   : TunnelActualState::disabled;
+        tunnel->last_error_code.reset();
+        tunnel->last_error_message.reset();
+        tunnel->updated_at_unix_ms = update_time(tunnel->updated_at_unix_ms);
+        auto updated = repository_.tunnels().update(*tunnel, *transaction);
+        if (!updated) {
+            return updated.error();
+        }
+    }
+    auto committed = transaction->commit();
+    if (!committed) {
+        return committed.error();
+    }
+    if (changed) {
+        notify_state_changed();
+    }
+    const TunnelServerContext server_context{server->name, server->actual_state};
+    return Json{{"tunnel", tunnel_json(*tunnel, &server_context)}, {"changed", changed}};
+}
+
+Result<Json> ControlService::tunnel_enable(const ipc::Request& request) {
+    if (auto valid = validate_params(request.params, {"identifier"}); !valid) {
+        return valid.error();
+    }
+    auto identifier = required_string(request.params, "identifier");
+    if (!identifier) {
+        return identifier.error();
+    }
+    auto transaction = repository_.begin_transaction();
+    if (!transaction) {
+        return transaction.error();
+    }
+    auto tunnel = resolve_tunnel(repository_, *identifier);
+    if (!tunnel) {
+        return tunnel.error();
+    }
+    auto server = repository_.servers().get_by_id(tunnel->server_id);
+    if (!server) {
+        return server.error();
+    }
+    const bool changed = tunnel->desired_state != TunnelDesiredState::active;
+    if (changed) {
+        auto revision = next_revision(tunnel->config_revision);
+        if (!revision) {
+            return revision.error();
+        }
+        tunnel->desired_state = TunnelDesiredState::active;
+        tunnel->actual_state = TunnelActualState::pending;
+        tunnel->config_revision = *revision;
+        tunnel->last_error_code.reset();
+        tunnel->last_error_message.reset();
+        tunnel->updated_at_unix_ms = update_time(tunnel->updated_at_unix_ms);
+        auto updated = repository_.tunnels().update(*tunnel, *transaction);
+        if (!updated) {
+            return updated.error();
+        }
+    }
+    auto committed = transaction->commit();
+    if (!committed) {
+        return committed.error();
+    }
+    if (changed) {
+        notify_state_changed();
+    }
+    const TunnelServerContext server_context{server->name, server->actual_state};
+    return Json{{"tunnel", tunnel_json(*tunnel, &server_context)}, {"changed", changed}};
+}
+
+Result<Json> ControlService::tunnel_disable(const ipc::Request& request) {
+    if (auto valid = validate_params(request.params, {"identifier"}); !valid) {
+        return valid.error();
+    }
+    auto identifier = required_string(request.params, "identifier");
+    if (!identifier) {
+        return identifier.error();
+    }
+    auto transaction = repository_.begin_transaction();
+    if (!transaction) {
+        return transaction.error();
+    }
+    auto tunnel = resolve_tunnel(repository_, *identifier);
+    if (!tunnel) {
+        return tunnel.error();
+    }
+    auto server = repository_.servers().get_by_id(tunnel->server_id);
+    if (!server) {
+        return server.error();
+    }
+    const bool changed = tunnel->desired_state != TunnelDesiredState::disabled;
+    if (changed) {
+        auto revision = next_revision(tunnel->config_revision);
+        if (!revision) {
+            return revision.error();
+        }
+        tunnel->desired_state = TunnelDesiredState::disabled;
+        tunnel->actual_state = TunnelActualState::disabled;
+        tunnel->config_revision = *revision;
+        tunnel->last_error_code.reset();
+        tunnel->last_error_message.reset();
+        tunnel->updated_at_unix_ms = update_time(tunnel->updated_at_unix_ms);
+        auto updated = repository_.tunnels().update(*tunnel, *transaction);
+        if (!updated) {
+            return updated.error();
+        }
+    }
+    auto committed = transaction->commit();
+    if (!committed) {
+        return committed.error();
+    }
+    if (changed) {
+        notify_state_changed();
+    }
+    const TunnelServerContext server_context{server->name, server->actual_state};
+    return Json{{"tunnel", tunnel_json(*tunnel, &server_context)}, {"changed", changed}};
 }
 
 Result<Json> ControlService::tunnel_list(const ipc::Request& request) const {
@@ -895,6 +1744,57 @@ Result<Json> ControlService::tunnel_remove(const ipc::Request& request) {
     }
     notify_state_changed();
     return Json{{"removed", Json{{"id", tunnel->id.str()}, {"name", optional_json(tunnel->name)}}}};
+}
+
+Result<Json> ControlService::config_export(const ipc::Request& request) const {
+    if (auto valid = validate_params(request.params, {}); !valid) {
+        return valid.error();
+    }
+    DeclarativeConfig configuration{repository_, credentials_};
+    return configuration.export_config();
+}
+
+Result<Json> ControlService::config_plan(const ipc::Request& request) const {
+    if (auto valid = validate_params(request.params, {"path"}, {"prune"}); !valid) {
+        return valid.error();
+    }
+    auto path = required_string(request.params, "path");
+    auto prune = optional_bool(request.params, "prune");
+    if (!path) {
+        return path.error();
+    }
+    if (!prune) {
+        return prune.error();
+    }
+    DeclarativeConfig configuration{repository_, credentials_};
+    return configuration.plan(*path, *prune);
+}
+
+Result<Json> ControlService::config_apply(const ipc::Request& request) {
+    if (auto valid = validate_params(request.params, {"path"}, {"prune"}); !valid) {
+        return valid.error();
+    }
+    auto path = required_string(request.params, "path");
+    auto prune = optional_bool(request.params, "prune");
+    if (!path) {
+        return path.error();
+    }
+    if (!prune) {
+        return prune.error();
+    }
+    std::unique_lock credential_operation_lock{credential_operation_mutex_};
+    DeclarativeConfig configuration{repository_, credentials_};
+    auto applied = configuration.apply(*path, *prune);
+    credential_operation_lock.unlock();
+    if (!applied) {
+        return applied.error();
+    }
+    const auto changed = applied->find("changed");
+    if (changed != applied->end() && changed->is_number_unsigned() &&
+        changed->get<std::uint64_t>() != 0U) {
+        notify_state_changed();
+    }
+    return applied;
 }
 
 Result<Json> ControlService::status(const ipc::Request& request) const {

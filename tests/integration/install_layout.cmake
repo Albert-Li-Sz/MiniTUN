@@ -4,6 +4,7 @@ foreach(variable
         MINITUN_BUILD_DIR
         MINITUN_BINDIR
         MINITUN_LIBEXECDIR
+        MINITUN_LIBDIR
         MINITUN_INCLUDEDIR
         MINITUN_MANDIR
         MINITUN_SYSCONFDIR
@@ -65,6 +66,7 @@ endfunction()
 
 staged_path("${MINITUN_BINDIR}" staged_bindir)
 staged_path("${MINITUN_LIBEXECDIR}" staged_libexecdir)
+staged_path("${MINITUN_LIBDIR}" staged_libdir)
 staged_path("${MINITUN_INCLUDEDIR}" staged_includedir)
 staged_path("${MINITUN_MANDIR}" staged_mandir)
 staged_path("${MINITUN_SYSCONFDIR}" staged_sysconfdir)
@@ -100,6 +102,7 @@ require_paths("${server_prefix}"
     "${staged_sysusers_dir}/minitun-server.conf"
     "${staged_mandir}/man8/minitun-server.8"
     "${staged_sysconfdir}/minitun-server/README"
+    "${staged_sysconfdir}/minitun-server/clients.json.example"
 )
 if(EXISTS "${server_prefix}/${staged_bindir}/minitun")
     message(FATAL_ERROR "Server component unexpectedly installed minitun")
@@ -107,8 +110,8 @@ endif()
 run_version("${server_prefix}/${staged_bindir}/minitun-server" "minitun-server")
 file(READ "${server_prefix}/${staged_systemd_unit_dir}/minitun-server.service"
      server_service)
-if(NOT server_service MATCHES "--token-file /etc/minitun-server/token")
-    message(FATAL_ERROR "server service does not reference the required Token file")
+if(NOT server_service MATCHES "--clients-config /etc/minitun-server/clients.json")
+    message(FATAL_ERROR "server service does not reference the required client policy file")
 endif()
 if(server_service MATCHES "--allow-ports")
     message(FATAL_ERROR "server service unexpectedly restricts the default tunnel port range")
@@ -125,6 +128,34 @@ require_paths("${development_prefix}"
 )
 if(EXISTS "${development_prefix}/${staged_bindir}/minitun")
     message(FATAL_ERROR "Development component unexpectedly installed runtime binaries")
+endif()
+
+install_component(ClientLibrary client_library_prefix)
+file(GLOB sdk_runtime_libraries
+    "${client_library_prefix}/${staged_libdir}/libminitun-client.so.1*"
+    "${client_library_prefix}/${staged_libdir}/libminitun-client.1*.dylib"
+)
+if(NOT sdk_runtime_libraries)
+    message(FATAL_ERROR "ClientLibrary component is missing the SOVERSION 1 runtime")
+endif()
+if(EXISTS "${client_library_prefix}/${staged_libdir}/libminitun-client.so" OR
+   EXISTS "${client_library_prefix}/${staged_libdir}/libminitun-client.dylib")
+    message(FATAL_ERROR "ClientLibrary component unexpectedly contains the development symlink")
+endif()
+
+install_component(ClientDevelopment client_development_prefix)
+require_paths("${client_development_prefix}"
+    "${staged_includedir}/minitun/client.h"
+    "${staged_includedir}/minitun/client.hpp"
+    "${staged_libdir}/cmake/MiniTun/MiniTunConfig.cmake"
+    "${staged_libdir}/cmake/MiniTun/MiniTunTargets.cmake"
+    "${staged_libdir}/pkgconfig/minitun-client.pc"
+)
+if(NOT EXISTS "${client_development_prefix}/${staged_libdir}/libminitun-client.so" AND
+   NOT IS_SYMLINK "${client_development_prefix}/${staged_libdir}/libminitun-client.so" AND
+   NOT EXISTS "${client_development_prefix}/${staged_libdir}/libminitun-client.dylib" AND
+   NOT IS_SYMLINK "${client_development_prefix}/${staged_libdir}/libminitun-client.dylib")
+    message(FATAL_ERROR "ClientDevelopment component is missing the linker name")
 endif()
 
 message(STATUS "component installation layout passed")

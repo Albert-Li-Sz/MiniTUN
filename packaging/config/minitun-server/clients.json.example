@@ -1,0 +1,14 @@
+{
+  "format_version": 1,
+  "clients": [
+    {
+      "client_id": "client_00000000000000000000000000000001",
+      "enabled": true,
+      "psk_file": "/etc/minitun-server/client-example.psk",
+      "allowed_ports": ["10000-10999"],
+      "max_tunnels": 128,
+      "max_connections": 10000,
+      "max_idle_workers": 32
+    }
+  ]
+}

@@ -7,6 +7,7 @@ server_bin=${3:?missing minitun-server binary}
 
 runtime_root=$(cd "${TMPDIR:-/tmp}" && pwd -P)
 runtime_dir=$(mktemp -d "$runtime_root/minitun-workers.XXXXXX")
+integration_dir=$(cd "$(dirname "$0")" && pwd -P)
 socket_path="$runtime_dir/minitun.sock"
 state_path="$runtime_dir/state.db"
 credentials_path="$runtime_dir/credentials.db"
@@ -47,22 +48,6 @@ print(*ports)
 PY
 )
 
-"$server_bin" --foreground \
-    --listen "127.0.0.1:$control_port" \
-    --tls-cert "$runtime_dir/server.crt" \
-    --tls-key "$runtime_dir/server.key" \
-    --token-file "$runtime_dir/token" \
-    --allow-ports 1024-65535 \
-    --heartbeat-interval 1 \
-    --heartbeat-timeout 3 \
-    --min-idle-workers 0 \
-    --max-idle-workers 1 \
-    --max-total-idle-workers 1 \
-    --worker-idle-timeout 2 \
-    --io-threads 2 \
-    >"$runtime_dir/server.log" 2>&1 &
-server_pid=$!
-
 "$minitund_bin" --foreground \
     --socket "$socket_path" \
     --database "$state_path" \
@@ -80,6 +65,24 @@ for _ in $(seq 1 100); do
     fi
     sleep 0.05
 done
+
+bash "$integration_dir/write_client_policy.sh" "$minitun_bin" "$socket_path" \
+    "$runtime_dir/clients.json" "$runtime_dir/token" 1024-65535 128 10000 1 >/dev/null
+
+"$server_bin" --foreground \
+    --listen "127.0.0.1:$control_port" \
+    --tls-cert "$runtime_dir/server.crt" \
+    --tls-key "$runtime_dir/server.key" \
+    --clients-config "$runtime_dir/clients.json" \
+    --heartbeat-interval 1 \
+    --heartbeat-timeout 3 \
+    --min-idle-workers 0 \
+    --max-idle-workers 1 \
+    --max-total-idle-workers 1 \
+    --worker-idle-timeout 2 \
+    --io-threads 2 \
+    >"$runtime_dir/server.log" 2>&1 &
+server_pid=$!
 
 "$minitun_bin" --socket "$socket_path" server add "localhost:$control_port" --name primary \
     >/dev/null

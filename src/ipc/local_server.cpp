@@ -126,7 +126,7 @@ struct SocketIdentity final {
 
 [[nodiscard]] common::Error posix_error(int error_number, std::string_view operation) {
     common::ErrorCode code = common::ErrorCode::ipc_error;
-    if (error_number == EACCES || error_number == EPERM) {
+    if (error_number == EACCES || error_number == EPERM || error_number == ELOOP) {
         code = common::ErrorCode::permission_denied;
     } else if (error_number == ENOENT || error_number == ENOTDIR) {
         code = common::ErrorCode::not_found;

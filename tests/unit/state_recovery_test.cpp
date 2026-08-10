@@ -209,5 +209,141 @@ TEST(StateRecoveryTest, InvalidPersistedStateRollsBackTheWholeRecovery) {
     }
 }
 
+TEST(StateRecoveryTest, RejectsInvalidPersistedTunnelBeforeChangingServerState) {
+    test::TemporaryDatabaseFile temporary;
+    const ServerRecord server =
+        recovery_server(20, ServerDesiredState::enabled, ServerActualState::online, true);
+
+    auto repository = StateRepository::open(temporary.path_string());
+    ASSERT_TRUE(repository) << repository.error();
+    ASSERT_TRUE((*repository)->servers().create(server));
+    ASSERT_TRUE((*repository)
+                    ->tunnels()
+                    .create(recovery_tunnel(20, server.id, TunnelDesiredState::active,
+                                            TunnelActualState::active, 6'020)));
+    {
+        test::NativeSqliteDatabase native{temporary.path()};
+        native.execute("PRAGMA ignore_check_constraints = ON");
+        native.execute("UPDATE tunnels SET actual_state = 'invalid-state'");
+    }
+
+    const auto recovered = (*repository)->recover();
+    ASSERT_FALSE(recovered);
+    EXPECT_EQ(recovered.error().code(), common::ErrorCode::database_error);
+    test::NativeSqliteDatabase native{temporary.path()};
+    EXPECT_EQ(native.query_text("SELECT actual_state FROM servers"), "online");
+    EXPECT_EQ(native.query_int64("SELECT reconnect_attempt FROM servers"), 7);
+}
+
+TEST(StateRecoveryTest, RollsBackWhenEachRecoveryUpdateFails) {
+    const auto run_failure = [](const std::string_view trigger_sql,
+                                const ServerDesiredState server_desired,
+                                const TunnelDesiredState tunnel_desired) {
+        test::TemporaryDatabaseFile temporary;
+        const ServerRecord server =
+            recovery_server(30, server_desired, ServerActualState::online, true);
+        const TunnelRecord tunnel =
+            recovery_tunnel(30, server.id, tunnel_desired, TunnelActualState::active, 6'030);
+        auto repository = StateRepository::open(temporary.path_string());
+        ASSERT_TRUE(repository) << repository.error();
+        ASSERT_TRUE((*repository)->servers().create(server));
+        ASSERT_TRUE((*repository)->tunnels().create(tunnel));
+        {
+            test::NativeSqliteDatabase native{temporary.path()};
+            native.execute(trigger_sql);
+        }
+
+        const auto recovered = (*repository)->recover();
+        ASSERT_FALSE(recovered);
+        EXPECT_EQ(recovered.error().code(), common::ErrorCode::invalid_argument);
+        EXPECT_EQ(*(*repository)->servers().get_by_id(server.id), server);
+        EXPECT_EQ(*(*repository)->tunnels().get_by_id(tunnel.id), tunnel);
+    };
+
+    run_failure("CREATE TRIGGER reject_server_recovery BEFORE UPDATE OF actual_state ON servers "
+                "BEGIN SELECT RAISE(ABORT, 'reject server recovery'); END",
+                ServerDesiredState::enabled, TunnelDesiredState::active);
+    run_failure("CREATE TRIGGER reject_tombstone BEFORE UPDATE OF desired_state ON tunnels "
+                "BEGIN SELECT RAISE(ABORT, 'reject tombstone propagation'); END",
+                ServerDesiredState::removed, TunnelDesiredState::active);
+    run_failure("CREATE TRIGGER reject_tunnel_recovery BEFORE UPDATE OF actual_state ON tunnels "
+                "BEGIN SELECT RAISE(ABORT, 'reject tunnel recovery'); END",
+                ServerDesiredState::enabled, TunnelDesiredState::active);
+}
+
+TEST(StateRecoveryTest, DaemonIdentityRejectsMalformedOrAmbiguousRows) {
+    const auto expect_failure = [](const std::string_view replacement_sql) {
+        test::TemporaryDatabaseFile temporary;
+        auto repository = StateRepository::open(temporary.path_string());
+        ASSERT_TRUE(repository) << repository.error();
+        {
+            test::NativeSqliteDatabase native{temporary.path()};
+            native.execute("PRAGMA ignore_check_constraints = ON");
+            native.execute(replacement_sql);
+        }
+        const auto identity = (*repository)->client_id();
+        ASSERT_FALSE(identity);
+        EXPECT_EQ(identity.error().code(), common::ErrorCode::database_error);
+    };
+
+    expect_failure("INSERT INTO daemon_identity(singleton, client_id) VALUES(1, 'not-an-id')");
+    expect_failure("INSERT INTO daemon_identity(singleton, client_id) VALUES(1, x'00')");
+    expect_failure("DROP TABLE daemon_identity; "
+                   "CREATE TABLE daemon_identity(singleton INTEGER, client_id TEXT); "
+                   "INSERT INTO daemon_identity VALUES(1, "
+                   "'client_00000000000000000000000000000001'), "
+                   "(1, 'client_00000000000000000000000000000002')");
+    expect_failure("DROP TABLE daemon_identity");
+}
+
+TEST(StateRecoveryTest, DaemonIdentityInsertFailureLeavesNoPartialIdentity) {
+    test::TemporaryDatabaseFile temporary;
+    auto repository = StateRepository::open(temporary.path_string());
+    ASSERT_TRUE(repository) << repository.error();
+    {
+        test::NativeSqliteDatabase native{temporary.path()};
+        native.execute("CREATE TRIGGER reject_identity BEFORE INSERT ON daemon_identity "
+                       "BEGIN SELECT RAISE(ABORT, 'reject identity'); END");
+    }
+
+    const auto identity = (*repository)->client_id();
+    ASSERT_FALSE(identity);
+    EXPECT_EQ(identity.error().code(), common::ErrorCode::invalid_argument);
+    test::NativeSqliteDatabase native{temporary.path()};
+    EXPECT_EQ(native.query_int64("SELECT COUNT(*) FROM daemon_identity"), 0);
+}
+
+TEST(StateRecoveryTest, RecoveryPrepareFailuresRollBackWithoutPartialChanges) {
+    const auto expect_prepare_failure = [](const std::string_view drop_sql,
+                                           const std::string_view replacement_sql) {
+        test::TemporaryDatabaseFile temporary;
+        const ServerRecord server =
+            recovery_server(40, ServerDesiredState::enabled, ServerActualState::online, true);
+        const TunnelRecord tunnel =
+            recovery_tunnel(40, server.id, TunnelDesiredState::active, TunnelActualState::active,
+                            6'040);
+        auto repository = StateRepository::open(temporary.path_string());
+        ASSERT_TRUE(repository) << repository.error();
+        ASSERT_TRUE((*repository)->servers().create(server));
+        ASSERT_TRUE((*repository)->tunnels().create(tunnel));
+        {
+            test::NativeSqliteDatabase native{temporary.path()};
+            native.execute(drop_sql);
+            native.execute(replacement_sql);
+        }
+
+        const auto recovered = (*repository)->recover();
+        ASSERT_FALSE(recovered);
+        EXPECT_EQ(recovered.error().code(), common::ErrorCode::database_error);
+    };
+
+    expect_prepare_failure(
+        "DROP TABLE tunnels; DROP TABLE servers",
+        "CREATE TABLE servers(id TEXT PRIMARY KEY)");
+    expect_prepare_failure(
+        "DROP TABLE tunnels",
+        "CREATE TABLE tunnels(id TEXT PRIMARY KEY)");
+}
+
 } // namespace
 } // namespace minitun::storage

@@ -23,6 +23,8 @@
 #include <asio/write.hpp>
 #include <gtest/gtest.h>
 
+#include <fcntl.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -33,6 +35,8 @@
 #include <minitun/ipc/local_client.hpp>
 #include <minitun/ipc/local_server.hpp>
 #include <minitun/ipc/protocol.hpp>
+
+#include "../../src/ipc/local_internal.hpp"
 
 namespace minitun::ipc {
 namespace {
@@ -464,6 +468,193 @@ TEST(IpcTransportTest, MapsMalformedPeerResponsesToProtocolErrors) {
     EXPECT_EQ(response.error().message(), "IPC peer returned a malformed response");
 }
 
+TEST(IpcTransportTest, ClientRejectsResponseWithMismatchedRequestId) {
+    TemporaryIpcDirectory temporary;
+    const std::string socket_path = temporary.socket_path();
+
+    asio::io_context peer_io_context;
+    asio::local::stream_protocol::acceptor acceptor{
+        peer_io_context,
+        asio::local::stream_protocol::endpoint{socket_path},
+    };
+    std::atomic_bool peer_failed{false};
+    std::thread peer{[&] {
+        try {
+            asio::local::stream_protocol::socket socket{peer_io_context};
+            acceptor.accept(socket);
+            static_cast<void>(read_one_frame(socket));
+            auto other_id = common::Id::generate(common::IdKind::request);
+            if (!other_id) {
+                throw std::runtime_error("failed to generate mismatched response ID");
+            }
+            auto serialized = serialize_response(
+                Response::success(std::move(other_id).value(), Json{{"ok", true}}));
+            if (!serialized) {
+                throw std::runtime_error("failed to serialize mismatched response");
+            }
+            auto framed = encode_frame(*serialized);
+            if (!framed) {
+                throw std::runtime_error("failed to frame mismatched response");
+            }
+            asio::write(socket, asio::buffer(*framed));
+        } catch (...) {
+            peer_failed.store(true, std::memory_order_relaxed);
+        }
+    }};
+
+    LocalClient client{LocalClientOptions{
+        .socket_path = socket_path,
+        .connect_timeout = 1s,
+        .request_timeout = 1s,
+    }};
+    const auto response = client.request(make_request());
+    peer.join();
+
+    EXPECT_FALSE(peer_failed.load(std::memory_order_relaxed));
+    ASSERT_FALSE(response);
+    EXPECT_EQ(response.error().code(), common::ErrorCode::protocol_error);
+    EXPECT_EQ(response.error().message(), "IPC response request_id does not match the request");
+}
+
+TEST(IpcTransportTest, ClientRejectsExtraResponsesOnOneConnection) {
+    TemporaryIpcDirectory temporary;
+    const std::string socket_path = temporary.socket_path();
+
+    asio::io_context peer_io_context;
+    asio::local::stream_protocol::acceptor acceptor{
+        peer_io_context,
+        asio::local::stream_protocol::endpoint{socket_path},
+    };
+    std::atomic_bool peer_failed{false};
+    std::thread peer{[&] {
+        try {
+            asio::local::stream_protocol::socket socket{peer_io_context};
+            acceptor.accept(socket);
+            auto request = parse_request(read_one_frame(socket));
+            if (!request) {
+                throw std::runtime_error("failed to parse peer request");
+            }
+            auto serialized = serialize_response(
+                Response::success(request->request_id, Json{{"ok", true}}));
+            if (!serialized) {
+                throw std::runtime_error("failed to serialize peer response");
+            }
+            auto framed = encode_frame(*serialized);
+            if (!framed) {
+                throw std::runtime_error("failed to frame peer response");
+            }
+            asio::write(socket, asio::buffer(*framed));
+            asio::write(socket, asio::buffer(*framed));
+        } catch (...) {
+            peer_failed.store(true, std::memory_order_relaxed);
+        }
+    }};
+
+    LocalClient client{LocalClientOptions{
+        .socket_path = socket_path,
+        .connect_timeout = 1s,
+        .request_timeout = 1s,
+    }};
+    const auto response = client.request(make_request());
+    peer.join();
+
+    EXPECT_FALSE(peer_failed.load(std::memory_order_relaxed));
+    ASSERT_FALSE(response);
+    EXPECT_EQ(response.error().code(), common::ErrorCode::protocol_error);
+    EXPECT_EQ(response.error().message(), "IPC peer sent an unexpected extra response");
+}
+
+TEST(IpcTransportTest, ClientMapsTruncatedAndEmptyPeerClosures) {
+    {
+        TemporaryIpcDirectory temporary;
+        const std::string socket_path = temporary.socket_path("truncated.sock");
+        asio::io_context peer_io_context;
+        asio::local::stream_protocol::acceptor acceptor{
+            peer_io_context,
+            asio::local::stream_protocol::endpoint{socket_path},
+        };
+        std::atomic_bool peer_failed{false};
+        std::thread peer{[&] {
+            try {
+                asio::local::stream_protocol::socket socket{peer_io_context};
+                acceptor.accept(socket);
+                static_cast<void>(read_one_frame(socket));
+                const auto framed = encode_frame("{\"version\":1}");
+                if (!framed) {
+                    throw std::runtime_error("failed to frame truncated response");
+                }
+                asio::write(socket, asio::buffer(*framed, framed->size() / 2U));
+            } catch (...) {
+                peer_failed.store(true, std::memory_order_relaxed);
+            }
+        }};
+
+        LocalClient client{LocalClientOptions{
+            .socket_path = socket_path,
+            .connect_timeout = 1s,
+            .request_timeout = 1s,
+        }};
+        const auto response = client.request(make_request());
+        peer.join();
+
+        EXPECT_FALSE(peer_failed.load(std::memory_order_relaxed));
+        ASSERT_FALSE(response);
+        EXPECT_EQ(response.error().code(), common::ErrorCode::protocol_error);
+        EXPECT_EQ(response.error().message(), "IPC stream ended in the middle of a frame");
+    }
+    {
+        TemporaryIpcDirectory temporary;
+        const std::string socket_path = temporary.socket_path("empty.sock");
+        asio::io_context peer_io_context;
+        asio::local::stream_protocol::acceptor acceptor{
+            peer_io_context,
+            asio::local::stream_protocol::endpoint{socket_path},
+        };
+        std::atomic_bool peer_failed{false};
+        std::thread peer{[&] {
+            try {
+                asio::local::stream_protocol::socket socket{peer_io_context};
+                acceptor.accept(socket);
+                static_cast<void>(read_one_frame(socket));
+            } catch (...) {
+                peer_failed.store(true, std::memory_order_relaxed);
+            }
+        }};
+
+        LocalClient client{LocalClientOptions{
+            .socket_path = socket_path,
+            .connect_timeout = 1s,
+            .request_timeout = 1s,
+        }};
+        const auto response = client.request(make_request());
+        peer.join();
+
+        EXPECT_FALSE(peer_failed.load(std::memory_order_relaxed));
+        ASSERT_FALSE(response);
+        EXPECT_EQ(response.error().code(), common::ErrorCode::ipc_error);
+        EXPECT_EQ(response.error().message(), "IPC peer closed before responding");
+    }
+}
+
+TEST(IpcTransportTest, ClientRejectsOversizedAndInvalidOutboundRequests) {
+    const auto request = make_request(Json{{"payload", std::string(512U, 'x')}});
+    const auto oversized =
+        LocalClient{LocalClientOptions{
+            .socket_path = "/tmp/minitun-unused.sock",
+            .max_message_size = 128U,
+        }}.request(request);
+    ASSERT_FALSE(oversized);
+    EXPECT_EQ(oversized.error().code(), common::ErrorCode::frame_too_large);
+
+    const auto zero_request_timeout = LocalClient{
+        LocalClientOptions{
+            .socket_path = "/tmp/minitun-unused.sock",
+            .request_timeout = 0ms,
+        }}.request(request);
+    ASSERT_FALSE(zero_request_timeout);
+    EXPECT_EQ(zero_request_timeout.error().code(), common::ErrorCode::invalid_argument);
+}
+
 TEST(IpcTransportTest, ServerDeadlineContainsABlockedHandlerWithoutFreezingIo) {
     TemporaryIpcDirectory temporary;
     const std::string socket_path = temporary.socket_path();
@@ -771,6 +962,186 @@ TEST(IpcTransportTest, StopDoesNotRemoveAReplacementSocketInode) {
     EXPECT_TRUE(std::filesystem::remove(socket_path));
 }
 
+TEST(IpcTransportTest, RejectsEveryInvalidServerOptionBeforeCreatingSocketState) {
+    TemporaryIpcDirectory temporary;
+    const auto expect_rejected = [](LocalServerOptions options,
+                                    const common::ErrorCode expected =
+                                        common::ErrorCode::invalid_argument) {
+        asio::io_context io_context;
+        LocalServer server{io_context, std::make_shared<Dispatcher>(), std::move(options)};
+        const auto started = server.start();
+        ASSERT_FALSE(started);
+        EXPECT_EQ(started.error().code(), expected) << started.error();
+    };
+
+    expect_rejected({.socket_path = ""});
+    expect_rejected({.socket_path = "relative.sock"});
+    expect_rejected({.socket_path = std::string{"/tmp/bad\0path", 13U}});
+    expect_rejected({.socket_path = "/" + std::string(sizeof(sockaddr_un::sun_path) - 1U, 'p')});
+    expect_rejected({.socket_path = "/"});
+    expect_rejected({.socket_path = temporary.path().string() + "/"});
+    expect_rejected({.socket_path = temporary.path().string() + "//socket"});
+    expect_rejected({.socket_path = temporary.path().string() + "/./socket"});
+    expect_rejected({.socket_path = temporary.path().string() + "/../socket"});
+    expect_rejected({.socket_path = temporary.socket_path(), .max_message_size = 0U});
+    expect_rejected(
+        {.socket_path = temporary.socket_path(), .max_message_size = kDefaultMaxFrameSize + 1U});
+    expect_rejected({.socket_path = temporary.socket_path(), .request_timeout = 0ms});
+    expect_rejected(
+        {.socket_path = temporary.socket_path(), .request_timeout = kMaxLocalIpcTimeout + 1ms});
+    expect_rejected({.socket_path = temporary.socket_path(), .max_connections = 0U});
+    expect_rejected(
+        {.socket_path = temporary.socket_path(), .max_connections = kMaxLocalConnections + 1U});
+    expect_rejected({.socket_path = temporary.socket_path(), .socket_mode = 0666U});
+    expect_rejected({.socket_path = temporary.socket_path(), .socket_mode = 01660U});
+
+    const auto current_uid = static_cast<std::uint32_t>(::geteuid());
+    const auto other_uid = current_uid == std::numeric_limits<std::uint32_t>::max()
+                               ? current_uid - 1U
+                               : current_uid + 1U;
+    expect_rejected({.socket_path = temporary.socket_path(), .owner_uid = other_uid},
+                    common::ErrorCode::permission_denied);
+
+    asio::io_context io_context;
+    LocalServer null_dispatcher{
+        io_context, {}, {.socket_path = temporary.socket_path("null.sock")}};
+    const auto null_start = null_dispatcher.start();
+    ASSERT_FALSE(null_start);
+    EXPECT_EQ(null_start.error().code(), common::ErrorCode::invalid_argument);
+}
+
+TEST(IpcTransportTest, AcceptsExplicitOwnerGroupModeAndSupportsRestart) {
+    TemporaryIpcDirectory temporary;
+    asio::io_context io_context;
+    const std::string socket_path = temporary.socket_path();
+    LocalServer server{io_context,
+                       std::make_shared<Dispatcher>(),
+                       {.socket_path = socket_path,
+                        .socket_mode = 0600U,
+                        .owner_uid = static_cast<std::uint32_t>(::geteuid()),
+                        .group_gid = static_cast<std::uint32_t>(::getegid())}};
+    EXPECT_FALSE(server.is_running());
+    ASSERT_TRUE(server.start());
+    EXPECT_TRUE(server.is_running());
+    const auto duplicate = server.start();
+    ASSERT_FALSE(duplicate);
+    EXPECT_EQ(duplicate.error().code(), common::ErrorCode::already_exists);
+    struct stat status{};
+    ASSERT_EQ(::lstat(socket_path.c_str(), &status), 0);
+    EXPECT_EQ(static_cast<std::uint32_t>(status.st_mode) & 0777U, 0600U);
+    server.stop();
+    EXPECT_FALSE(server.is_running());
+    server.stop();
+    ASSERT_TRUE(server.start());
+    server.stop();
+}
+
+TEST(IpcTransportTest, RejectsUntrustedParentComponentsAndSocketLockAttacks) {
+    TemporaryIpcDirectory temporary;
+    const auto start_at = [](const std::string& socket_path) {
+        asio::io_context io_context;
+        LocalServer server{
+            io_context, std::make_shared<Dispatcher>(), {.socket_path = socket_path}};
+        return server.start();
+    };
+
+    const auto regular_parent = temporary.path() / "regular-parent";
+    {
+        std::ofstream output{regular_parent};
+        output << "not a directory";
+    }
+    const auto regular_result = start_at((regular_parent / "socket").string());
+    ASSERT_FALSE(regular_result);
+    EXPECT_EQ(regular_result.error().code(), common::ErrorCode::permission_denied);
+
+    const auto writable_parent = temporary.path() / "writable-parent";
+    ASSERT_TRUE(std::filesystem::create_directory(writable_parent));
+    ASSERT_EQ(::chmod(writable_parent.c_str(), 0777), 0);
+    const auto writable_result = start_at((writable_parent / "socket").string());
+    ASSERT_FALSE(writable_result);
+    EXPECT_EQ(writable_result.error().code(), common::ErrorCode::permission_denied);
+    ASSERT_EQ(::chmod(writable_parent.c_str(), 0700), 0);
+
+    const auto outer = temporary.path() / "outer";
+    const auto inner = outer / "inner";
+    ASSERT_TRUE(std::filesystem::create_directories(inner));
+    ASSERT_EQ(::chmod(outer.c_str(), 0777), 0);
+    const auto ancestor_result = start_at((inner / "socket").string());
+    ASSERT_FALSE(ancestor_result);
+    EXPECT_EQ(ancestor_result.error().code(), common::ErrorCode::permission_denied);
+    ASSERT_EQ(::chmod(outer.c_str(), 0700), 0);
+
+    const std::string symlink_socket = temporary.socket_path("symlink-lock.sock");
+    ASSERT_EQ(::symlink("/dev/null", (symlink_socket + ".lock").c_str()), 0);
+    const auto symlink_result = start_at(symlink_socket);
+    ASSERT_FALSE(symlink_result);
+    EXPECT_EQ(symlink_result.error().code(), common::ErrorCode::permission_denied);
+
+    const std::string hardlink_socket = temporary.socket_path("hardlink-lock.sock");
+    const auto hardlink_target = temporary.path() / "lock-target";
+    {
+        std::ofstream output{hardlink_target};
+        output << "lock";
+    }
+    ASSERT_EQ(::chmod(hardlink_target.c_str(), 0600), 0);
+    ASSERT_EQ(::link(hardlink_target.c_str(), (hardlink_socket + ".lock").c_str()), 0);
+    const auto hardlink_result = start_at(hardlink_socket);
+    ASSERT_FALSE(hardlink_result);
+    EXPECT_EQ(hardlink_result.error().code(), common::ErrorCode::permission_denied);
+
+    const std::string held_socket = temporary.socket_path("held-lock.sock");
+    const std::string held_lock = held_socket + ".lock";
+    const int descriptor = ::open(held_lock.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    ASSERT_GE(descriptor, 0);
+    ASSERT_EQ(::flock(descriptor, LOCK_EX | LOCK_NB), 0);
+    const auto held_result = start_at(held_socket);
+    ASSERT_FALSE(held_result);
+    EXPECT_EQ(held_result.error().code(), common::ErrorCode::already_exists);
+    ASSERT_EQ(::close(descriptor), 0);
+}
+
+TEST(IpcTransportTest, RejectsUnusualStaleSocketAndOversizedHandlerResponses) {
+    TemporaryIpcDirectory temporary;
+    const std::string unusual_path = temporary.socket_path("unusual.sock");
+    asio::io_context stale_io_context;
+    asio::local::stream_protocol::acceptor stale{
+        stale_io_context, asio::local::stream_protocol::endpoint{unusual_path}};
+    stale.close();
+    struct stat status{};
+    ASSERT_EQ(::lstat(unusual_path.c_str(), &status), 0);
+    ASSERT_EQ(::chmod(unusual_path.c_str(), (status.st_mode & 0777) | S_ISVTX), 0);
+    asio::io_context unusual_io_context;
+    LocalServer unusual{
+        unusual_io_context, std::make_shared<Dispatcher>(), {.socket_path = unusual_path}};
+    const auto unusual_start = unusual.start();
+    ASSERT_FALSE(unusual_start);
+    EXPECT_EQ(unusual_start.error().code(), common::ErrorCode::already_exists);
+
+    const std::string server_path = temporary.socket_path("response.sock");
+    RunningServer server{LocalServerOptions{.socket_path = server_path, .max_message_size = 256U}};
+    ASSERT_TRUE(server.register_handler("test.large", [](const Request&) -> common::Result<Json> {
+        return Json{{"payload", std::string(512U, 'x')}};
+    }));
+    ASSERT_TRUE(server.register_handler("test.array", [](const Request&) -> common::Result<Json> {
+        return Json::array({1, 2, 3});
+    }));
+    ASSERT_TRUE(server.start());
+    LocalClient client{{.socket_path = server_path, .max_message_size = 1'024U}};
+    const auto large = client.request(make_request(Json::object(), "test.large"));
+    ASSERT_FALSE(large);
+    EXPECT_EQ(large.error().code(), common::ErrorCode::ipc_error);
+    const auto array = client.request(make_request(Json::object(), "test.array"));
+    ASSERT_TRUE(array) << array.error();
+    EXPECT_FALSE(array->ok());
+    ASSERT_NE(array->error(), nullptr);
+    EXPECT_EQ(array->error()->code(), common::ErrorCode::internal_error);
+    const auto missing = client.request(make_request(Json::object(), "test.missing"));
+    ASSERT_TRUE(missing) << missing.error();
+    EXPECT_FALSE(missing->ok());
+    EXPECT_EQ(missing->error()->code(), common::ErrorCode::not_found);
+    server.stop();
+}
+
 TEST(IpcTransportTest, RejectsUnsafeClientOptionsBeforeConnecting) {
     const auto request = make_request();
 
@@ -794,6 +1165,39 @@ TEST(IpcTransportTest, RejectsUnsafeClientOptionsBeforeConnecting) {
         }}.request(request);
     ASSERT_FALSE(zero_timeout);
     EXPECT_EQ(zero_timeout.error().code(), common::ErrorCode::invalid_argument);
+}
+
+TEST(IpcTransportTest, MapsEveryLocalSocketErrorClassWithoutLeakingDetails) {
+    const auto expect_code = [](const asio::error_code& error, const common::ErrorCode expected) {
+        const auto mapped = detail::socket_error(error, "test operation");
+        EXPECT_EQ(mapped.code(), expected) << error.message();
+        EXPECT_TRUE(mapped.message().starts_with("test operation failed"));
+    };
+
+    for (const auto error : {asio::error::access_denied, asio::error::no_permission}) {
+        expect_code(error, common::ErrorCode::permission_denied);
+    }
+    expect_code(asio::error::address_in_use, common::ErrorCode::already_exists);
+    for (const auto error :
+         {asio::error::connection_refused, asio::error::connection_aborted,
+          asio::error::connection_reset, asio::error::broken_pipe, asio::error::not_connected}) {
+        expect_code(error, common::ErrorCode::connection_failed);
+    }
+    expect_code(asio::error_code{ENOENT, asio::error::get_system_category()},
+                common::ErrorCode::connection_failed);
+    expect_code(asio::error::timed_out, common::ErrorCode::connection_timeout);
+    for (const auto error :
+         {asio::error::no_descriptors, asio::error::no_buffer_space, asio::error::no_memory}) {
+        expect_code(error, common::ErrorCode::resource_exhausted);
+    }
+    expect_code(asio::error::fault, common::ErrorCode::ipc_error);
+    const auto no_error = detail::socket_error({}, "test operation");
+    EXPECT_EQ(no_error.code(), common::ErrorCode::ipc_error);
+    EXPECT_EQ(no_error.message(), "test operation failed");
+
+    asio::io_context io_context;
+    asio::steady_timer timer{io_context};
+    detail::cancel_timer(timer);
 }
 
 } // namespace

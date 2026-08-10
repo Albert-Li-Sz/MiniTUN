@@ -23,7 +23,9 @@ namespace {
 constexpr std::string_view kServerColumns =
     "id, name, endpoint, credential_ref, remote_server_id, "
     "desired_state, actual_state, last_error_code, last_error_message, "
-    "reconnect_attempt, latency_ms, created_at, updated_at";
+    "reconnect_attempt, latency_ms, created_at, updated_at, "
+    "tls_server_name, ca_credential_ref, client_certificate_ref, "
+    "client_private_key_ref, config_revision, managed_by_config";
 
 [[nodiscard]] common::Result<void> bind_optional_text(internal::Statement& statement,
                                                       const int index,
@@ -133,14 +135,17 @@ common::Result<void> ServerRepository::create(const ServerRecord& record,
         "INSERT INTO servers("
         "id, name, endpoint, credential_ref, remote_server_id, "
         "desired_state, actual_state, last_error_code, last_error_message, "
-        "reconnect_attempt, latency_ms, created_at, updated_at"
-        ") VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+        "reconnect_attempt, latency_ms, created_at, updated_at, "
+        "tls_server_name, ca_credential_ref, client_certificate_ref, "
+        "client_private_key_ref, config_revision, managed_by_config"
+        ") VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, "
+        "?14, ?15, ?16, ?17, ?18, ?19)",
         "insert server record");
     if (!statement) {
         return fail(statement.error());
     }
 
-    constexpr int kExpectedBindings = 13;
+    constexpr int kExpectedBindings = 19;
     common::Result<void> bindings[]{
         statement->bind_text(1, record.id.str()),
         bind_optional_text(*statement, 2, record.name),
@@ -156,6 +161,12 @@ common::Result<void> ServerRepository::create(const ServerRecord& record,
                                       : statement->bind_null(11),
         statement->bind_int64(12, record.created_at_unix_ms),
         statement->bind_int64(13, record.updated_at_unix_ms),
+        bind_optional_text(*statement, 14, record.tls_server_name),
+        bind_optional_text(*statement, 15, record.ca_credential_ref),
+        bind_optional_text(*statement, 16, record.client_certificate_ref),
+        bind_optional_text(*statement, 17, record.client_private_key_ref),
+        statement->bind_int64(18, static_cast<std::int64_t>(record.config_revision)),
+        statement->bind_int64(19, record.managed_by_config ? 1 : 0),
     };
     static_assert(std::size(bindings) == kExpectedBindings);
     for (auto& binding : bindings) {
@@ -318,10 +329,11 @@ common::Result<void> ServerRepository::update(const ServerRecord& record,
         return fail(existing.error());
     }
     if (record.created_at_unix_ms != existing->created_at_unix_ms ||
-        record.updated_at_unix_ms < existing->updated_at_unix_ms) {
+        record.updated_at_unix_ms < existing->updated_at_unix_ms ||
+        record.config_revision < existing->config_revision) {
         return fail(common::Error{
             common::ErrorCode::invalid_argument,
-            "server creation time is immutable and update time must not move backward",
+            "server creation time is immutable and update time/revision must not move backward",
         });
     }
 
@@ -331,7 +343,9 @@ common::Result<void> ServerRepository::update(const ServerRecord& record,
         "name = ?1, endpoint = ?2, credential_ref = ?3, remote_server_id = ?4, "
         "desired_state = ?5, actual_state = ?6, last_error_code = ?7, "
         "last_error_message = ?8, reconnect_attempt = ?9, latency_ms = ?10, "
-        "updated_at = ?11 WHERE id = ?12",
+        "updated_at = ?11, tls_server_name = ?12, ca_credential_ref = ?13, "
+        "client_certificate_ref = ?14, client_private_key_ref = ?15, "
+        "config_revision = ?16, managed_by_config = ?17 WHERE id = ?18",
         "update server record");
     if (!statement) {
         return fail(statement.error());
@@ -350,7 +364,13 @@ common::Result<void> ServerRepository::update(const ServerRecord& record,
         record.latency_ms.has_value() ? statement->bind_int64(10, *record.latency_ms)
                                       : statement->bind_null(10),
         statement->bind_int64(11, record.updated_at_unix_ms),
-        statement->bind_text(12, record.id.str()),
+        bind_optional_text(*statement, 12, record.tls_server_name),
+        bind_optional_text(*statement, 13, record.ca_credential_ref),
+        bind_optional_text(*statement, 14, record.client_certificate_ref),
+        bind_optional_text(*statement, 15, record.client_private_key_ref),
+        statement->bind_int64(16, static_cast<std::int64_t>(record.config_revision)),
+        statement->bind_int64(17, record.managed_by_config ? 1 : 0),
+        statement->bind_text(18, record.id.str()),
     };
     for (auto& binding : bindings) {
         if (!binding) {

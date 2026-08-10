@@ -34,7 +34,7 @@
 #endif
 
 #ifndef MINITUN_PROTOCOL_VERSION
-#define MINITUN_PROTOCOL_VERSION 1
+#define MINITUN_PROTOCOL_VERSION 2
 #endif
 
 namespace minitun::common {

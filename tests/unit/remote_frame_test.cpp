@@ -2,6 +2,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <string_view>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -33,7 +34,7 @@ TEST(RemoteFrameTest, EncodesEveryHeaderFieldInNetworkByteOrder) {
     EXPECT_EQ((*encoded)[2], 0x55U);
     EXPECT_EQ((*encoded)[3], 0x4eU);
     EXPECT_EQ((*encoded)[4], 0x00U);
-    EXPECT_EQ((*encoded)[5], 0x01U);
+    EXPECT_EQ((*encoded)[5], 0x02U);
     EXPECT_EQ((*encoded)[6], 0x00U);
     EXPECT_EQ((*encoded)[7], 0x06U);
     EXPECT_EQ((*encoded)[8], 0x00U);
@@ -93,7 +94,7 @@ TEST(RemoteFrameTest, RejectsInvalidHeaderFieldsWithoutBufferingPayload) {
     EXPECT_EQ(magic_result.error().code(), common::ErrorCode::protocol_error);
 
     auto bad_version = *valid;
-    bad_version[5] = 2U;
+    bad_version[5] = 1U;
     FrameDecoder version_decoder;
     auto version_result = version_decoder.feed(as_bytes(bad_version));
     ASSERT_FALSE(version_result);
@@ -138,8 +139,7 @@ TEST(RemoteFrameTest, EnforcesConfiguredAndAbsoluteFrameLimits) {
     ASSERT_FALSE(configured);
     EXPECT_EQ(configured.error().code(), common::ErrorCode::frame_too_large);
 
-    const Frame maximum{MessageType::ping, 0U, 1U,
-                        std::vector<std::uint8_t>(kMaxPayloadSize, 0U)};
+    const Frame maximum{MessageType::ping, 0U, 1U, std::vector<std::uint8_t>(kMaxPayloadSize, 0U)};
     EXPECT_TRUE(encode_frame(maximum));
 
     Frame too_large = maximum;
@@ -180,6 +180,103 @@ TEST(RemoteFrameTest, ClassifiesOnlyDefinedMessageTypes) {
     EXPECT_FALSE(is_worker_message(MessageType::ping));
     EXPECT_EQ(message_type_from_wire(0xffffU), std::nullopt);
     EXPECT_EQ(to_string(MessageType::local_connect_ok), "LOCAL_CONNECT_OK");
+}
+
+TEST(RemoteFrameTest, RoundTripsAndNamesEveryDefinedMessageType) {
+    constexpr std::array types{
+        MessageType::hello,
+        MessageType::hello_ack,
+        MessageType::auth,
+        MessageType::auth_ok,
+        MessageType::auth_error,
+        MessageType::register_tunnel,
+        MessageType::register_tunnel_ok,
+        MessageType::register_tunnel_error,
+        MessageType::unregister_tunnel,
+        MessageType::unregister_tunnel_ok,
+        MessageType::request_workers,
+        MessageType::ping,
+        MessageType::pong,
+        MessageType::goaway,
+        MessageType::error,
+        MessageType::worker_hello,
+        MessageType::worker_accepted,
+        MessageType::start_relay,
+        MessageType::local_connect_ok,
+        MessageType::local_connect_error,
+    };
+    constexpr std::array<std::string_view, types.size()> names{
+        "HELLO",
+        "HELLO_ACK",
+        "AUTH",
+        "AUTH_OK",
+        "AUTH_ERROR",
+        "REGISTER_TUNNEL",
+        "REGISTER_TUNNEL_OK",
+        "REGISTER_TUNNEL_ERROR",
+        "UNREGISTER_TUNNEL",
+        "UNREGISTER_TUNNEL_OK",
+        "REQUEST_WORKERS",
+        "PING",
+        "PONG",
+        "GOAWAY",
+        "ERROR",
+        "WORKER_HELLO",
+        "WORKER_ACCEPTED",
+        "START_RELAY",
+        "LOCAL_CONNECT_OK",
+        "LOCAL_CONNECT_ERROR",
+    };
+    for (std::size_t index = 0U; index < types.size(); ++index) {
+        EXPECT_EQ(to_string(types[index]), names[index]);
+        EXPECT_EQ(message_type_from_wire(static_cast<std::uint16_t>(types[index])), types[index]);
+    }
+    EXPECT_EQ(to_string(static_cast<MessageType>(0U)), "UNKNOWN");
+    EXPECT_FALSE(message_type_from_wire(0U));
+    EXPECT_FALSE(is_control_message(static_cast<MessageType>(0U)));
+    EXPECT_FALSE(is_control_message(static_cast<MessageType>(0xffffU)));
+    EXPECT_FALSE(is_worker_message(static_cast<MessageType>(0U)));
+    EXPECT_FALSE(is_worker_message(static_cast<MessageType>(0xffffU)));
+}
+
+TEST(RemoteFrameTest, RejectsInvalidEncodeTypeAndRetainsSpecificDecoderFailures) {
+    Frame invalid_type;
+    invalid_type.type = static_cast<MessageType>(0U);
+    const auto encoded = encode_frame(invalid_type);
+    ASSERT_FALSE(encoded);
+    EXPECT_EQ(encoded.error().code(), common::ErrorCode::protocol_error);
+
+    const auto valid = encode_frame(Frame{MessageType::hello, 0U, 0U, {}});
+    ASSERT_TRUE(valid) << valid.error();
+    auto bad_version = *valid;
+    bad_version[5] = 1U;
+    FrameDecoder unsupported;
+    ASSERT_FALSE(unsupported.feed(bad_version));
+    const auto still_unsupported = unsupported.feed(*valid);
+    ASSERT_FALSE(still_unsupported);
+    EXPECT_EQ(still_unsupported.error().code(), common::ErrorCode::unsupported_version);
+
+    auto large = *valid;
+    large[12] = 1U;
+    FrameDecoder bounded{kFrameHeaderSize};
+    ASSERT_FALSE(bounded.feed(large));
+    const auto still_large = bounded.feed(*valid);
+    ASSERT_FALSE(still_large);
+    EXPECT_EQ(still_large.error().code(), common::ErrorCode::frame_too_large);
+}
+
+TEST(RemoteFrameTest, ClampsDecoderLimitsAndDistinguishesPartialHeaderFromPayload) {
+    FrameDecoder minimum{0U};
+    EXPECT_EQ(minimum.max_frame_size(), kFrameHeaderSize);
+    FrameDecoder maximum{kMaxFrameSize + 1U};
+    EXPECT_EQ(maximum.max_frame_size(), kMaxFrameSize);
+
+    const auto encoded = encode_frame(Frame{MessageType::ping, 0U, 1U, {1U}});
+    ASSERT_TRUE(encoded) << encoded.error();
+    FrameDecoder partial_header;
+    ASSERT_TRUE(partial_header.feed({encoded->data(), 1U}));
+    EXPECT_EQ(partial_header.buffered_size(), 1U);
+    EXPECT_FALSE(partial_header.finish());
 }
 
 } // namespace

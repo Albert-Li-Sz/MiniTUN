@@ -4,10 +4,15 @@ if(POLICY CMP0135)
     cmake_policy(SET CMP0135 NEW)
 endif()
 
+# renovate: datasource=github-releases depName=CLIUtils/CLI11
 set(MINITUN_CLI11_VERSION "2.7.0")
+# renovate: datasource=github-releases depName=nlohmann/json
 set(MINITUN_NLOHMANN_JSON_VERSION "3.12.0")
+# renovate: datasource=github-releases depName=gabime/spdlog
 set(MINITUN_SPDLOG_VERSION "1.17.0")
+# renovate: datasource=github-releases depName=google/googletest
 set(MINITUN_GTEST_VERSION "1.17.0")
+# renovate: datasource=github-tags depName=chriskohlhoff/asio
 set(MINITUN_ASIO_VERSION "1.38.2")
 
 function(minitun_setup_asio)

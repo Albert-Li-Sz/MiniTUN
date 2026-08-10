@@ -19,13 +19,29 @@ namespace minitun::protocol {
 
 [[nodiscard]] common::Result<AuthenticationData>
 compute_authentication_data(std::string_view token, std::string_view client_id,
-                            std::int64_t timestamp_seconds,
-                            const AuthenticationNonce& nonce);
+                            std::string_view server_id, std::int64_t timestamp_seconds,
+                            const AuthenticationNonce& nonce,
+                            CapabilitySet selected_capabilities);
 
 [[nodiscard]] common::Result<bool>
 verify_authentication_data(std::string_view token, std::string_view client_id,
-                           std::int64_t timestamp_seconds, const AuthenticationNonce& nonce,
+                           std::string_view server_id, std::int64_t timestamp_seconds,
+                           const AuthenticationNonce& nonce,
+                           CapabilitySet selected_capabilities,
                            const AuthenticationData& candidate);
+
+[[nodiscard]] common::Result<AuthenticationData>
+compute_worker_authentication_data(std::string_view token, std::string_view client_id,
+                                   std::string_view server_id, std::uint64_t session_generation,
+                                   std::string_view worker_id, std::int64_t timestamp_seconds,
+                                   const AuthenticationNonce& nonce);
+
+[[nodiscard]] common::Result<bool>
+verify_worker_authentication_data(std::string_view token, std::string_view client_id,
+                                  std::string_view server_id, std::uint64_t session_generation,
+                                  std::string_view worker_id, std::int64_t timestamp_seconds,
+                                  const AuthenticationNonce& nonce,
+                                  const AuthenticationData& candidate);
 
 struct NonceReplayCacheOptions final {
     std::size_t max_entries{16'384U};
@@ -52,6 +68,14 @@ class NonceReplayCache final {
 
 [[nodiscard]] common::Result<bool> verify_and_consume_authentication_data(
     NonceReplayCache& replay_cache, std::string_view token, std::string_view client_id,
+    std::string_view server_id, std::int64_t timestamp_seconds,
+    const AuthenticationNonce& nonce, CapabilitySet selected_capabilities,
+    const AuthenticationData& candidate,
+    std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
+
+[[nodiscard]] common::Result<bool> verify_and_consume_worker_authentication_data(
+    NonceReplayCache& replay_cache, std::string_view token, std::string_view client_id,
+    std::string_view server_id, std::uint64_t session_generation, std::string_view worker_id,
     std::int64_t timestamp_seconds, const AuthenticationNonce& nonce,
     const AuthenticationData& candidate,
     std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());

@@ -4,6 +4,48 @@ MiniTun 的所有重要变更都会记录在此文件中。本文档以
 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 的结构为基础，项目
 版本遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased] - v1.0.0
+
+### 不兼容变更
+
+- Remote Protocol 升级为 v2-only，HELLO/ACK 显式协商能力；v0.4.x 客户端与服务端
+  不能混用，升级要求协调停机。
+- 公网 server 用严格 `--clients-config` JSON 取代单一 `--token-file`。
+- 状态数据库迁移到 schema v4；v0.4.1 不能打开迁移后数据库，回滚必须恢复升级前备份。
+
+### 新增
+
+- 增加每客户端 PSK、启用状态、公开端口 ACL、tunnel/connection/idle Worker 配额，
+  以及可选客户端证书 SAN/SHA-256 绑定；策略完整校验后原子热重载。
+- 增加 generation-scoped `TunnelReconciler`、server/tunnel `config_revision`、注册请求
+  request ID/revision 关联和最多 32 帧的有界流水线。
+- 增加 `daemon.identity`，完整 server/tunnel update/enable/disable/logout 生命周期，
+  以及严格 JSON `config export/plan/apply` 和安全 `--prune` ownership 语义。
+- 增加稳定 `libminitun-client.so.1`：C11 opaque ABI、C++20 RAII `Result<T>` wrapper、
+  `MiniTun::Client` CMake target、pkg-config、DEB/RPM runtime/devel 包。
+- daemon/server 增加默认关闭的 `/healthz`、`/readyz`、`/metrics` 管理端点；非 loopback
+  强制 Bearer token，指标使用有界标签。
+- 增加策略、认证、注册/注销、ACL/quota 和本地管理审计日志，不记录秘密或用户流量。
+- 增加 schema v3→v4 迁移、崩溃暂存凭据清理、故障注入、ABI baseline、下游 SDK、
+  coverage、clang-tidy、CodeQL、持久 fuzz corpus 和独立性能/浸泡门禁。
+- 发布流程增加 SPDX/CycloneDX SBOM、SHA-256、GitHub OIDC provenance/attestation，
+  可执行产物和 OCI 的 Sigstore keyless 签名验证，以及绑定 commit 的性能/浸泡证据门禁。
+
+### 修复与改进
+
+- 修复隧道注册测试的顺序相关死锁：窗口请求现在合并为一次 TLS application write，
+  避免逐帧写与提前响应互相等待；重复回归不再依赖工作目录、执行顺序或端口复用时机。
+- session 中断、generation 变化、响应乱序/重复/超时或半写入后，残留 tunnel 状态会
+  确定性回到 `pending`。公开端口更新先撤销旧 listener，新绑定失败不会留下旧入口。
+- TLS session resumption、Worker 自适应容量、固定缓冲 backpressure 和资源上限为正式
+  100 clients / 2,000 tunnels / 10,000 relay 门禁准备。
+
+### 发布状态
+
+- 代码版本已进入 1.0.0 开发线；创建 rc.1、rc.2 或 GA tag 前仍必须归档独立三轮基准、
+  24 小时满规模压力和随后 7 天混合负载浸泡证据；release workflow 会拒绝缺失、缩短、
+  错序或非同一提交的证据。
+
 ## [0.4.1] - 2026-08-08
 
 ### 安全修复

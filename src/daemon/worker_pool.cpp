@@ -26,6 +26,8 @@
 #include <minitun/common/error.hpp>
 #include <minitun/common/id.hpp>
 #include <minitun/common/logging.hpp>
+#include <minitun/common/time.hpp>
+#include <minitun/protocol/auth.hpp>
 #include <minitun/protocol/messages.hpp>
 #include <minitun/protocol/relay.hpp>
 #include <minitun/protocol/state_machine.hpp>
@@ -40,8 +42,9 @@ inline constexpr std::chrono::hours kMaximumRelayTimeout{24};
 
 [[nodiscard]] common::Result<void> validate_options(const WorkerPoolOptions& options) {
     if (!common::Id::parse(options.server_id, common::IdKind::server) ||
+        !common::Id::parse(options.remote_server_id, common::IdKind::server) ||
         !common::Id::parse(options.client_id, common::IdKind::client) ||
-        options.session_generation == 0U) {
+        options.psk == nullptr || options.psk->empty() || options.session_generation == 0U) {
         return common::Result<void>::failure(common::ErrorCode::invalid_argument,
                                              "worker pool identity is invalid");
     }
@@ -143,11 +146,18 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
             if (error) {
                 co_return;
             }
+            protocol::configure_tcp_transport(stream_.lowest_layer());
 
             auto configured = protocol::configure_client_tls_stream(
-                stream_, pool->options_.endpoint.host(), pool->options_.insecure_skip_verify);
+                stream_,
+                pool->options_.tls_server_name.empty() ? pool->options_.endpoint.host()
+                                                       : pool->options_.tls_server_name,
+                pool->options_.insecure_skip_verify);
             if (!configured) {
                 co_return;
+            }
+            if (pool->options_.tls_session_cache) {
+                static_cast<void>(pool->options_.tls_session_cache->restore(stream_));
             }
             arm_timeout(pool->options_.handshake_timeout);
             co_await stream_.async_handshake(asio::ssl::stream_base::client,
@@ -156,11 +166,32 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
             if (error) {
                 co_return;
             }
+            if (protocol::tls_session_reused(stream_) && pool->options_.tls_resumption_handler) {
+                try {
+                    pool->options_.tls_resumption_handler();
+                } catch (...) {
+                }
+            }
 
+            auto nonce = protocol::generate_authentication_nonce();
+            if (!nonce) {
+                co_return;
+            }
+            const std::int64_t timestamp = common::unix_seconds_now();
+            auto authentication_data = protocol::compute_worker_authentication_data(
+                pool->options_.psk->view(), pool->options_.client_id,
+                pool->options_.remote_server_id, pool->options_.session_generation, worker_id_,
+                timestamp, *nonce);
+            if (!authentication_data) {
+                co_return;
+            }
             auto hello_payload = protocol::encode_worker_hello({
                 .client_id = pool->options_.client_id,
                 .session_generation = pool->options_.session_generation,
                 .worker_id = worker_id_,
+                .timestamp_seconds = timestamp,
+                .nonce = *nonce,
+                .authentication_data = *authentication_data,
             });
             if (!hello_payload) {
                 co_return;
@@ -178,6 +209,9 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
             auto accepted = protocol::decode_worker_accepted(accepted_frame->payload);
             if (!accepted || accepted->worker_id != worker_id_) {
                 co_return;
+            }
+            if (pool->options_.tls_session_cache) {
+                static_cast<void>(pool->options_.tls_session_cache->capture(stream_));
             }
 
             auto relay_frame = co_await read_frame(pool->idle_timeout());
@@ -212,6 +246,7 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
                                           pool->options_.handshake_timeout);
                 co_return;
             }
+            protocol::configure_tcp_transport(*local_socket_);
 
             auto connected_payload = protocol::encode_local_connect_ok({relay->connection_id});
             if (!connected_payload) {

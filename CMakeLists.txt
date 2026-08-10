@@ -2,13 +2,14 @@ cmake_minimum_required(VERSION 3.22)
 
 project(
     MiniTun
-    VERSION 0.4.1
+    VERSION 1.0.0
     DESCRIPTION "A small, high-performance TCP reverse-tunnelling system"
     HOMEPAGE_URL "https://github.com/LMTINSUZHOU/MiniTUN"
-    LANGUAGES CXX
+    LANGUAGES C CXX
 )
 
 include(CTest)
+include(CMakePackageConfigHelpers)
 include(GNUInstallDirs)
 
 option(MINITUN_USE_SYSTEM_DEPS "Use distribution-provided dependencies" ON)
@@ -18,6 +19,9 @@ option(MINITUN_ENABLE_ASAN "Enable AddressSanitizer" OFF)
 option(MINITUN_ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer" OFF)
 option(MINITUN_ENABLE_TSAN "Enable ThreadSanitizer" OFF)
 option(MINITUN_ENABLE_LTO "Enable interprocedural optimization" OFF)
+option(MINITUN_WARNINGS_AS_ERRORS "Treat project compiler warnings as errors" OFF)
+option(MINITUN_ENABLE_COVERAGE "Instrument project targets for gcov-compatible coverage" OFF)
+option(MINITUN_ENABLE_FAULT_INJECTION "Enable test-only crash failpoints" OFF)
 option(MINITUN_BUILD_PACKAGES "Enable package-generation support" OFF)
 set(MINITUN_PACKAGE_VERSION "" CACHE STRING
     "Optional release or CI development package version override"
@@ -45,6 +49,9 @@ endif()
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
@@ -55,6 +62,17 @@ include(Sanitizers)
 include(Version)
 
 minitun_setup_dependencies()
+
+if(MINITUN_ENABLE_COVERAGE)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        message(FATAL_ERROR "MINITUN_ENABLE_COVERAGE requires GCC or Clang")
+    endif()
+    if(CMAKE_BUILD_TYPE MATCHES "Release|MinSizeRel")
+        message(FATAL_ERROR "MINITUN_ENABLE_COVERAGE requires a non-release build")
+    endif()
+    add_compile_options(-O0 -g --coverage)
+    add_link_options(--coverage)
+endif()
 
 if(MINITUN_ENABLE_LTO)
     include(CheckIPOSupported)
@@ -73,6 +91,7 @@ endfunction()
 add_library(minitun_common STATIC
     src/common/endpoint.cpp
     src/common/error.cpp
+    src/common/failpoint.cpp
     src/common/id.cpp
     src/common/logging.cpp
     src/common/port_range.cpp
@@ -94,6 +113,9 @@ target_link_libraries(minitun_common
         Threads::Threads
         minitun_project_warnings
 )
+if(MINITUN_ENABLE_FAULT_INJECTION)
+    target_compile_definitions(minitun_common PRIVATE MINITUN_ENABLE_FAULT_INJECTION)
+endif()
 minitun_apply_sanitizers(minitun_common)
 minitun_apply_version_definitions(minitun_common)
 minitun_apply_lto(minitun_common)
@@ -177,10 +199,57 @@ target_link_libraries(minitun_ipc
 minitun_apply_sanitizers(minitun_ipc)
 minitun_apply_lto(minitun_ipc)
 
+add_library(minitun_admin STATIC src/admin/server.cpp)
+add_library(MiniTun::admin ALIAS minitun_admin)
+target_include_directories(minitun_admin
+    PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+)
+target_link_libraries(minitun_admin
+    PUBLIC MiniTun::common MiniTun::asio
+    PRIVATE minitun_project_warnings
+)
+minitun_apply_sanitizers(minitun_admin)
+minitun_apply_lto(minitun_admin)
+
+add_library(minitun_client SHARED src/sdk/client.cpp)
+add_library(MiniTun::Client ALIAS minitun_client)
+set_target_properties(minitun_client PROPERTIES
+    OUTPUT_NAME minitun-client
+    EXPORT_NAME Client
+    VERSION "${PROJECT_VERSION}"
+    SOVERSION 1
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN YES
+)
+target_compile_definitions(minitun_client PRIVATE MINITUN_CLIENT_BUILD)
+target_include_directories(minitun_client
+    PUBLIC
+        "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+        "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>"
+)
+target_link_libraries(minitun_client
+    PRIVATE
+        MiniTun::ipc
+        minitun_project_warnings
+)
+if(APPLE)
+    target_link_options(minitun_client PRIVATE
+        "LINKER:-exported_symbols_list,${CMAKE_CURRENT_SOURCE_DIR}/abi/minitun-client-1.apple.exports"
+    )
+elseif(UNIX)
+    target_link_options(minitun_client PRIVATE
+        "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/abi/minitun-client-1.map"
+    )
+endif()
+minitun_apply_sanitizers(minitun_client)
+minitun_apply_lto(minitun_client)
+
 add_library(minitun_daemon STATIC
     src/daemon/control_service.cpp
+    src/daemon/declarative_config.cpp
     src/daemon/reconnect_backoff.cpp
     src/daemon/server_manager.cpp
+    src/daemon/tunnel_reconciler.cpp
     src/daemon/worker_pool.cpp
 )
 add_library(MiniTun::daemon ALIAS minitun_daemon)
@@ -202,6 +271,7 @@ minitun_apply_lto(minitun_daemon)
 
 add_library(minitun_server_core STATIC
     src/server/accept_recovery.cpp
+    src/server/client_policy.cpp
     src/server/connection_quota.cpp
     src/server/server.cpp
     src/server/session_registry.cpp
@@ -218,6 +288,7 @@ target_link_libraries(minitun_server_core
     PUBLIC
         MiniTun::protocol
     PRIVATE
+        nlohmann_json::nlohmann_json
         Threads::Threads
         minitun_project_warnings
 )
@@ -240,6 +311,8 @@ endfunction()
 minitun_add_program(minitun apps/minitun_main.cpp MiniTun::ipc)
 minitun_add_program(minitund apps/minitund_main.cpp MiniTun::daemon)
 minitun_add_program(minitun-server apps/minitun_server_main.cpp MiniTun::server)
+target_link_libraries(minitund PRIVATE MiniTun::admin)
+target_link_libraries(minitun-server PRIVATE MiniTun::admin)
 
 set(MINITUN_SYSTEMD_UNIT_DIR "${CMAKE_INSTALL_LIBDIR}/systemd/system"
     CACHE STRING "Installation directory for systemd service units"
@@ -253,6 +326,41 @@ install(
     RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
     COMPONENT Client
 )
+
+configure_package_config_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/MiniTunConfig.cmake.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/MiniTunConfig.cmake"
+    INSTALL_DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/MiniTun"
+)
+write_basic_package_version_file(
+    "${CMAKE_CURRENT_BINARY_DIR}/MiniTunConfigVersion.cmake"
+    VERSION "${PROJECT_VERSION}"
+    COMPATIBILITY SameMajorVersion
+)
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/packaging/pkgconfig/minitun-client.pc.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/minitun-client.pc"
+    @ONLY
+)
+install(
+    EXPORT MiniTunTargets
+    FILE MiniTunTargets.cmake
+    NAMESPACE MiniTun::
+    DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/MiniTun"
+    COMPONENT ClientDevelopment
+)
+install(
+    FILES
+        "${CMAKE_CURRENT_BINARY_DIR}/MiniTunConfig.cmake"
+        "${CMAKE_CURRENT_BINARY_DIR}/MiniTunConfigVersion.cmake"
+    DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/MiniTun"
+    COMPONENT ClientDevelopment
+)
+install(
+    FILES "${CMAKE_CURRENT_BINARY_DIR}/minitun-client.pc"
+    DESTINATION "${CMAKE_INSTALL_LIBDIR}/pkgconfig"
+    COMPONENT ClientDevelopment
+)
 install(
     TARGETS minitund
     RUNTIME DESTINATION "${CMAKE_INSTALL_LIBEXECDIR}/minitun"
@@ -262,6 +370,16 @@ install(
     TARGETS minitun-server
     RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
     COMPONENT Server
+)
+install(
+    TARGETS minitun_client
+    EXPORT MiniTunTargets
+    LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+            COMPONENT ClientLibrary
+            NAMELINK_COMPONENT ClientDevelopment
+    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT ClientLibrary
+    ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT ClientDevelopment
+    INCLUDES DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
 )
 
 install(
@@ -313,6 +431,7 @@ install(
 )
 install(
     FILES packaging/config/minitun-server/README
+          packaging/config/minitun-server/clients.json.example
     DESTINATION "${CMAKE_INSTALL_SYSCONFDIR}/minitun-server"
     COMPONENT Server
     PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ
@@ -321,7 +440,12 @@ install(
     DIRECTORY include/minitun
     DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
     COMPONENT Development
-    FILES_MATCHING PATTERN "*.hpp"
+    FILES_MATCHING PATTERN "*.hpp" PATTERN "*.h"
+)
+install(
+    FILES include/minitun/client.h include/minitun/client.hpp
+    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/minitun"
+    COMPONENT ClientDevelopment
 )
 
 if(MINITUN_BUILD_TESTS)

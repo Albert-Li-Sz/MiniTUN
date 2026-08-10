@@ -1,6 +1,7 @@
-.TH MINITUN 1 "2026-08-08" "MiniTun 0.4.1" "用户命令"
+.TH MINITUN 1 "2026-08-09" "MiniTun 1.0.0" "用户命令"
 .SH NAME
-minitun \- 管理 MiniTun 服务器和 TCP 隧道
+minitun \-
+管理本地 MiniTun daemon、server 和 TCP tunnel
 .SH 用法
 .B minitun
 .RI [ --socket " path" ]
@@ -8,81 +9,87 @@ minitun \- 管理 MiniTun 服务器和 TCP 隧道
 .RI [ arguments ]
 .SH 描述
 .B minitun
-是无状态命令行客户端。它向本地
-.BR minitund (8)
-Unix 套接字发送一个请求，
-打印响应后退出。它不会打开 MiniTun
-SQLite 数据库，也不会直接连接公网服务端。
-.SH 命令
+是无状态本地控制客户端。每次运行只通过受保护 Unix socket 调用
+.BR minitund (8)；
+它不直接打开 SQLite 或连接公网 server。
+.SH SERVER 命令
 .TP
 .BI "server add " endpoint " [--name " name "]"
-添加一个公网 MiniTun 服务端。
+创建 server 资源。
 .TP
-.BI "server login " server " [--token-stdin]"
-保存服务器 Token。未指定
-.BR --token-stdin
-时，会关闭终端回显并从终端读取 Token。
+.BI "server login " server " [--psk-stdin]"
+保存该 server 的 PSK。默认从 TTY 无回显读取；--token-stdin 是旧 CLI 迁移别名。
 .TP
-.B server list [--json]
-列出已配置的服务器。
+.BI "server update " server " [fields]"
+更新名称、endpoint、TLS server name、CA 或 client cert/key。clear 选项删除对应可选值。
 .TP
-.BI "server inspect " server " [--json]"
-按 ID 或名称查看一个服务器。
+.BI "server enable|disable " server
+保留记录并切换期望状态。
+.TP
+.BI "server logout " server
+删除 PSK、CA、client cert/key 并切换为未认证。
+.TP
+.BI "server list [--json] | server inspect " server " [--json]"
+列出或检查 server。
 .TP
 .BI "server remove " server
-删除一个服务器及其隧道。
+删除 server 及其 tunnel 和凭据。
+.SH TUNNEL 命令
 .TP
 .BI "tun add " server " " local-port " " server-port " [--local-host " host "] [--name " name "]"
-创建 TCP 隧道。默认本地主机为 127.0.0.1。
+创建 TCP 反向 tunnel；默认本地主机 127.0.0.1。
 .TP
-.BI "tun list [" server "] [--json]"
-列出全部隧道，或列出一个服务器的隧道。
+.BI "tun update " tunnel " [fields]"
+更新名称、本地 host/port 或公开 server port。稳定 ID 和 server 归属不可改变。
 .TP
-.BI "tun inspect " tunnel " [--json]"
-按 ID 或名称查看一个隧道。
+.BI "tun enable|disable " tunnel
+保留记录并切换期望状态。
+.TP
+.BI "tun list [" server "] [--json] | tun inspect " tunnel " [--json]"
+列出或检查 tunnel。
 .TP
 .BI "tun remove " tunnel
-删除一个隧道。
+删除 tunnel 并停止远端 listener。
+.SH 配置命令
 .TP
-.B status
-显示聚合客户端状态。
+.B config export
+导出 format_version 1 配置；不包含凭据路径或内容。
+.TP
+.BI "config plan " file " [--prune]"
+只读输出稳定排序动作。
+.TP
+.BI "config apply " file " [--prune]"
+原子应用严格 JSON。默认不删除；--prune 只删除 apply 管理的缺失资源。
+.SH 运维命令
+.TP
+.B daemon status | daemon identity [--json]
+检查本地 daemon 或输出稳定 client_id。
+.TP
+.B status [--json]
+显示聚合状态。
 .TP
 .B doctor [--json] [--checkpoint] [--backup-state path] [--backup-credentials path] [--restore-state path] [--restore-credentials path]
-检查本地 SQLite 数据库，执行 WAL checkpoint，并可进行在线备份或恢复。
+诊断、checkpoint、在线备份或受控恢复本地数据库。
 .TP
-.B health
-输出本地守护进程健康状态 JSON。
-.TP
-.B readiness
-输出本地守护进程是否可服务的 JSON。
-.TP
-.B metrics
-输出本地运行指标 JSON。
-.TP
-.B reload
-请求本地守护进程重新加载远程会话配置。
-.TP
-.B daemon status
-检查本地守护进程。
+.B health | readiness | metrics | reload
+调用本地健康、就绪、指标或 session reload 方法。
 .TP
 .B version
-打印版本、提交、构建、编译器和协议信息。
+打印版本、提交、构建、编译器和 Remote Protocol 版本。
 .SH 选项
 .TP
 .BI --socket " path"
-使用 /run/minitun/minitun.sock 之外的本地套接字。
+使用默认 /run/minitun/minitun.sock 之外的 daemon socket。
 .TP
 .B --json
-为支持的列表和详情命令输出稳定 JSON。
+为支持的命令输出 JSON。
 .SH 退出状态
-0 表示成功；2 表示参数无效；
-3 表示守护进程不可用；4 表示认证失败；
-5 表示远程或网络失败；
-10 表示协议、数据库、资源或内部失败。
+0 成功；2 参数或资源错误；3 daemon 不可用；4 认证失败；
+5 远程/TLS/网络失败；10 协议、数据库、资源或内部失败。
 .SH 文件
 .TP
 .I /run/minitun/minitun.sock
-本地守护进程控制套接字。
+本地 daemon 控制 socket。
 .SH 另请参阅
 .BR minitund (8),
 .BR minitun-server (8)

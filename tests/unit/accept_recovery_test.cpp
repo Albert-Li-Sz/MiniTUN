@@ -1,9 +1,16 @@
+#include <array>
 #include <cerrno>
 #include <chrono>
 
+#include <asio/buffer.hpp>
 #include <asio/error.hpp>
 #include <asio/error_code.hpp>
+#include <asio/io_context.hpp>
+#include <asio/ip/address.hpp>
+#include <asio/ip/tcp.hpp>
 #include <gtest/gtest.h>
+
+#include <fcntl.h>
 
 #include <minitun/server/accept_recovery.hpp>
 
@@ -47,8 +54,53 @@ TEST(AcceptRetryPolicyTest, ClassifiesDescriptorAndBufferExhaustion) {
     EXPECT_TRUE(AcceptRetryPolicy::descriptor_exhausted(descriptor_error));
     EXPECT_TRUE(AcceptRetryPolicy::descriptor_exhausted(system_descriptor_error));
     EXPECT_TRUE(AcceptRetryPolicy::resource_exhausted(buffer_error));
+    EXPECT_TRUE(AcceptRetryPolicy::resource_exhausted(asio::error::no_memory));
+    EXPECT_FALSE(AcceptRetryPolicy::resource_exhausted(asio::error::fault));
     EXPECT_TRUE(AcceptRetryPolicy::retryable(buffer_error));
     EXPECT_FALSE(AcceptRetryPolicy::retryable(aborted));
+    EXPECT_FALSE(AcceptRetryPolicy::retryable(asio::error_code{}));
+    EXPECT_FALSE(AcceptRetryPolicy::retryable(asio::error::bad_descriptor));
+    EXPECT_TRUE(AcceptRetryPolicy::retryable(asio::error::connection_reset));
+    EXPECT_FALSE(AcceptRetryPolicy::descriptor_exhausted(asio::error::fault));
+}
+
+TEST(ReservedFileDescriptorTest, ClosesReopensAndDropsOneQueuedConnection) {
+    ReservedFileDescriptor reserve;
+    EXPECT_TRUE(reserve.available());
+    reserve.reopen();
+    EXPECT_TRUE(reserve.available());
+    reserve.close();
+    EXPECT_FALSE(reserve.available());
+    reserve.close();
+    reserve.reopen();
+    EXPECT_TRUE(reserve.available());
+
+    asio::io_context io_context;
+    asio::ip::tcp::acceptor acceptor{
+        io_context, asio::ip::tcp::endpoint{asio::ip::make_address("127.0.0.1"), 0U}};
+    asio::ip::tcp::socket client{io_context};
+    client.connect(acceptor.local_endpoint());
+    reserve.recover(acceptor);
+    EXPECT_TRUE(reserve.available());
+
+    std::array<char, 1U> byte{};
+    asio::error_code error;
+    EXPECT_EQ(client.read_some(asio::buffer(byte), error), 0U);
+    EXPECT_EQ(error, asio::error::eof);
+}
+
+TEST(ReservedFileDescriptorTest, RecoversWithoutBlockingWhenNoConnectionIsQueued) {
+    ReservedFileDescriptor reserve;
+    asio::io_context io_context;
+    asio::ip::tcp::acceptor acceptor{
+        io_context, asio::ip::tcp::endpoint{asio::ip::make_address("127.0.0.1"), 0U}};
+    const int descriptor = acceptor.native_handle();
+    const int flags = ::fcntl(descriptor, F_GETFL, 0);
+    ASSERT_GE(flags, 0);
+    ASSERT_EQ(::fcntl(descriptor, F_SETFL, flags | O_NONBLOCK), 0);
+
+    reserve.recover(acceptor);
+    EXPECT_TRUE(reserve.available());
 }
 
 } // namespace

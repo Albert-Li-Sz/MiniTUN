@@ -116,6 +116,6 @@ function(minitun_apply_version_definitions target)
             MINITUN_GIT_COMMIT="${MINITUN_GIT_COMMIT}"
             MINITUN_BUILD_TYPE="$<CONFIG>"
             MINITUN_COMPILER="${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}"
-            MINITUN_PROTOCOL_VERSION=1
+            MINITUN_PROTOCOL_VERSION=2
     )
 endfunction()

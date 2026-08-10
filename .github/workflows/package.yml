@@ -43,6 +43,8 @@ permissions:
   contents: read
   # GITHUB_TOKEN pushes OCI images to ghcr.io in the oci job.
   packages: write
+  id-token: write
+  attestations: write
 
 concurrency:
   group: packages-${{ github.workflow }}-${{ github.ref }}
@@ -63,7 +65,7 @@ jobs:
       REQUESTED_VERSION: ${{ inputs.package_version || '' }}
     steps:
       - name: Check out source
-        uses: actions/checkout@v7
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -145,7 +147,7 @@ jobs:
 
     steps:
       - name: Check out source
-        uses: actions/checkout@v7
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -221,7 +223,7 @@ jobs:
           fi
 
       - name: Restore fetched dependencies
-        uses: actions/cache@v6
+        uses: actions/cache@v5
         with:
           path: ~/.cache/minitun-fetchcontent/package-deb
           key: package-deb-fetchcontent-${{ matrix.deb_arch }}-${{ hashFiles('cmake/Dependencies.cmake') }}
@@ -266,6 +268,7 @@ jobs:
             -DCPACK_DEBIAN_PACKAGE_SHLIBDEPS=OFF \
             -DCPACK_DEBIAN_CLIENT_PACKAGE_DEPENDS="systemd, libssl3t64 | libssl3, libsqlite3-0, libstdc++6, libgcc-s1, libatomic1" \
             -DCPACK_DEBIAN_SERVER_PACKAGE_DEPENDS="systemd, libssl3t64 | libssl3, libsqlite3-0, libstdc++6, libgcc-s1, libatomic1" \
+            -DCPACK_DEBIAN_CLIENTLIBRARY_PACKAGE_DEPENDS="libstdc++6, libgcc-s1, libc6" \
             -DMINITUN_BUILD_TESTS=OFF \
             "${version_arguments[@]}" \
             2>&1 | tee ci-logs/deb/configure.log
@@ -311,8 +314,14 @@ jobs:
             -name "minitun-client_*_${DEB_ARCH}.deb")
           server_package=$(find build/package-deb -maxdepth 1 -type f \
             -name "minitun-server_*_${DEB_ARCH}.deb")
+          sdk_library_package=$(find build/package-deb -maxdepth 1 -type f \
+            -name "libminitun-client1_*_${DEB_ARCH}.deb")
+          sdk_development_package=$(find build/package-deb -maxdepth 1 -type f \
+            -name "libminitun-client-dev_*_${DEB_ARCH}.deb")
           test -n "${client_package}"
           test -n "${server_package}"
+          test -n "${sdk_library_package}"
+          test -n "${sdk_development_package}"
 
           artifact_version=${ARTIFACT_VERSION}
 
@@ -321,6 +330,10 @@ jobs:
             "dist/deb/minitun-client-${artifact_version}-linux-${DEB_ARCH}.deb"
           install -m 0644 "${server_package}" \
             "dist/deb/minitun-server-${artifact_version}-linux-${DEB_ARCH}.deb"
+          install -m 0644 "${sdk_library_package}" \
+            "dist/deb/libminitun-client1-${artifact_version}-linux-${DEB_ARCH}.deb"
+          install -m 0644 "${sdk_development_package}" \
+            "dist/deb/libminitun-client-dev-${artifact_version}-linux-${DEB_ARCH}.deb"
           (cd dist/deb && sha256sum ./*.deb >"SHA256SUMS-${DEB_ARCH}")
 
       - name: Upload DEB packages
@@ -386,7 +399,7 @@ jobs:
 
     steps:
       - name: Check out source
-        uses: actions/checkout@v7
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -496,7 +509,7 @@ jobs:
 
       - name: Restore fetched dependencies
         if: matrix.native == false
-        uses: actions/cache@v6
+        uses: actions/cache@v5
         with:
           path: ~/.cache/minitun-fetchcontent/package-rpm
           key: package-rpm-fetchcontent-${{ matrix.rpm_arch }}-${{ hashFiles('cmake/Dependencies.cmake') }}
@@ -570,8 +583,14 @@ jobs:
             -name "minitun-client-*.${RPM_ARCH}.rpm")
           server_package=$(find build/package-rpm -maxdepth 1 -type f \
             -name "minitun-server-*.${RPM_ARCH}.rpm")
+          sdk_library_package=$(find build/package-rpm -maxdepth 1 -type f \
+            -name "libminitun-client1-*.${RPM_ARCH}.rpm")
+          sdk_development_package=$(find build/package-rpm -maxdepth 1 -type f \
+            -name "libminitun-client-devel-*.${RPM_ARCH}.rpm")
           test -n "${client_package}"
           test -n "${server_package}"
+          test -n "${sdk_library_package}"
+          test -n "${sdk_development_package}"
 
           artifact_version=${ARTIFACT_VERSION}
 
@@ -580,6 +599,10 @@ jobs:
             "dist/rpm/minitun-client-${artifact_version}-linux-${RPM_ARCH}.rpm"
           install -m 0644 "${server_package}" \
             "dist/rpm/minitun-server-${artifact_version}-linux-${RPM_ARCH}.rpm"
+          install -m 0644 "${sdk_library_package}" \
+            "dist/rpm/libminitun-client1-${artifact_version}-linux-${RPM_ARCH}.rpm"
+          install -m 0644 "${sdk_development_package}" \
+            "dist/rpm/libminitun-client-devel-${artifact_version}-linux-${RPM_ARCH}.rpm"
           (cd dist/rpm && sha256sum ./*.rpm >"SHA256SUMS-${RPM_ARCH}")
 
       - name: Upload RPM packages
@@ -612,10 +635,15 @@ jobs:
     env:
       PACKAGE_VERSION: ${{ needs.resolve-version.outputs.package_version }}
       ARTIFACT_VERSION: ${{ needs.resolve-version.outputs.artifact_version }}
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
 
     steps:
       - name: Check out source
-        uses: actions/checkout@v7
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -636,6 +664,9 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v4.1.2
 
       - name: Build and push per-architecture images
         run: |
@@ -701,3 +732,152 @@ jobs:
               docker manifest push "ghcr.io/lmtinsuzhou/${image}:latest"
             fi
           done
+
+      - name: Resolve, keyless-sign, and verify OCI manifests
+        id: image-digests
+        env:
+          CERTIFICATE_IDENTITY: https://github.com/${{ github.repository }}/.github/workflows/package.yml@${{ github.ref }}
+        run: |
+          set -euo pipefail
+          version=${ARTIFACT_VERSION}
+          for image in minitun-server minitun-client; do
+            reference="ghcr.io/lmtinsuzhou/${image}:${version}"
+            digest="sha256:$(docker buildx imagetools inspect --raw "${reference}" | sha256sum | awk '{print $1}')"
+            immutable_reference="${reference}@${digest}"
+            cosign sign --yes "${immutable_reference}"
+            cosign verify \
+              --certificate-identity="${CERTIFICATE_IDENTITY}" \
+              --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
+              "${immutable_reference}"
+            output_name=${image#minitun-}_digest
+            echo "${output_name}=${digest}" >>"${GITHUB_OUTPUT}"
+          done
+
+      - name: Prepare OCI SBOM directory
+        run: install -d oci-sbom
+
+      - name: Generate server image SPDX SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: ghcr.io/lmtinsuzhou/minitun-server:${{ env.ARTIFACT_VERSION }}
+          format: spdx-json
+          output-file: oci-sbom/minitun-server-${{ env.ARTIFACT_VERSION }}.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Generate server image CycloneDX SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: ghcr.io/lmtinsuzhou/minitun-server:${{ env.ARTIFACT_VERSION }}
+          format: cyclonedx-json
+          output-file: oci-sbom/minitun-server-${{ env.ARTIFACT_VERSION }}.cyclonedx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Generate client image SPDX SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: ghcr.io/lmtinsuzhou/minitun-client:${{ env.ARTIFACT_VERSION }}
+          format: spdx-json
+          output-file: oci-sbom/minitun-client-${{ env.ARTIFACT_VERSION }}.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Generate client image CycloneDX SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: ghcr.io/lmtinsuzhou/minitun-client:${{ env.ARTIFACT_VERSION }}
+          format: cyclonedx-json
+          output-file: oci-sbom/minitun-client-${{ env.ARTIFACT_VERSION }}.cyclonedx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Attach and verify OCI SBOM attestations
+        env:
+          CERTIFICATE_IDENTITY: https://github.com/${{ github.repository }}/.github/workflows/package.yml@${{ github.ref }}
+          SERVER_DIGEST: ${{ steps.image-digests.outputs.server_digest }}
+          CLIENT_DIGEST: ${{ steps.image-digests.outputs.client_digest }}
+        run: |
+          set -euo pipefail
+          server_ref="ghcr.io/lmtinsuzhou/minitun-server@${SERVER_DIGEST}"
+          client_ref="ghcr.io/lmtinsuzhou/minitun-client@${CLIENT_DIGEST}"
+          cosign attest --yes --type spdxjson \
+            --predicate "oci-sbom/minitun-server-${ARTIFACT_VERSION}.spdx.json" \
+            "${server_ref}"
+          cosign attest --yes --type cyclonedx \
+            --predicate "oci-sbom/minitun-server-${ARTIFACT_VERSION}.cyclonedx.json" \
+            "${server_ref}"
+          cosign attest --yes --type spdxjson \
+            --predicate "oci-sbom/minitun-client-${ARTIFACT_VERSION}.spdx.json" \
+            "${client_ref}"
+          cosign attest --yes --type cyclonedx \
+            --predicate "oci-sbom/minitun-client-${ARTIFACT_VERSION}.cyclonedx.json" \
+            "${client_ref}"
+          for reference in "${server_ref}" "${client_ref}"; do
+            for predicate_type in spdxjson cyclonedx; do
+              cosign verify-attestation \
+                --type "${predicate_type}" \
+                --certificate-identity="${CERTIFICATE_IDENTITY}" \
+                --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
+                "${reference}" >/dev/null
+            done
+          done
+
+      - name: Upload OCI SBOMs
+        uses: actions/upload-artifact@v7
+        with:
+          name: minitun-oci-sbom-${{ env.ARTIFACT_VERSION }}
+          if-no-files-found: error
+          retention-days: 30
+          path: oci-sbom/
+
+      - name: Attest server image provenance
+        uses: actions/attest@v4
+        with:
+          subject-name: ghcr.io/lmtinsuzhou/minitun-server
+          subject-digest: ${{ steps.image-digests.outputs.server_digest }}
+          push-to-registry: true
+
+      - name: Attest client image provenance
+        uses: actions/attest@v4
+        with:
+          subject-name: ghcr.io/lmtinsuzhou/minitun-client
+          subject-digest: ${{ steps.image-digests.outputs.client_digest }}
+          push-to-registry: true
+
+  oci-security-scan:
+    name: OCI scan (${{ matrix.image }}, ${{ matrix.suffix }})
+    if: inputs.publish_oci
+    needs:
+      - resolve-version
+      - oci
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - minitun-server
+          - minitun-client
+        suffix:
+          - amd64
+          - arm64
+          - armv7
+          - riscv64
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Fail on high or critical vulnerabilities
+        uses: anchore/scan-action@v7
+        with:
+          image: ghcr.io/lmtinsuzhou/${{ matrix.image }}:${{ needs.resolve-version.outputs.artifact_version }}-linux-${{ matrix.suffix }}
+          fail-build: true
+          severity-cutoff: high
+          output-format: table

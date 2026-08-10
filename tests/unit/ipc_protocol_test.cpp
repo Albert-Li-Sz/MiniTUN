@@ -399,5 +399,135 @@ TEST(IpcProtocolTest, RejectsAResponseWhoseIdentifierIsNotARequestId) {
     EXPECT_EQ(serialized.error().code(), common::ErrorCode::invalid_argument);
 }
 
+TEST(IpcProtocolTest, ValidatesEveryCanonicalUtf8BoundaryInMemoryAndOnWire) {
+    constexpr std::array<std::string_view, 12> valid_sequences{
+        "\xc2\xa2",         "\xdf\xbf",         "\xe0\xa0\x80",     "\xed\x9f\xbf",
+        "\xe1\x80\x80",     "\xec\xbf\xbf",     "\xee\x80\x80",     "\xef\xbf\xbf",
+        "\xf0\x90\x80\x80", "\xf4\x8f\xbf\xbf", "\xf1\x80\x80\x80", "\xf3\xbf\xbf\xbf",
+    };
+    for (const auto sequence : valid_sequences) {
+        Request request = make_request(Json{{"value", std::string{sequence}}});
+        const auto serialized = serialize_request(request);
+        ASSERT_TRUE(serialized) << sequence;
+        const auto parsed = parse_request(*serialized);
+        ASSERT_TRUE(parsed) << parsed.error();
+        EXPECT_EQ(parsed->params.at("value"), sequence);
+    }
+
+    constexpr std::array<std::string_view, 13> invalid_sequences{
+        "\xc1\x80",
+        "\xc2"
+        "A",
+        "\xe0\x9f\x80",
+        "\xe0\xa0",
+        "\xed\xa0\x80",
+        "\xe1\x80"
+        "A",
+        "\xf0\x8f\x80\x80",
+        "\xf4\x90\x80\x80",
+        "\xf1\x80\x80"
+        "A",
+        "\xf0\x90"
+        "A\x80",
+        "\xf0\x90\x80"
+        "A",
+        "\xf0\x90\x80",
+        "\xf5\x80\x80\x80",
+    };
+    for (const auto sequence : invalid_sequences) {
+        const auto serialized =
+            serialize_request(make_request(Json{{"value", std::string{sequence}}}));
+        ASSERT_FALSE(serialized) << sequence;
+        EXPECT_EQ(serialized.error().code(), common::ErrorCode::invalid_argument);
+
+        std::string wire = std::string{"{\"version\":1,\"request_id\":\""} +
+                           std::string{kRequestId} +
+                           "\",\"method\":\"daemon.status\",\"params\":{\"value\":\"";
+        wire.append(sequence).append("\"}}");
+        const auto parsed = parse_request(wire);
+        ASSERT_FALSE(parsed) << sequence;
+        EXPECT_EQ(parsed.error().code(), common::ErrorCode::invalid_argument);
+    }
+}
+
+TEST(IpcProtocolTest, RejectsEveryNonJsonInMemoryValueAndObjectKeyLimit) {
+    Json binary_params = Json::object();
+    binary_params["value"] = Json::binary({0x01U, 0x02U});
+    const auto binary = serialize_request(make_request(std::move(binary_params)));
+    ASSERT_FALSE(binary);
+    EXPECT_EQ(binary.error().code(), common::ErrorCode::invalid_argument);
+
+    Json discarded_params = Json::object();
+    discarded_params["value"] = Json::parse("not-json", nullptr, false);
+    ASSERT_TRUE(discarded_params.at("value").is_discarded());
+    const auto discarded = serialize_request(make_request(std::move(discarded_params)));
+    ASSERT_FALSE(discarded);
+    EXPECT_EQ(discarded.error().code(), common::ErrorCode::invalid_argument);
+
+    Json oversized_value = Json::object();
+    oversized_value["value"] = std::string(kMaxJsonStringBytes + 1U, 'v');
+    const auto value = serialize_request(make_request(std::move(oversized_value)));
+    ASSERT_FALSE(value);
+    EXPECT_EQ(value.error().code(), common::ErrorCode::resource_exhausted);
+
+    Json oversized_key = Json::object();
+    oversized_key[std::string(kMaxJsonStringBytes + 1U, 'k')] = true;
+    const auto key = serialize_request(make_request(std::move(oversized_key)));
+    ASSERT_FALSE(key);
+    EXPECT_EQ(key.error().code(), common::ErrorCode::resource_exhausted);
+
+    std::string malformed_key(1U, static_cast<char>(0xffU));
+    Json invalid_key = Json::object();
+    invalid_key[malformed_key] = true;
+    const auto key_utf8 = serialize_request(make_request(std::move(invalid_key)));
+    ASSERT_FALSE(key_utf8);
+    EXPECT_EQ(key_utf8.error().code(), common::ErrorCode::invalid_argument);
+}
+
+TEST(IpcProtocolTest, RejectsWireKeyAndNodeLimitsAndSignedUnsupportedVersions) {
+    const std::string oversized_key = std::string{"{\"version\":1,\"request_id\":\""} +
+                                      std::string{kRequestId} +
+                                      "\",\"method\":\"daemon.status\",\"params\":{\"" +
+                                      std::string(kMaxJsonStringBytes + 1U, 'k') + "\":true}}";
+    const auto key = parse_request(oversized_key);
+    ASSERT_FALSE(key);
+    EXPECT_EQ(key.error().code(), common::ErrorCode::resource_exhausted);
+
+    std::string too_many_nodes = std::string{"{\"version\":1,\"request_id\":\""} +
+                                 std::string{kRequestId} +
+                                 "\",\"method\":\"daemon.status\",\"params\":{\"values\":[";
+    for (std::size_t index = 0U; index < kMaxJsonNodes; ++index) {
+        if (index != 0U) {
+            too_many_nodes.push_back(',');
+        }
+        too_many_nodes.append("null");
+    }
+    too_many_nodes.append("]}}");
+    const auto nodes = parse_request(too_many_nodes);
+    ASSERT_FALSE(nodes);
+    EXPECT_EQ(nodes.error().code(), common::ErrorCode::resource_exhausted);
+
+    std::string signed_version = valid_request_payload();
+    signed_version.replace(signed_version.find("\"version\":1"),
+                           std::string_view{"\"version\":1"}.size(), "\"version\":-1");
+    const auto version = parse_request(signed_version);
+    ASSERT_FALSE(version);
+    EXPECT_EQ(version.error().code(), common::ErrorCode::unsupported_version);
+}
+
+TEST(IpcProtocolTest, RejectsInvalidInMemoryRequestIdentityAndMethod) {
+    Request wrong_id = make_request();
+    wrong_id.request_id = make_id("srv_0123456789abcdef0123456789abcdef", common::IdKind::server);
+    const auto identity = serialize_request(wrong_id);
+    ASSERT_FALSE(identity);
+    EXPECT_EQ(identity.error().code(), common::ErrorCode::invalid_argument);
+
+    Request wrong_method = make_request();
+    wrong_method.method = "daemon..status";
+    const auto method = serialize_request(wrong_method);
+    ASSERT_FALSE(method);
+    EXPECT_EQ(method.error().code(), common::ErrorCode::invalid_argument);
+}
+
 } // namespace
 } // namespace minitun::ipc

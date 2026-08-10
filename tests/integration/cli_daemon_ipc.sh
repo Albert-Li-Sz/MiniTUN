@@ -198,43 +198,43 @@ finally:
     connection.close()
 PY
 
-stdin_token=phase4-stdin-private-token
-printf '%s\n' "$stdin_token" |
-    "$minitun_bin" --socket "$socket_path" server login primary --token-stdin \
+stdin_psk=phase4-stdin-private-psk
+printf '%s\n' "$stdin_psk" |
+    "$minitun_bin" --socket "$socket_path" server login primary --psk-stdin \
         >"$runtime_dir/login-stdin.out" 2>"$runtime_dir/login-stdin.err"
 if ! grep -q 'Status.*disconnected' "$runtime_dir/login-stdin.out" ||
-    grep -q "$stdin_token" "$runtime_dir/login-stdin.out" "$runtime_dir/login-stdin.err"; then
-    printf 'token-stdin login returned an invalid or sensitive result\n' >&2
+    grep -q "$stdin_psk" "$runtime_dir/login-stdin.out" "$runtime_dir/login-stdin.err"; then
+    printf 'psk-stdin login returned an invalid or sensitive result\n' >&2
     exit 1
 fi
 
 set +e
 python3 -c 'import sys; sys.stdout.write("x" * 65537 + "\n")' |
-    "$minitun_bin" --socket "$socket_path" server login primary --token-stdin \
+    "$minitun_bin" --socket "$socket_path" server login primary --psk-stdin \
         >"$runtime_dir/login-oversized.out" 2>"$runtime_dir/login-oversized.err"
-oversized_token_status=${PIPESTATUS[1]}
+oversized_psk_status=${PIPESTATUS[1]}
 set -e
-if [[ $oversized_token_status -ne 2 ]] ||
+if [[ $oversized_psk_status -ne 2 ]] ||
     ! grep -q 'outside its accepted byte-length' "$runtime_dir/login-oversized.err" ||
     [[ -s "$runtime_dir/login-oversized.out" ]]; then
-    printf 'oversized token-stdin input was not rejected safely\n' >&2
+    printf 'oversized psk-stdin input was not rejected safely\n' >&2
     exit 1
 fi
 
 set +e
-printf '%s\n' "$stdin_token" |
+printf '%s\n' "$stdin_psk" |
     "$minitun_bin" --socket "$socket_path" server login primary \
         >"$runtime_dir/login-no-flag.out" 2>"$runtime_dir/login-no-flag.err"
 login_no_flag_status=$?
 set -e
 if [[ $login_no_flag_status -ne 2 ]]; then
-    printf 'non-terminal login without --token-stdin returned %d, expected 2\n' \
+    printf 'non-terminal login without --psk-stdin returned %d, expected 2\n' \
         "$login_no_flag_status" >&2
     exit 1
 fi
 
-interactive_token=phase4-interactive-private-token
-python3 - "$minitun_bin" "$socket_path" "$interactive_token" <<'PY'
+interactive_psk=phase4-interactive-private-psk
+python3 - "$minitun_bin" "$socket_path" "$interactive_psk" <<'PY'
 import errno
 import os
 import pty
@@ -242,7 +242,7 @@ import select
 import sys
 import time
 
-binary, socket_path, token = sys.argv[1:]
+binary, socket_path, psk = sys.argv[1:]
 child_pid, descriptor = pty.fork()
 if child_pid == 0:
     os.execv(binary, [binary, "--socket", socket_path, "server", "login", "primary"])
@@ -264,8 +264,8 @@ while time.monotonic() < deadline:
         if not chunk:
             break
         output.extend(chunk)
-        if not sent and b"Token: " in output:
-            os.write(descriptor, token.encode() + b"\n")
+        if not sent and b"PSK: " in output:
+            os.write(descriptor, psk.encode() + b"\n")
             sent = True
     finished, wait_status = os.waitpid(child_pid, os.WNOHANG)
     if finished:
@@ -280,7 +280,7 @@ exit_code = os.waitstatus_to_exitcode(wait_status)
 text = output.decode(errors="replace")
 assert sent, text
 assert exit_code == 0, (exit_code, text)
-assert token not in text, text
+assert psk not in text, text
 assert "server credentials stored" in text.lower(), text
 PY
 
@@ -450,7 +450,7 @@ with sqlite3.connect(sys.argv[2]) as credentials:
     assert credentials.execute("SELECT COUNT(*) FROM credentials").fetchone()[0] == 0
 PY
 
-python3 - "$runtime_dir" "$orphan_token" "$stdin_token" "$interactive_token" <<'PY'
+python3 - "$runtime_dir" "$orphan_token" "$stdin_psk" "$interactive_psk" <<'PY'
 import os
 import sys
 

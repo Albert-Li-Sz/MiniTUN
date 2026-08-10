@@ -7,6 +7,7 @@ server_bin=${3:?missing minitun-server binary}
 
 runtime_root=$(cd "${TMPDIR:-/tmp}" && pwd -P)
 runtime_dir=$(mktemp -d "$runtime_root/minitun-latency.XXXXXX")
+integration_dir=$(cd "$(dirname "$0")" && pwd -P)
 socket_path="$runtime_dir/minitun.sock"
 state_path="$runtime_dir/state.db"
 credentials_path="$runtime_dir/credentials.db"
@@ -88,6 +89,9 @@ for _ in $(seq 1 100); do
 done
 [[ -S "$socket_path" ]]
 
+bash "$integration_dir/write_client_policy.sh" "$minitun_bin" "$socket_path" \
+    "$runtime_dir/clients.json" "$runtime_dir/token" 1024-65535 64 >/dev/null
+
 "$minitun_bin" --socket "$socket_path" server add "localhost:$proxy_port" --name primary \
     >/dev/null
 printf '%s\n' "$token" |
@@ -103,8 +107,7 @@ done
     --listen "127.0.0.1:$server_port" \
     --tls-cert "$runtime_dir/server.crt" \
     --tls-key "$runtime_dir/server.key" \
-    --token-file "$runtime_dir/token" \
-    --allow-ports 1024-65535 \
+    --clients-config "$runtime_dir/clients.json" \
     --max-tunnels-per-client 64 \
     --heartbeat-interval 1 \
     --heartbeat-timeout 3 \

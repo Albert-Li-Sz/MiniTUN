@@ -7,6 +7,7 @@ server_bin=${3:?missing minitun-server binary}
 
 runtime_root=$(cd "${TMPDIR:-/tmp}" && pwd -P)
 runtime_dir=$(mktemp -d "$runtime_root/minitun-registration.XXXXXX")
+integration_dir=$(cd "$(dirname "$0")" && pwd -P)
 socket_path="$runtime_dir/minitun.sock"
 state_path="$runtime_dir/state.db"
 credentials_path="$runtime_dir/credentials.db"
@@ -22,7 +23,11 @@ cleanup() {
             wait "$process_id" 2>/dev/null || true
         fi
     done
-    rm -rf "$runtime_dir"
+    if [[ ${MINITUN_KEEP_TEST_ARTIFACTS:-0} == 1 ]]; then
+        printf 'kept tunnel registration artifacts at %s\n' "$runtime_dir" >&2
+    else
+        rm -rf "$runtime_dir"
+    fi
 }
 trap cleanup EXIT
 
@@ -119,8 +124,7 @@ start_server() {
             --listen "127.0.0.1:$candidate" \
             --tls-cert "$runtime_dir/server.crt" \
             --tls-key "$runtime_dir/server.key" \
-            --token-file "$runtime_dir/token" \
-            --allow-ports 1024-65535 \
+            --clients-config "$runtime_dir/clients.json" \
             --heartbeat-interval 60 \
             --heartbeat-timeout 180 \
             --io-threads 2 \
@@ -247,8 +251,10 @@ PY
     exit 1
 }
 
-start_server
 start_daemon
+bash "$integration_dir/write_client_policy.sh" "$minitun_bin" "$socket_path" \
+    "$runtime_dir/clients.json" "$runtime_dir/token" >/dev/null
+start_server
 "$minitun_bin" --socket "$socket_path" server add "localhost:$control_port" --name primary \
     >/dev/null
 printf '%s\n' "$token" |

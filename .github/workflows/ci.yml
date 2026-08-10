@@ -52,7 +52,7 @@ jobs:
 
     steps:
       - name: Check out source
-        uses: actions/checkout@v7
+        uses: actions/checkout@v6
 
       - name: Install system dependencies
         run: |
@@ -76,7 +76,7 @@ jobs:
             pkg-config
 
       - name: Restore compiler cache
-        uses: actions/cache@v6
+        uses: actions/cache@v5
         with:
           path: ~/.cache/ccache
           key: ccache-${{ matrix.os }}-${{ matrix.cxx }}-${{ matrix.build_type }}-${{ hashFiles('CMakeLists.txt', 'cmake/**', 'include/**', 'src/**', 'apps/**') }}
@@ -93,9 +93,9 @@ jobs:
             -G Ninja \
             -DCMAKE_BUILD_TYPE="${{ matrix.build_type }}" \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_CXX_FLAGS="-Wall -Wextra -Wpedantic -Wconversion -Wshadow" \
             -DMINITUN_USE_SYSTEM_DEPS=ON \
             -DMINITUN_BUILD_TESTS=ON \
+            -DMINITUN_WARNINGS_AS_ERRORS=ON \
             2>&1 | tee "${CI_LOG_DIR}/configure.log"
         env:
           CC: ${{ matrix.cc }}
@@ -154,5 +154,64 @@ jobs:
             build/CMakeFiles/CMakeConfigureLog.yaml
             build/CMakeFiles/CMakeError.log
             build/CMakeFiles/CMakeOutput.log
+            build/CMakeCache.txt
+            build/.ninja_log
+
+  macos-build:
+    name: macOS 14 - AppleClang - Debug
+    runs-on: macos-14
+    timeout-minutes: 40
+    env:
+      CTEST_OUTPUT_ON_FAILURE: "1"
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: |
+          brew install \
+            asio \
+            ccache \
+            cli11 \
+            cmake \
+            googletest \
+            ninja \
+            nlohmann-json \
+            openssl@3 \
+            pkg-config \
+            spdlog \
+            sqlite
+
+      - name: Configure
+        run: |
+          cmake \
+            -S . \
+            -B build \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_PREFIX_PATH="$(brew --prefix openssl@3);$(brew --prefix sqlite)" \
+            -DMINITUN_USE_SYSTEM_DEPS=ON \
+            -DMINITUN_BUILD_TESTS=ON \
+            -DMINITUN_WARNINGS_AS_ERRORS=ON
+
+      - name: Build and test
+        run: |
+          cmake --build build --parallel 3
+          ctest --test-dir build --output-on-failure --no-tests=error
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-failure-macos-14-appleclang-debug
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            build/Testing/Temporary/
+            build/CMakeFiles/CMakeConfigureLog.yaml
             build/CMakeCache.txt
             build/.ninja_log

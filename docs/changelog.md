@@ -8,6 +8,23 @@ title: 变更日志
 [CHANGELOG.md](https://github.com/LMTINSUZHOU/MiniTUN/blob/main/CHANGELOG.md) 为准。
 这里保留官网常用的近期版本摘要，方便从文档站快速了解最新能力。
 
+## [Unreleased] - v1.0.0
+
+### 主要变化
+
+- Remote Protocol v2-only：能力协商、认证绑定 server/client/version/capabilities、
+  revision-aware 有界流水线和 generation-scoped 状态收敛。
+- 每客户端 PSK、可选证书绑定、端口 ACL、配额、原子 SIGHUP 重载和审计。
+- schema v4、完整 server/tunnel 生命周期、声明式 config plan/apply 和安全 prune。
+- `libminitun-client.so.1` 的 C11/C++20 本地控制 SDK 及 DEB/RPM runtime/devel 包。
+- client/server 管理端点、Prometheus 指标、故障注入、ABI/coverage/fuzz/security 门禁，
+  以及绑定 commit 的性能/浸泡证据、SBOM、keyless 签名和 provenance 发布链。
+
+::: warning 尚未发布 GA
+`v1.0.0` tag 只能在 rc.1、rc.2、独立性能证据、24 小时满规模压力和随后 7 天浸泡全部
+通过后创建；冻结后公共契约变化必须增加 RC。
+:::
+
 ## [0.4.1] - 2026-08-08
 
 ### 安全修复

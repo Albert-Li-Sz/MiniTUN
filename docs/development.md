@@ -49,6 +49,7 @@ ctest --preset dev
 build/dev/minitun
 build/dev/minitund
 build/dev/minitun-server
+build/dev/libminitun-client.so.1  # Linux；macOS 为对应 dylib
 ```
 
 常用 CMake 选项：
@@ -62,6 +63,9 @@ build/dev/minitun-server
 | `MINITUN_ENABLE_UBSAN` | 启用 UndefinedBehaviorSanitizer |
 | `MINITUN_ENABLE_TSAN` | 启用 ThreadSanitizer |
 | `MINITUN_ENABLE_LTO` | 启用链接时优化 |
+| `MINITUN_ENABLE_COVERAGE` | 生成核心代码 line/branch coverage 数据 |
+| `MINITUN_ENABLE_FAULT_INJECTION` | 启用测试专用 crash failpoint |
+| `MINITUN_WARNINGS_AS_ERRORS` | 项目代码警告视为错误 |
 | `MINITUN_BUILD_PACKAGES` | 启用 CPack 软件包生成 |
 | `MINITUN_PACKAGE_VERSION` | 设置稳定版或候选版软件包版本 |
 
@@ -89,27 +93,13 @@ openssl req -x509 -newkey rsa:3072 -nodes \
   -days 1 \
   -subj '/CN=localhost' \
   -addext 'subjectAltName=DNS:localhost,IP:127.0.0.1'
-openssl rand -hex 32 >"$MINITUN_DEMO_DIR/token"
-chmod 0600 "$MINITUN_DEMO_DIR/server.key" "$MINITUN_DEMO_DIR/token"
+openssl rand -hex 32 >"$MINITUN_DEMO_DIR/client.psk"
+chmod 0600 "$MINITUN_DEMO_DIR/server.key" "$MINITUN_DEMO_DIR/client.psk"
 ```
 
-### 2. 启动服务端
+### 2. 启动客户端守护进程
 
 在第一个终端运行：
-
-```bash
-export MINITUN_DEMO_DIR="$PWD/build/demo-runtime"
-build/dev/minitun-server \
-  --foreground \
-  --listen 127.0.0.1:2333 \
-  --tls-cert "$MINITUN_DEMO_DIR/server.crt" \
-  --tls-key "$MINITUN_DEMO_DIR/server.key" \
-  --token-file "$MINITUN_DEMO_DIR/token"
-```
-
-### 3. 启动客户端守护进程
-
-在第二个终端运行：
 
 ```bash
 export MINITUN_DEMO_DIR="$PWD/build/demo-runtime"
@@ -119,6 +109,24 @@ build/dev/minitund \
   --database "$MINITUN_DEMO_DIR/state.db" \
   --credentials "$MINITUN_DEMO_DIR/credentials.db" \
   --tls-ca "$MINITUN_DEMO_DIR/server.crt"
+```
+
+### 3. 创建客户端策略并启动服务端
+
+在第二个终端运行：
+
+```bash
+export MINITUN_DEMO_DIR="$PWD/build/demo-runtime"
+bash tests/integration/write_client_policy.sh \
+  build/dev/minitun "$MINITUN_DEMO_DIR/minitun.sock" \
+  "$MINITUN_DEMO_DIR/clients.json" "$MINITUN_DEMO_DIR/client.psk"
+
+build/dev/minitun-server \
+  --foreground \
+  --listen 127.0.0.1:2333 \
+  --tls-cert "$MINITUN_DEMO_DIR/server.crt" \
+  --tls-key "$MINITUN_DEMO_DIR/server.key" \
+  --clients-config "$MINITUN_DEMO_DIR/clients.json"
 ```
 
 ### 4. 启动目标服务
@@ -140,7 +148,7 @@ build/dev/minitun --socket "$MINITUN_DEMO_DIR/minitun.sock" \
   server add localhost:2333 --name demo
 
 build/dev/minitun --socket "$MINITUN_DEMO_DIR/minitun.sock" \
-  server login demo --token-stdin <"$MINITUN_DEMO_DIR/token"
+  server login demo --psk-stdin <"$MINITUN_DEMO_DIR/client.psk"
 
 build/dev/minitun --socket "$MINITUN_DEMO_DIR/minitun.sock" \
   tun add demo 8080 6000 --name demo-http
@@ -171,6 +179,10 @@ DESTDIR="$PWD/build/stage" \
   cmake --install build/release --prefix /usr --component Client
 DESTDIR="$PWD/build/stage" \
   cmake --install build/release --prefix /usr --component Server
+DESTDIR="$PWD/build/stage" \
+  cmake --install build/release --prefix /usr --component ClientLibrary
+DESTDIR="$PWD/build/stage" \
+  cmake --install build/release --prefix /usr --component ClientDevelopment
 find build/stage/usr -type f -o -type l
 ```
 
@@ -179,6 +191,8 @@ find build/stage/usr -type f -o -type l
 ```bash
 sudo cmake --install build/release --prefix /usr --component Client
 sudo cmake --install build/release --prefix /usr --component Server
+sudo cmake --install build/release --prefix /usr --component ClientLibrary
+sudo cmake --install build/release --prefix /usr --component ClientDevelopment
 sudo systemd-sysusers /usr/lib/sysusers.d/minitun.conf
 sudo systemd-sysusers /usr/lib/sysusers.d/minitun-server.conf
 sudo systemctl daemon-reload
@@ -249,7 +263,8 @@ cpack --config build/package-rpm/CPackConfig.cmake -G RPM
 packaging/tests/verify-rpm.sh build/package-rpm
 ```
 
-生成的软件包分别为 `minitun-client` 和 `minitun-server`。在 Docker 可用的 Linux
+生成 `minitun-client`、`minitun-server`、`libminitun-client1` 和
+`libminitun-client-dev`/`libminitun-client-devel`。在 Docker 可用的 Linux
 开发主机上，可以继续执行干净容器冒烟测试：
 
 ```bash
@@ -258,7 +273,7 @@ packaging/tests/smoke-rpm.sh "$PWD/build/package-rpm"
 ```
 
 普通升级和卸载保留状态目录；Debian purge 删除状态目录，RPM 卸载则始终保留状态。
-软件包不会携带或覆盖管理员提供的证书、私钥和 Token。
+软件包不会携带或覆盖管理员提供的证书、私钥、PSK 或客户端策略。
 
 ## 交叉编译 DEB/RPM 与 OCI 镜像
 
@@ -285,29 +300,44 @@ rpmbuild 的 ELF 依赖扫描生成 soname 级 `Requires`。每个新架构都�
 
 ## CI 与发布
 
-GitHub Actions 包含四条工作流：
-
 | 工作流 | 内容 |
 | --- | --- |
-| `ci.yml` | GCC/Clang 构建、完整 CTest 与 CLI 冒烟测试 |
-| `sanitizers.yml` | ASan、UBSan、TSan 与有界 fuzz 测试 |
-| `package.yml` | DEB/RPM 四架构（amd64/arm64/armhf/riscv64 与 x86_64/aarch64/armv7hl/riscv64）交叉编译与 QEMU 容器安装冒烟；Release 时构建并发布 OCI 镜像 |
-| `release.yml` | 校验版本 tag，复用打包工作流并创建 GitHub Release |
+| `ci.yml` | Linux GCC/Clang、macOS 编译、完整 CTest、SDK 示例 |
+| `sanitizers.yml` | ASan、UBSan、TSan、PR fuzz smoke 与 nightly corpus fuzz |
+| `quality.yml` | clang-tidy、line ≥85% / branch ≥75% coverage、ABI/downstream checks |
+| `codeql.yml` | GitHub CodeQL C/C++ 扫描 |
+| `reliability.yml` | tunnel registration 与高延迟 reconciliation 重复 100 次 |
+| `performance.yml` | 独立 4 vCPU/8 GiB runner 的三轮基准、持久 systemd soak 与 OIDC 证据 |
+| `package.yml` | 四架构 DEB/RPM、QEMU 安装测试与多架构 OCI |
+| `release.yml` | RC/性能/浸泡/P0-P1 门禁、SBOM、签名、attestation 与 GitHub Release |
+| `pages.yml` | VitePress 文档构建与发布 |
 
-`main` 分支触发的包使用 `MAJOR.MINOR.PATCH_pre<运行号>~<提交号>` 开发版本；
-文件名中的 `~` 会替换为 `-`。这些产物只用于持续验收，不与正式 Release 共用包版本。
+`main` 分支包使用 `MAJOR.MINOR.PATCH_pre<运行号>~<提交号>`；它们只用于持续验收。
+发布 tag 必须是 `vMAJOR.MINOR.PATCH` 或 `vMAJOR.MINOR.PATCH-rc.NUMBER`，基础版本必须与
+`CMakeLists.txt` 一致。
 
-发布 tag 必须是 `vMAJOR.MINOR.PATCH` 或 `vMAJOR.MINOR.PATCH-rc.NUMBER`，且基础版本
-必须与 `CMakeLists.txt` 中的项目版本一致：
+v1.0 发布顺序是强制门禁，不是只创建 tag：
+
+1. 在独立 runner 完成三次 100 clients / 2,000 tunnels / 10,000 relay 基准；
+2. 发布 `v1.0.0-rc.1` 并冻结协议、schema、SDK ABI 和功能；
+3. 只修阻断项，发布 `v1.0.0-rc.2`；
+4. 在最终 RC tag 的同一 commit 上完成至少 24 小时满规模压力和随后 7 天混合负载浸泡；
+5. 确认无 P0/P1，才在最终 RC 的同一 commit 创建 `v1.0.0`；冻结后任何变化都必须增加
+   rc.N 并重跑两个浸泡阶段。
+
+候选版示例（只能在对应门禁证据已归档后执行）：
 
 ```bash
-git tag -a v0.4.1 -m "MiniTun v0.4.1"
-git push origin v0.4.1
+git tag -s v1.0.0-rc.1 -m "MiniTun v1.0.0-rc.1"
+git push origin v1.0.0-rc.1
 ```
 
-发布工作流仅在全部软件包测试通过后创建 GitHub Release。每个版本包含
-四个架构的 Client/Server DEB（共八个）、四个架构的 Client/Server RPM（共八个）、
-一份覆盖全部产物的 `SHA256SUMS`，以及发布到 `ghcr.io` 的 OCI 多架构镜像。
+release workflow 会自动下载并验证同提交的 OIDC-attested 门禁 JSON；缺少或缩短证据时
+在软件包构建前失败。具体启动/收集命令见[性能文档](performance.md)。
+
+每个架构产生 client、server、SDK runtime 和 SDK development 四个包，因此完整矩阵为
+16 个 DEB 和 16 个 RPM，另有多架构 OCI。Release 还包含 SPDX/CycloneDX SBOM、
+`SHA256SUMS`、每个 blob 的 Sigstore bundle 和 GitHub OIDC provenance/attestation。
 
 ## 开发排障
 
@@ -326,9 +356,9 @@ journalctl -u minitund.service -u minitun-server.service --since '-10 min'
 | 现象 | 检查项 |
 | --- | --- |
 | CLI 退出码为 `3` | `minitund` 是否运行、套接字是否为 `0660`、当前用户是否属于 `minitun` 组 |
-| 服务端无法启动 | 证书与私钥是否匹配；Token 是否为服务账户所有、模式是否为 `0600` |
-| 认证失败 | 证书 SAN、CA 信任、两端 Token、系统时间和控制端口防火墙 |
-| 隧道长期为 `pending` | `minitun tun inspect <name> --json` 的 `server_actual_state`、`pending_reason`、`last_synced_at` 与 `last_error`，以及控制端口连通性、TLS 和 Token |
+| 服务端无法启动 | TLS 证书/私钥、`clients.json` owner/mode、各 PSK 是否为服务账户所有且模式 `0600` |
+| 认证失败 | server SAN/CA、client policy ID、两端 PSK、可选证书绑定、系统时间和控制端口防火墙 |
+| 隧道长期为 `pending` | `server_actual_state`、`pending_reason`、`config_revision`、`last_synced_at`、控制端口、TLS 与 PSK |
 | 隧道状态为 `failed` | `permission_denied`、`resource_exhausted` 或 `remote_port_in_use` 错误码 |
 | 公网端口无法访问 | 本地目标、映射端口的云安全组与主机防火墙、隧道状态和连接配额 |
 
@@ -342,5 +372,5 @@ SQLite 在线备份接口或同时保留主文件及 `-wal`、`-shm`，不得在
 删除任何 sidecar 文件。`remove` 成功后的逻辑结果应通过 `minitun list/inspect` 或
 SQLite 连接查询，不应只比较主文件时间戳。
 
-请勿在 Issue、日志或测试数据中提交 Token、私钥、`credentials.db` 或未脱敏的生产
+请勿在 Issue、日志或测试数据中提交 PSK、私钥、`credentials.db` 或未脱敏的生产
 数据。

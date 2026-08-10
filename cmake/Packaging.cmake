@@ -35,7 +35,7 @@ set(CPACK_PACKAGING_INSTALL_PREFIX "/usr")
 set(CPACK_SET_DESTDIR ON)
 set(CPACK_MONOLITHIC_INSTALL OFF)
 set(CPACK_COMPONENT_INCLUDE_TOPLEVEL_DIRECTORY OFF)
-set(CPACK_COMPONENTS_ALL Client Server)
+set(CPACK_COMPONENTS_ALL Client Server ClientLibrary ClientDevelopment)
 
 set(CPACK_COMPONENT_CLIENT_DISPLAY_NAME "MiniTun Client")
 set(CPACK_COMPONENT_CLIENT_DESCRIPTION
@@ -45,6 +45,15 @@ set(CPACK_COMPONENT_SERVER_DISPLAY_NAME "MiniTun Server")
 set(CPACK_COMPONENT_SERVER_DESCRIPTION
     "Public TLS server for MiniTun reverse TCP tunnels"
 )
+set(CPACK_COMPONENT_CLIENTLIBRARY_DISPLAY_NAME "MiniTun Client SDK Runtime")
+set(CPACK_COMPONENT_CLIENTLIBRARY_DESCRIPTION
+    "Stable C ABI runtime library for controlling the local MiniTun daemon"
+)
+set(CPACK_COMPONENT_CLIENTDEVELOPMENT_DISPLAY_NAME "MiniTun Client SDK Development")
+set(CPACK_COMPONENT_CLIENTDEVELOPMENT_DESCRIPTION
+    "C11/C++20 headers, CMake target, and pkg-config metadata for the MiniTun SDK"
+)
+set(CPACK_COMPONENT_CLIENTDEVELOPMENT_DEPENDS ClientLibrary)
 
 # Explicit architecture overrides for cross-compiled packages. Leave empty to
 # let CPack infer the architecture from CMAKE_SYSTEM_PROCESSOR (native builds).
@@ -87,6 +96,14 @@ set(CPACK_DEBIAN_SERVER_PACKAGE_CONTROL_EXTRA
     "${PROJECT_SOURCE_DIR}/packaging/debian/server/conffiles"
 )
 
+set(CPACK_DEBIAN_CLIENTLIBRARY_PACKAGE_NAME "libminitun-client1")
+set(CPACK_DEBIAN_CLIENTLIBRARY_PACKAGE_SECTION libs)
+set(CPACK_DEBIAN_CLIENTDEVELOPMENT_PACKAGE_NAME "libminitun-client-dev")
+set(CPACK_DEBIAN_CLIENTDEVELOPMENT_PACKAGE_SECTION libdevel)
+set(CPACK_DEBIAN_CLIENTDEVELOPMENT_PACKAGE_DEPENDS
+    "libminitun-client1 (= ${minitun_debian_version})"
+)
+
 set(CPACK_RPM_COMPONENT_INSTALL ON)
 set(CPACK_RPM_FILE_NAME RPM-DEFAULT)
 set(CPACK_RPM_PACKAGE_LICENSE MIT)
@@ -121,6 +138,14 @@ set(CPACK_RPM_SERVER_POST_UNINSTALL_SCRIPT_FILE
 )
 set(CPACK_RPM_SERVER_USER_FILELIST
     "%config(noreplace) /etc/minitun-server/README"
+)
+
+set(CPACK_RPM_CLIENTLIBRARY_PACKAGE_NAME "libminitun-client1")
+set(CPACK_RPM_CLIENTLIBRARY_PACKAGE_GROUP "System Environment/Libraries")
+set(CPACK_RPM_CLIENTDEVELOPMENT_PACKAGE_NAME "libminitun-client-devel")
+set(CPACK_RPM_CLIENTDEVELOPMENT_PACKAGE_GROUP "Development/Libraries")
+set(CPACK_RPM_CLIENTDEVELOPMENT_PACKAGE_REQUIRES
+    "libminitun-client1 = ${minitun_rpm_version}-${minitun_rpm_release}"
 )
 
 include(CPack)

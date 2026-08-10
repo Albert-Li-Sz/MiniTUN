@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstdint>
+#include <mutex>
 #include <new>
 #include <string_view>
 #include <utility>
@@ -23,6 +24,9 @@ namespace {
 
 inline constexpr std::size_t kMaxTlsPathBytes = 4'096U;
 inline constexpr std::size_t kMaxServerNameBytes = 253U;
+inline constexpr std::size_t kMaxPipelinedFrames = 32U;
+inline constexpr std::array<unsigned char, 10U> kSessionIdContext{
+    'M', 'i', 'n', 'i', 'T', 'U', 'N', '-', 'v', '2'};
 
 [[nodiscard]] common::Result<void> validate_tls_path(const std::string_view path,
                                                      const std::string_view description) {
@@ -86,6 +90,50 @@ inline constexpr std::size_t kMaxServerNameBytes = 253U;
 
 } // namespace
 
+class TlsSessionCache::Impl final {
+  public:
+    ~Impl() noexcept {
+        std::scoped_lock lock{mutex_};
+        SSL_SESSION_free(session_);
+    }
+
+    [[nodiscard]] bool restore(TlsStream& stream) noexcept {
+        std::scoped_lock lock{mutex_};
+        return session_ != nullptr && SSL_set_session(stream.native_handle(), session_) == 1;
+    }
+
+    [[nodiscard]] bool capture(TlsStream& stream) noexcept {
+        SSL_SESSION* replacement = SSL_get1_session(stream.native_handle());
+        if (replacement == nullptr) {
+            return false;
+        }
+        if (SSL_SESSION_is_resumable(replacement) != 1) {
+            SSL_SESSION_free(replacement);
+            return false;
+        }
+        std::scoped_lock lock{mutex_};
+        SSL_SESSION* previous = std::exchange(session_, replacement);
+        SSL_SESSION_free(previous);
+        return true;
+    }
+
+  private:
+    std::mutex mutex_;
+    SSL_SESSION* session_{nullptr};
+};
+
+TlsSessionCache::TlsSessionCache() : implementation_(std::make_unique<Impl>()) {}
+
+TlsSessionCache::~TlsSessionCache() noexcept = default;
+
+bool TlsSessionCache::restore(TlsStream& stream) noexcept {
+    return implementation_->restore(stream);
+}
+
+bool TlsSessionCache::capture(TlsStream& stream) noexcept {
+    return implementation_->capture(stream);
+}
+
 common::Result<std::shared_ptr<asio::ssl::context>>
 make_server_tls_context(const ServerTlsContextOptions& options) {
     if (auto result = validate_tls_path(options.certificate_chain_path, "TLS certificate");
@@ -94,6 +142,12 @@ make_server_tls_context(const ServerTlsContextOptions& options) {
     }
     if (auto result = validate_tls_path(options.private_key_path, "TLS private key"); !result) {
         return common::Result<std::shared_ptr<asio::ssl::context>>::failure(result.error());
+    }
+    if (!options.client_ca_certificate_path.empty()) {
+        auto result = validate_tls_path(options.client_ca_certificate_path, "client TLS CA");
+        if (!result) {
+            return common::Result<std::shared_ptr<asio::ssl::context>>::failure(result.error());
+        }
     }
 
     try {
@@ -110,6 +164,25 @@ make_server_tls_context(const ServerTlsContextOptions& options) {
                 common::ErrorCode::tls_error,
                 "TLS certificate and private key do not match");
         }
+        if (!options.client_ca_certificate_path.empty()) {
+            context->load_verify_file(options.client_ca_certificate_path);
+            context->set_verify_mode(asio::ssl::verify_peer);
+            SSL_CTX_set_verify_depth(context->native_handle(), 8);
+        }
+        SSL_CTX_set_session_cache_mode(context->native_handle(), SSL_SESS_CACHE_SERVER);
+        SSL_CTX_set_timeout(context->native_handle(), 300L);
+        if (SSL_CTX_set_session_id_context(context->native_handle(), kSessionIdContext.data(),
+                                           static_cast<unsigned int>(kSessionIdContext.size())) !=
+            1) {
+            return common::Result<std::shared_ptr<asio::ssl::context>>::failure(
+                common::ErrorCode::tls_error, "failed to configure TLS session resumption");
+        }
+#if defined(TLS1_3_VERSION)
+        if (SSL_CTX_set_num_tickets(context->native_handle(), 2U) != 1) {
+            return common::Result<std::shared_ptr<asio::ssl::context>>::failure(
+                common::ErrorCode::tls_error, "failed to configure TLS session tickets");
+        }
+#endif
         return context;
     } catch (const std::exception&) {
         return common::Result<std::shared_ptr<asio::ssl::context>>::failure(
@@ -120,6 +193,16 @@ make_server_tls_context(const ServerTlsContextOptions& options) {
 
 common::Result<std::shared_ptr<asio::ssl::context>>
 make_client_tls_context(const ClientTlsContextOptions& options) {
+    if (!options.ca_certificate_path.empty() && !options.ca_certificate_pem.empty()) {
+        return common::Result<std::shared_ptr<asio::ssl::context>>::failure(
+            common::ErrorCode::invalid_argument,
+            "TLS CA path and inline certificate cannot both be configured");
+    }
+    if (options.client_certificate_pem.empty() != options.client_private_key_pem.empty()) {
+        return common::Result<std::shared_ptr<asio::ssl::context>>::failure(
+            common::ErrorCode::invalid_argument,
+            "TLS client certificate and private key must be configured together");
+    }
     if (!options.ca_certificate_path.empty()) {
         auto valid = validate_tls_path(options.ca_certificate_path, "TLS CA certificate");
         if (!valid) {
@@ -134,11 +217,29 @@ make_client_tls_context(const ClientTlsContextOptions& options) {
             return common::Result<std::shared_ptr<asio::ssl::context>>::failure(
                 configured.error());
         }
-        if (options.ca_certificate_path.empty()) {
+        if (!options.ca_certificate_pem.empty()) {
+            context->add_certificate_authority(
+                asio::buffer(options.ca_certificate_pem.data(), options.ca_certificate_pem.size()));
+        } else if (options.ca_certificate_path.empty()) {
             context->set_default_verify_paths();
         } else {
-            context->load_verify_file(options.ca_certificate_path);
+            context->load_verify_file(std::string{options.ca_certificate_path});
         }
+        if (!options.client_certificate_pem.empty()) {
+            context->use_certificate_chain(
+                asio::buffer(options.client_certificate_pem.data(),
+                             options.client_certificate_pem.size()));
+            context->use_private_key(
+                asio::buffer(options.client_private_key_pem.data(),
+                             options.client_private_key_pem.size()),
+                asio::ssl::context::pem);
+            if (SSL_CTX_check_private_key(context->native_handle()) != 1) {
+                return common::Result<std::shared_ptr<asio::ssl::context>>::failure(
+                    common::ErrorCode::tls_error,
+                    "TLS client certificate and private key do not match");
+            }
+        }
+        SSL_CTX_set_session_cache_mode(context->native_handle(), SSL_SESS_CACHE_CLIENT);
         return context;
     } catch (const std::exception&) {
         return common::Result<std::shared_ptr<asio::ssl::context>>::failure(
@@ -171,6 +272,10 @@ common::Result<void> configure_client_tls_stream(TlsStream& stream,
         return common::Result<void>::failure(common::ErrorCode::tls_error,
                                              "failed to configure TLS peer verification");
     }
+}
+
+bool tls_session_reused(TlsStream& stream) noexcept {
+    return SSL_session_reused(stream.native_handle()) == 1;
 }
 
 asio::awaitable<common::Result<Frame>> async_read_frame(TlsStream& stream,
@@ -237,6 +342,49 @@ asio::awaitable<common::Result<void>> async_write_frame(TlsStream& stream, Frame
         co_return common::Result<void>::failure(transport_error(error, "remote frame write"));
     }
     co_return common::Result<void>::success();
+}
+
+asio::awaitable<common::Result<void>> async_write_frames(TlsStream& stream,
+                                                         std::vector<Frame> frames,
+                                                         const std::size_t max_frame_size) {
+    if (frames.empty() || frames.size() > kMaxPipelinedFrames) {
+        co_return common::Result<void>::failure(
+            common::ErrorCode::invalid_argument,
+            "remote frame pipeline must contain between 1 and 32 frames");
+    }
+
+    try {
+        std::vector<std::uint8_t> batch;
+        for (const auto& frame : frames) {
+            auto encoded = encode_frame(frame, max_frame_size);
+            if (!encoded) {
+                co_return common::Result<void>::failure(encoded.error());
+            }
+            if (batch.size() > (kMaxFrameSize * kMaxPipelinedFrames) - encoded->size()) {
+                co_return common::Result<void>::failure(
+                    common::ErrorCode::frame_too_large,
+                    "remote frame pipeline exceeds the bounded window size");
+            }
+            batch.insert(batch.end(), encoded->begin(), encoded->end());
+        }
+
+        asio::error_code error;
+        const std::size_t written = co_await asio::async_write(
+            stream, asio::buffer(batch), asio::redirect_error(asio::use_awaitable, error));
+        if (error || written != batch.size()) {
+            co_return common::Result<void>::failure(
+                transport_error(error, "remote frame pipeline write"));
+        }
+        co_return common::Result<void>::success();
+    } catch (const std::bad_alloc&) {
+        co_return common::Result<void>::failure(
+            common::ErrorCode::resource_exhausted,
+            "insufficient memory while encoding a remote frame pipeline");
+    } catch (const std::length_error&) {
+        co_return common::Result<void>::failure(
+            common::ErrorCode::resource_exhausted,
+            "insufficient memory while encoding a remote frame pipeline");
+    }
 }
 
 void close_tls_stream(TlsStream& stream) noexcept {

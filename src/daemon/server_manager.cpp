@@ -35,11 +35,13 @@
 #include <openssl/ssl.h>
 
 #include <minitun/common/error.hpp>
+#include <minitun/common/failpoint.hpp>
 #include <minitun/common/logging.hpp>
 #include <minitun/common/secure_string.hpp>
 #include <minitun/common/time.hpp>
 #include <minitun/daemon/credential_keys.hpp>
 #include <minitun/daemon/reconnect_backoff.hpp>
+#include <minitun/daemon/tunnel_reconciler.hpp>
 #include <minitun/daemon/worker_pool.hpp>
 #include <minitun/protocol/auth.hpp>
 #include <minitun/protocol/messages.hpp>
@@ -64,6 +66,7 @@ struct RuntimeMetrics final {
     std::atomic<std::uint64_t> protocol_errors{0U};
     std::atomic<std::uint64_t> bytes_in{0U};
     std::atomic<std::uint64_t> bytes_out{0U};
+    std::atomic<std::uint64_t> tls_resumptions{0U};
 };
 
 [[nodiscard]] common::Result<void> validate_options(const ServerManagerOptions& options) {
@@ -111,12 +114,17 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                       storage::ServerRecord server, std::shared_ptr<asio::ssl::context> tls_context,
                       std::shared_ptr<WorkerBudget> worker_budget,
                       std::shared_ptr<WorkerBudget> connection_budget,
+                      std::shared_ptr<TunnelReconciler> tunnel_reconciler,
                       std::shared_ptr<RuntimeMetrics> metrics,
                       std::shared_ptr<asio::thread_pool> db_pool, ServerManagerOptions options)
             : repository_(repository), credentials_(credentials), client_id_(std::move(client_id)),
               server_(std::move(server)), remote_endpoint_text_(server_.endpoint.to_string()),
-              tls_context_(std::move(tls_context)), worker_budget_(std::move(worker_budget)),
-              connection_budget_(std::move(connection_budget)), metrics_(std::move(metrics)),
+              config_revision_(server_.config_revision),
+              tls_context_(std::move(tls_context)),
+              tls_session_cache_(std::make_shared<protocol::TlsSessionCache>()),
+              worker_budget_(std::move(worker_budget)),
+              connection_budget_(std::move(connection_budget)),
+              tunnel_reconciler_(std::move(tunnel_reconciler)), metrics_(std::move(metrics)),
               db_pool_(std::move(db_pool)), options_(std::move(options)),
               strand_(asio::make_strand(io_context)), resolver_(strand_), reconnect_timer_(strand_),
               idle_timer_(strand_), operation_timer_(strand_) {}
@@ -174,6 +182,12 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
         }
 
         void supersede() {
+            auto invalidated = tunnel_reconciler_->invalidate(server_.id);
+            if (!invalidated) {
+                metrics_->persistence_errors.fetch_add(1U, std::memory_order_relaxed);
+                common::log_error("failed to invalidate superseded tunnel generation",
+                                  log_context(invalidated.error().code()));
+            }
             {
                 const std::scoped_lock lock{persistence_mutex_};
                 persistence_allowed_ = false;
@@ -183,7 +197,15 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
 
         [[nodiscard]] bool matches(const storage::ServerRecord& server) const {
             return server_.endpoint == server.endpoint &&
-                   server_.credential_ref == server.credential_ref;
+                   server_.credential_ref == server.credential_ref &&
+                   server_.tls_server_name == server.tls_server_name &&
+                   server_.ca_credential_ref == server.ca_credential_ref &&
+                   server_.client_certificate_ref == server.client_certificate_ref &&
+                   server_.client_private_key_ref == server.client_private_key_ref;
+        }
+
+        void refresh_config_revision(const std::uint64_t revision) noexcept {
+            config_revision_.store(revision, std::memory_order_release);
         }
 
         [[nodiscard]] TerminalState terminal_state() const noexcept {
@@ -242,6 +264,16 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
 
         [[nodiscard]] asio::awaitable<void> run() {
             while (!stopping_) {
+                auto generation = co_await run_db(
+                    [reconciler = tunnel_reconciler_, server_id = server_.id] {
+                        return reconciler->begin_generation(server_id);
+                    });
+                if (!generation) {
+                    terminal_state_.store(TerminalState::stopped);
+                    metrics_->persistence_errors.fetch_add(1U, std::memory_order_relaxed);
+                    co_return;
+                }
+                attempt_generation_ = *generation;
                 terminal_state_.store(TerminalState::running);
                 const AttemptResult result = co_await run_attempt();
                 stop_worker_pool();
@@ -252,10 +284,12 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                               : PersistenceErrorView{result.error.code(),
                                                      result.error.message()}));
                 if (stopping_ || result.kind == AttemptKind::stopped) {
+                    attempt_generation_ = 0U;
                     terminal_state_.store(TerminalState::stopped);
                     co_return;
                 }
                 if (result.kind == AttemptKind::authentication_failed) {
+                    attempt_generation_ = 0U;
                     terminal_state_.store(TerminalState::authentication_failed);
                     static_cast<void>(co_await persist_state(
                         storage::ServerActualState::not_authenticated,
@@ -264,6 +298,7 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                 }
 
                 const auto delay = backoff_.next_delay();
+                attempt_generation_ = 0U;
                 metrics_->reconnects.fetch_add(1U, std::memory_order_relaxed);
                 static_cast<void>(co_await persist_state(
                     storage::ServerActualState::backoff,
@@ -283,6 +318,7 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
 
         [[nodiscard]] asio::awaitable<AttemptResult> run_attempt() {
             const auto attempt_started = std::chrono::steady_clock::now();
+            pending_reconcile_responses_.clear();
             protocol::StateMachine state{protocol::PeerRole::client,
                                          protocol::ConnectionKind::control};
             stream_ = std::make_unique<protocol::TlsStream>(strand_, *tls_context_);
@@ -303,12 +339,15 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                 co_return disconnected(common::ErrorCode::connection_failed,
                                        "remote TCP connection failed");
             }
+            protocol::configure_tcp_transport(stream_->lowest_layer());
 
             auto configured = protocol::configure_client_tls_stream(
-                *stream_, server_.endpoint.host(), options_.insecure_skip_verify);
+                *stream_, server_.tls_server_name.value_or(server_.endpoint.host()),
+                options_.insecure_skip_verify);
             if (!configured) {
                 co_return disconnected(configured.error().code(), configured.error().message());
             }
+            static_cast<void>(tls_session_cache_->restore(*stream_));
             static_cast<void>(co_await persist_state(storage::ServerActualState::tls_handshake, {},
                                                      backoff_.attempt()));
             arm_operation_timeout(options_.handshake_timeout);
@@ -318,6 +357,9 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
             if (error) {
                 co_return disconnected(common::ErrorCode::tls_error,
                                        "TLS peer verification or handshake failed");
+            }
+            if (protocol::tls_session_reused(*stream_)) {
+                metrics_->tls_resumptions.fetch_add(1U, std::memory_order_relaxed);
             }
 
             static_cast<void>(co_await persist_state(storage::ServerActualState::authenticating, {},
@@ -329,7 +371,10 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                                                 "server credential is unavailable");
             }
 
-            auto hello_payload = protocol::encode_hello({client_id_.str()});
+            const protocol::CapabilitySet offered_capabilities =
+                protocol::kSupportedCapabilities;
+            auto hello_payload = protocol::encode_hello(
+                {client_id_.str(), offered_capabilities});
             if (!hello_payload) {
                 co_return disconnected(common::ErrorCode::internal_error, "failed to encode HELLO");
             }
@@ -349,15 +394,22 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
             if (!ack) {
                 co_return disconnected(ack.error().code(), ack.error().message());
             }
+            if ((ack->selected_capabilities & offered_capabilities) !=
+                ack->selected_capabilities) {
+                co_return disconnected(common::ErrorCode::protocol_error,
+                                       "remote server selected an unoffered capability");
+            }
 
             const std::int64_t timestamp = common::unix_seconds_now();
-            auto digest = protocol::compute_authentication_data(token->view(), client_id_.str(),
-                                                                timestamp, ack->nonce);
+            auto digest = protocol::compute_authentication_data(
+                token->view(), client_id_.str(), ack->server_id, timestamp, ack->nonce,
+                ack->selected_capabilities);
             if (!digest) {
                 co_return disconnected(digest.error().code(), digest.error().message());
             }
-            auto auth_payload =
-                protocol::encode_auth({client_id_.str(), timestamp, ack->nonce, *digest});
+            auto auth_payload = protocol::encode_auth(
+                {client_id_.str(), timestamp, ack->nonce, *digest,
+                 ack->selected_capabilities});
             if (!auth_payload) {
                 co_return disconnected(common::ErrorCode::internal_error, "failed to encode AUTH");
             }
@@ -386,9 +438,12 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
             if (!auth_ok) {
                 co_return disconnected(auth_ok.error().code(), auth_ok.error().message());
             }
+            static_cast<void>(tls_session_cache_->capture(*stream_));
 
             session_generation_ = auth_ok->session_generation;
             remote_server_id_ = ack->server_id;
+            auto session_psk =
+                std::make_shared<const common::SecureString>(std::move(*token));
             const std::uint16_t max_idle_workers = static_cast<std::uint16_t>(std::min<std::size_t>(
                 auth_ok->max_idle_workers, options_.max_idle_workers_per_server));
             const std::uint16_t min_idle_workers =
@@ -397,8 +452,12 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                 strand_, tls_context_, worker_budget_, connection_budget_,
                 {
                     .endpoint = server_.endpoint,
+                    .tls_server_name = server_.tls_server_name.value_or(server_.endpoint.host()),
                     .server_id = server_.id.str(),
+                    .remote_server_id = remote_server_id_,
                     .client_id = client_id_.str(),
+                    .psk = std::move(session_psk),
+                    .tls_session_cache = tls_session_cache_,
                     .session_generation = session_generation_,
                     .min_idle_workers = min_idle_workers,
                     .max_idle_workers = max_idle_workers,
@@ -413,6 +472,10 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                     .quota_rejection_handler =
                         [metrics = metrics_] {
                             metrics->quota_rejections.fetch_add(1U, std::memory_order_relaxed);
+                        },
+                    .tls_resumption_handler =
+                        [metrics = metrics_] {
+                            metrics->tls_resumptions.fetch_add(1U, std::memory_order_relaxed);
                         },
                     .relay_stats_handler =
                         [metrics = metrics_](const std::uint64_t bytes_in,
@@ -550,7 +613,8 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
             if (reconcile_requested_) {
                 co_return IdleWaitResult::changed;
             }
-            if (SSL_pending(stream_->native_handle()) > 0) {
+            if (SSL_pending(stream_->native_handle()) > 0 ||
+                SSL_has_pending(stream_->native_handle()) == 1) {
                 co_return IdleWaitResult::input;
             }
 
@@ -619,12 +683,12 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                 co_return common::Result<void>::failure(tunnels.error());
             }
 
-            std::unordered_set<std::string> retained;
+            std::unordered_map<std::string, std::uint64_t> retained;
             std::unordered_map<std::string, common::Endpoint> desired_local_endpoints;
             for (const auto& tunnel : *tunnels) {
                 if (tunnel.desired_state == storage::TunnelDesiredState::active) {
                     const std::string tunnel_id = tunnel.id.str();
-                    retained.insert(tunnel_id);
+                    retained.emplace(tunnel_id, tunnel.config_revision);
                     desired_local_endpoints.emplace(tunnel_id, tunnel.local_endpoint);
                 }
             }
@@ -633,32 +697,41 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
             // lets a remove followed immediately by an add reuse the same public port
             // during a single reconciliation cycle. Requests are sent in bounded windows
             // so a large change set does not pay one network round trip per tunnel.
-            std::vector<std::string> stale_tunnels;
+            struct StaleTunnel final {
+                std::string id;
+                std::uint64_t revision{0U};
+            };
+            std::vector<StaleTunnel> stale_tunnels;
             stale_tunnels.reserve(registered_tunnels_.size());
-            for (const auto& tunnel_id : registered_tunnels_) {
-                if (!retained.contains(tunnel_id)) {
-                    stale_tunnels.push_back(tunnel_id);
+            for (const auto& [tunnel_id, registered] : registered_tunnels_) {
+                const auto desired = retained.find(tunnel_id);
+                if (desired == retained.end() ||
+                    desired->second != registered.config_revision) {
+                    stale_tunnels.push_back({tunnel_id, registered.config_revision});
                 }
             }
             for (std::size_t offset = 0U; offset < stale_tunnels.size();
                  offset += kTunnelSyncWindow) {
                 const auto end = std::min(offset + kTunnelSyncWindow, stale_tunnels.size());
                 std::vector<std::pair<std::uint64_t, std::string>> requests;
+                std::vector<protocol::Frame> frames;
                 requests.reserve(end - offset);
+                frames.reserve(end - offset);
                 for (std::size_t index = offset; index < end; ++index) {
-                    const std::string& tunnel_id = stale_tunnels[index];
-                    auto payload = protocol::encode_unregister_tunnel({tunnel_id});
+                    const auto& stale = stale_tunnels[index];
+                    auto payload = protocol::encode_unregister_tunnel(
+                        {stale.id, stale.revision});
                     if (!payload) {
                         co_return common::Result<void>::failure(payload.error());
                     }
                     const std::uint64_t request_id = next_request_id();
-                    const protocol::Frame removal_frame{protocol::MessageType::unregister_tunnel,
-                                                        0U, request_id, std::move(*payload)};
-                    auto written = co_await write_frame(state, removal_frame, timeout);
-                    if (!written) {
-                        co_return written;
-                    }
-                    requests.emplace_back(request_id, tunnel_id);
+                    frames.push_back({protocol::MessageType::unregister_tunnel, 0U, request_id,
+                                      std::move(*payload)});
+                    requests.emplace_back(request_id, stale.id);
+                }
+                auto written = co_await write_frames(state, std::move(frames), timeout);
+                if (!written) {
+                    co_return written;
                 }
                 for (const auto& [request_id, tunnel_id] : requests) {
                     auto response = co_await read_reconcile_response(state, request_id, timeout);
@@ -670,7 +743,10 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                                      : response.error());
                     }
                     auto removed = protocol::decode_unregister_tunnel_ok(response->payload);
-                    if (!removed || removed->tunnel_id != tunnel_id) {
+                    const auto registered = registered_tunnels_.find(tunnel_id);
+                    if (!removed || removed->tunnel_id != tunnel_id ||
+                        registered == registered_tunnels_.end() ||
+                        removed->desired_revision != registered->second.config_revision) {
                         co_return common::Result<void>::failure(
                             common::ErrorCode::protocol_error,
                             "remote tunnel removal response is invalid");
@@ -690,7 +766,8 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                                 }
                             } else {
                                 auto updated = co_await persist_tunnel_state(
-                                    *parsed, storage::TunnelActualState::disabled, {},
+                                    *parsed, current->config_revision,
+                                    storage::TunnelActualState::disabled, {},
                                     true);
                                 if (!updated) {
                                     co_return updated;
@@ -723,7 +800,8 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                     local_endpoints_.insert_or_assign(tunnel_id, tunnel.local_endpoint);
                     if (tunnel.actual_state != storage::TunnelActualState::active) {
                         auto updated = co_await persist_tunnel_state(
-                            tunnel.id, storage::TunnelActualState::active, {}, true);
+                            tunnel.id, tunnel.config_revision,
+                            storage::TunnelActualState::active, {}, true);
                         if (!updated) {
                             co_return updated;
                         }
@@ -736,49 +814,60 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                  offset += kTunnelSyncWindow) {
                 const auto end = std::min(offset + kTunnelSyncWindow, pending_registrations.size());
                 std::vector<std::pair<std::uint64_t, storage::TunnelRecord>> requests;
+                std::vector<protocol::Frame> frames;
                 requests.reserve(end - offset);
+                frames.reserve(end - offset);
                 for (std::size_t index = offset; index < end; ++index) {
                     const auto& tunnel = pending_registrations[index];
                     const std::string tunnel_id = tunnel.id.str();
                     auto updating = co_await persist_tunnel_state(
-                        tunnel.id, storage::TunnelActualState::registering, {});
+                        tunnel.id, tunnel.config_revision,
+                        storage::TunnelActualState::registering, {});
                     if (!updating) {
                         co_return updating;
                     }
+                    common::trigger_failpoint("daemon.after_registering_state_commit");
                     auto payload = protocol::encode_register_tunnel({
                         .tunnel_id = tunnel_id,
                         .bind_host = tunnel.remote_endpoint.host(),
                         .bind_port = tunnel.remote_endpoint.port(),
+                        .desired_revision = tunnel.config_revision,
                     });
                     if (!payload) {
                         co_return common::Result<void>::failure(payload.error());
                     }
                     const std::uint64_t request_id = next_request_id();
-                    const protocol::Frame registration_frame{protocol::MessageType::register_tunnel,
-                                                             0U, request_id, std::move(*payload)};
-                    auto written = co_await write_frame(state, registration_frame, timeout);
-                    if (!written) {
-                        co_return written;
-                    }
+                    frames.push_back({protocol::MessageType::register_tunnel, 0U, request_id,
+                                      std::move(*payload)});
                     requests.emplace_back(request_id, tunnel);
                 }
+                auto written = co_await write_frames(state, std::move(frames), timeout);
+                if (!written) {
+                    co_return written;
+                }
+                common::trigger_failpoint("daemon.after_register_request_write");
                 for (const auto& [request_id, tunnel] : requests) {
                     const std::string tunnel_id = tunnel.id.str();
                     auto response = co_await read_reconcile_response(state, request_id, timeout);
                     if (!response) {
                         co_return common::Result<void>::failure(response.error());
                     }
+                    common::trigger_failpoint("daemon.after_register_response_receive");
                     if (response->type == protocol::MessageType::register_tunnel_ok) {
                         auto accepted = protocol::decode_register_tunnel_ok(response->payload);
-                        if (!accepted || accepted->tunnel_id != tunnel_id) {
+                        if (!accepted || accepted->tunnel_id != tunnel_id ||
+                            accepted->desired_revision != tunnel.config_revision) {
                             co_return common::Result<void>::failure(
                                 common::ErrorCode::protocol_error,
                                 "remote tunnel registration response is invalid");
                         }
-                        registered_tunnels_.insert(tunnel_id);
+                        registered_tunnels_.insert_or_assign(
+                            tunnel_id,
+                            RegisteredTunnel{tunnel.config_revision, tunnel.remote_endpoint});
                         local_endpoints_.insert_or_assign(tunnel_id, tunnel.local_endpoint);
                         auto updated = co_await persist_tunnel_state(
-                            tunnel.id, storage::TunnelActualState::active, {}, true);
+                            tunnel.id, tunnel.config_revision,
+                            storage::TunnelActualState::active, {}, true);
                         if (!updated) {
                             co_return updated;
                         }
@@ -786,13 +875,15 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                     }
                     if (response->type == protocol::MessageType::register_tunnel_error) {
                         auto rejected = protocol::decode_register_tunnel_error(response->payload);
-                        if (!rejected || rejected->tunnel_id != tunnel_id) {
+                        if (!rejected || rejected->tunnel_id != tunnel_id ||
+                            rejected->desired_revision != tunnel.config_revision) {
                             co_return common::Result<void>::failure(
                                 common::ErrorCode::protocol_error,
                                 "remote tunnel registration error is invalid");
                         }
                         auto updated = co_await persist_tunnel_state(
-                            tunnel.id, storage::TunnelActualState::failed,
+                            tunnel.id, tunnel.config_revision,
+                            storage::TunnelActualState::failed,
                             PersistenceErrorView{rejected->code,
                                                  "remote tunnel registration was rejected"},
                             true);
@@ -820,6 +911,12 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
         [[nodiscard]] asio::awaitable<common::Result<protocol::Frame>>
         read_reconcile_response(protocol::StateMachine& state, const std::uint64_t request_id,
                                 const std::chrono::milliseconds timeout) {
+            const auto buffered = pending_reconcile_responses_.find(request_id);
+            if (buffered != pending_reconcile_responses_.end()) {
+                protocol::Frame frame = std::move(buffered->second);
+                pending_reconcile_responses_.erase(buffered);
+                co_return frame;
+            }
             for (;;) {
                 auto frame = co_await read_frame(state, timeout);
                 if (!frame) {
@@ -854,9 +951,19 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                     continue;
                 }
                 if (frame->request_id != request_id) {
-                    co_return common::Result<protocol::Frame>::failure(
-                        common::ErrorCode::protocol_error,
-                        "remote control response request ID does not match");
+                    const bool correlated_response =
+                        frame->type == protocol::MessageType::register_tunnel_ok ||
+                        frame->type == protocol::MessageType::register_tunnel_error ||
+                        frame->type == protocol::MessageType::unregister_tunnel_ok;
+                    if (!correlated_response || frame->request_id == 0U ||
+                        pending_reconcile_responses_.size() >= kTunnelSyncWindow ||
+                        pending_reconcile_responses_.contains(frame->request_id)) {
+                        co_return common::Result<protocol::Frame>::failure(
+                            common::ErrorCode::protocol_error,
+                            "remote control response correlation is invalid");
+                    }
+                    pending_reconcile_responses_.emplace(frame->request_id, std::move(*frame));
+                    continue;
                 }
                 co_return frame;
             }
@@ -895,6 +1002,27 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
             arm_operation_timeout(timeout);
             write_in_progress_ = true;
             auto written = co_await protocol::async_write_frame(*stream_, frame);
+            write_in_progress_ = false;
+            cancel_operation_timeout();
+            co_return written;
+        }
+
+        [[nodiscard]] asio::awaitable<common::Result<void>>
+        write_frames(protocol::StateMachine& state, std::vector<protocol::Frame> frames,
+                     const std::chrono::milliseconds timeout) {
+            if (stream_ == nullptr) {
+                co_return common::Result<void>::failure(common::ErrorCode::connection_failed,
+                                                        "remote stream is unavailable");
+            }
+            for (const auto& frame : frames) {
+                auto transition = state.on_send(frame.type);
+                if (!transition) {
+                    co_return transition;
+                }
+            }
+            arm_operation_timeout(timeout);
+            write_in_progress_ = true;
+            auto written = co_await protocol::async_write_frames(*stream_, std::move(frames));
             write_in_progress_ = false;
             cancel_operation_timeout();
             co_return written;
@@ -1029,48 +1157,27 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
         }
 
         [[nodiscard]] asio::awaitable<common::Result<void>>
-        persist_tunnel_state(const common::Id& tunnel_id, const storage::TunnelActualState state,
+        persist_tunnel_state(const common::Id& tunnel_id,
+                             const std::uint64_t expected_revision,
+                             const storage::TunnelActualState state,
                              const PersistenceErrorView error = {},
                              const bool synchronized = false) {
-            return run_db([this, tunnel_id, state, error_code = error.code,
-                           error_message = std::string{error.message}, synchronized] {
+            return run_db([this, tunnel_id, expected_revision, state,
+                           error_code = error.code,
+                           error_message = std::string{error.message}, synchronized,
+                           attempt_generation = attempt_generation_] {
                 try {
-                    const std::scoped_lock lock{persistence_mutex_};
-                    if (!persistence_allowed_) {
-                        return common::Result<void>::success();
-                    }
-                    auto current = repository_.tunnels().get_by_id(tunnel_id);
-                    if (!current) {
-                        metrics_->persistence_errors.fetch_add(1U, std::memory_order_relaxed);
-                        common::log_error("failed to load tunnel state for persistence",
-                                          log_context(current.error().code()));
-                        return common::Result<void>::failure(current.error());
-                    }
-                    if (current->server_id != server_.id) {
-                        return common::Result<void>::failure(common::ErrorCode::internal_error,
-                                                             "tunnel belongs to another server");
-                    }
-                    current->actual_state = state;
+                    std::optional<common::Error> transition_error;
                     if (error_code.has_value()) {
-                        current->last_error_code = *error_code;
-                        current->last_error_message = error_message;
-                    } else {
-                        current->last_error_code.reset();
-                        current->last_error_message.reset();
+                        transition_error.emplace(*error_code, error_message);
                     }
-                    const std::int64_t now =
-                        std::max(current->updated_at_unix_ms, common::unix_milliseconds_now());
-                    current->updated_at_unix_ms = now;
-                    if (synchronized) {
-                        current->last_synced_at_unix_ms = now;
-                    }
-                    auto updated = repository_.tunnels().update(*current);
+                    auto updated = tunnel_reconciler_->transition(
+                        server_.id, tunnel_id, attempt_generation, expected_revision,
+                        state, transition_error, synchronized);
                     if (!updated) {
                         metrics_->persistence_errors.fetch_add(1U, std::memory_order_relaxed);
                         common::log_error("failed to persist tunnel state",
                                           log_context(updated.error().code()));
-                    }
-                    if (!updated) {
                         return common::Result<void>::failure(updated.error());
                     }
                     return common::Result<void>::success();
@@ -1089,18 +1196,15 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
             registered_tunnels_.clear();
             local_endpoints_.clear();
             return run_db([this, error_code = error.code,
-                           error_message = std::string{error.message}] {
+                           error_message = std::string{error.message},
+                           attempt_generation = attempt_generation_] {
                 try {
-                    const std::scoped_lock lock{persistence_mutex_};
-                    if (!persistence_allowed_) {
-                        return common::Result<void>::success();
-                    }
                     std::optional<common::Error> persistence_error;
                     if (error_code.has_value()) {
                         persistence_error.emplace(*error_code, error_message);
                     }
-                    auto updated = repository_.tunnels().mark_active_pending_by_server(
-                        server_.id, persistence_error, common::unix_milliseconds_now());
+                    auto updated = tunnel_reconciler_->end_generation(
+                        server_.id, attempt_generation, persistence_error);
                     if (!updated) {
                         metrics_->persistence_errors.fetch_add(1U, std::memory_order_relaxed);
                         common::log_error(
@@ -1151,7 +1255,9 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                                               log_context(current.error().code()));
                             return common::Result<void>::failure(current.error());
                         }
-                        if (current->desired_state != storage::ServerDesiredState::enabled) {
+                        if (current->desired_state != storage::ServerDesiredState::enabled ||
+                            current->config_revision !=
+                                config_revision_.load(std::memory_order_acquire)) {
                             static_cast<void>(transaction->rollback());
                             return common::Result<void>::success();
                         }
@@ -1224,9 +1330,12 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
         common::Id client_id_;
         storage::ServerRecord server_;
         std::string remote_endpoint_text_;
+        std::atomic<std::uint64_t> config_revision_{0U};
         std::shared_ptr<asio::ssl::context> tls_context_;
+        std::shared_ptr<protocol::TlsSessionCache> tls_session_cache_;
         std::shared_ptr<WorkerBudget> worker_budget_;
         std::shared_ptr<WorkerBudget> connection_budget_;
+        std::shared_ptr<TunnelReconciler> tunnel_reconciler_;
         std::shared_ptr<RuntimeMetrics> metrics_;
         std::shared_ptr<asio::thread_pool> db_pool_;
         ServerManagerOptions options_;
@@ -1240,8 +1349,14 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
         ReconnectBackoff backoff_;
         std::string remote_server_id_;
         std::uint64_t session_generation_{0U};
+        std::uint64_t attempt_generation_{0U};
         std::uint64_t next_request_id_{3U};
-        std::unordered_set<std::string> registered_tunnels_;
+        struct RegisteredTunnel final {
+            std::uint64_t config_revision{0U};
+            common::Endpoint remote_endpoint;
+        };
+        std::unordered_map<std::string, RegisteredTunnel> registered_tunnels_;
+        std::unordered_map<std::uint64_t, protocol::Frame> pending_reconcile_responses_;
         std::unordered_map<std::string, common::Endpoint> local_endpoints_;
         std::atomic<TerminalState> terminal_state_{TerminalState::running};
         std::mutex persistence_mutex_;
@@ -1266,8 +1381,12 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
             return common::Result<std::shared_ptr<Impl>>::failure(
                 common::ErrorCode::invalid_argument, "server manager requires a client ID");
         }
-        auto validated_tls_context =
-            protocol::make_client_tls_context({.ca_certificate_path = options.ca_certificate_path});
+        auto validated_tls_context = protocol::make_client_tls_context({
+            .ca_certificate_path = options.ca_certificate_path,
+            .ca_certificate_pem = {},
+            .client_certificate_pem = {},
+            .client_private_key_pem = {},
+        });
         if (!validated_tls_context) {
             return common::Result<std::shared_ptr<Impl>>::failure(validated_tls_context.error());
         }
@@ -1354,6 +1473,7 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                                       {"pending", 0U},
                                       {"max", connection_budget_->maximum()}}},
             {"reconnects", metrics_->reconnects.load(std::memory_order_relaxed)},
+            {"tls_resumptions", metrics_->tls_resumptions.load(std::memory_order_relaxed)},
             {"quota_rejections", metrics_->quota_rejections.load(std::memory_order_relaxed)},
             {"errors", persistence_errors + protocol_errors},
             {"persistence_errors", persistence_errors},
@@ -1371,9 +1491,49 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
           client_id_(std::move(client_id)), options_(std::move(options)),
           worker_budget_(std::make_shared<WorkerBudget>(options_.max_total_idle_workers)),
           connection_budget_(std::make_shared<WorkerBudget>(options_.max_total_connections)),
+          tunnel_reconciler_(std::make_shared<TunnelReconciler>(repository_)),
           db_pool_(std::make_shared<asio::thread_pool>(1U)),
           metrics_(std::make_shared<RuntimeMetrics>()), strand_(asio::make_strand(io_context)),
           reconcile_timer_(strand_) {}
+
+    [[nodiscard]] common::Result<std::shared_ptr<asio::ssl::context>>
+    make_tls_context(const storage::ServerRecord& server) {
+        common::SecureString ca_certificate;
+        common::SecureString client_certificate;
+        common::SecureString client_private_key;
+        if (server.ca_credential_ref.has_value()) {
+            auto loaded = credentials_.get(*server.ca_credential_ref);
+            if (!loaded) {
+                return common::Result<std::shared_ptr<asio::ssl::context>>::failure(
+                    common::ErrorCode::tls_error, "configured server CA is unavailable");
+            }
+            ca_certificate = std::move(*loaded);
+        }
+        if (server.client_certificate_ref.has_value()) {
+            auto loaded = credentials_.get(*server.client_certificate_ref);
+            if (!loaded) {
+                return common::Result<std::shared_ptr<asio::ssl::context>>::failure(
+                    common::ErrorCode::tls_error, "configured client certificate is unavailable");
+            }
+            client_certificate = std::move(*loaded);
+        }
+        if (server.client_private_key_ref.has_value()) {
+            auto loaded = credentials_.get(*server.client_private_key_ref);
+            if (!loaded) {
+                return common::Result<std::shared_ptr<asio::ssl::context>>::failure(
+                    common::ErrorCode::tls_error, "configured client private key is unavailable");
+            }
+            client_private_key = std::move(*loaded);
+        }
+        return protocol::make_client_tls_context({
+            .ca_certificate_path =
+                ca_certificate.empty() ? std::string_view{options_.ca_certificate_path}
+                                       : std::string_view{},
+            .ca_certificate_pem = ca_certificate.view(),
+            .client_certificate_pem = client_certificate.view(),
+            .client_private_key_pem = client_private_key.view(),
+        });
+    }
 
     void purge_removed_tunnels(const storage::ServerRecord& server) {
         auto tunnels = repository_.tunnels().list_by_server(server.id);
@@ -1400,11 +1560,7 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
     }
 
     [[nodiscard]] bool purge_removed_server(const storage::ServerRecord& server) {
-        auto credentials_removed =
-            cleanup_server_credentials(credentials_, server.id,
-                                       server.credential_ref.has_value()
-                                           ? std::optional<std::string_view>{*server.credential_ref}
-                                           : std::nullopt);
+        auto credentials_removed = cleanup_all_server_credentials(credentials_, server);
         if (!credentials_removed) {
             common::log_error("failed to purge credentials for removed server",
                               {.component = "daemon.server-manager",
@@ -1469,6 +1625,9 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                 existing->second->terminal_state() ==
                     ServerSession::TerminalState::authentication_failed &&
                 record.actual_state == storage::ServerActualState::disconnected;
+            if (existing != sessions_.end() && !configuration_changed) {
+                existing->second->refresh_config_revision(record.config_revision);
+            }
             if (existing == sessions_.end() || configuration_changed || restart_authentication) {
                 if (existing != sessions_.end()) {
                     existing->second->supersede();
@@ -1476,8 +1635,7 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                 }
                 if (configuration_changed ||
                     record.actual_state != storage::ServerActualState::not_authenticated) {
-                    auto tls_context = protocol::make_client_tls_context(
-                        {.ca_certificate_path = options_.ca_certificate_path});
+                    auto tls_context = make_tls_context(record);
                     if (!tls_context) {
                         common::log_error(
                             "failed to create isolated TLS context for server session",
@@ -1489,7 +1647,8 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                     }
                     auto session = std::make_shared<ServerSession>(
                         io_context_, repository_, credentials_, client_id_, record,
-                        std::move(*tls_context), worker_budget_, connection_budget_, metrics_,
+                        std::move(*tls_context), worker_budget_, connection_budget_,
+                        tunnel_reconciler_, metrics_,
                         db_pool_, options_);
                     sessions_.emplace(id, session);
                     session->start();
@@ -1531,6 +1690,7 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
     ServerManagerOptions options_;
     std::shared_ptr<WorkerBudget> worker_budget_;
     std::shared_ptr<WorkerBudget> connection_budget_;
+    std::shared_ptr<TunnelReconciler> tunnel_reconciler_;
     std::shared_ptr<asio::thread_pool> db_pool_;
     std::shared_ptr<RuntimeMetrics> metrics_;
     asio::strand<asio::io_context::executor_type> strand_;

@@ -24,10 +24,12 @@ jobs:
     outputs:
       package_version: ${{ steps.version.outputs.package_version }}
       prerelease: ${{ steps.version.outputs.prerelease }}
+      release_kind: ${{ steps.version.outputs.release_kind }}
+      rc_number: ${{ steps.version.outputs.rc_number }}
 
     steps:
       - name: Check out tagged source
-        uses: actions/checkout@v7
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -40,6 +42,11 @@ jobs:
             exit 1
           fi
 
+          if [[ $(git cat-file -t "refs/tags/${tag}") != tag ]]; then
+            echo "release tags must be annotated tags: ${tag}" >&2
+            exit 1
+          fi
+
           package_version=${tag#v}
           base_version=${package_version%%-rc.*}
           project_version=$(awk '$1 == "VERSION" { print $2; exit }' CMakeLists.txt)
@@ -49,19 +56,200 @@ jobs:
           fi
 
           prerelease=false
+          release_kind=ga
+          rc_number=0
           if [[ "${package_version}" == *-rc.* ]]; then
             prerelease=true
+            release_kind=rc
+            rc_number=${package_version##*.}
+            if ((rc_number < 1)); then
+              echo "release candidate number must be positive" >&2
+              exit 1
+            fi
           fi
 
           echo "package_version=${package_version}" >>"${GITHUB_OUTPUT}"
           echo "prerelease=${prerelease}" >>"${GITHUB_OUTPUT}"
+          echo "release_kind=${release_kind}" >>"${GITHUB_OUTPUT}"
+          echo "rc_number=${rc_number}" >>"${GITHUB_OUTPUT}"
+
+  release-gates:
+    name: Verify frozen release gates
+    needs: validate-tag
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      attestations: read
+      contents: read
+      issues: read
+    env:
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_KIND: ${{ needs.validate-tag.outputs.release_kind }}
+      RC_NUMBER: ${{ needs.validate-tag.outputs.rc_number }}
+
+    steps:
+      - name: Check out tagged source and all release tags
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Validate RC sequence and frozen GA commit
+        id: freeze
+        run: |
+          set -euo pipefail
+          tag=${GITHUB_REF_NAME}
+          base_tag=${tag%%-rc.*}
+          not_before=
+
+          if [[ "${RELEASE_KIND}" == rc ]]; then
+            for sequence in $(seq 1 $((RC_NUMBER - 1))); do
+              previous="${base_tag}-rc.${sequence}"
+              git rev-parse --verify --quiet "refs/tags/${previous}" >/dev/null || {
+                echo "missing required predecessor ${previous}" >&2
+                exit 1
+              }
+              git merge-base --is-ancestor "${previous}^{}" "${GITHUB_SHA}" || {
+                echo "${previous} is not an ancestor of ${tag}" >&2
+                exit 1
+              }
+            done
+          else
+            latest_rc=$(git tag --list "${base_tag}-rc.*" --sort=version:refname | tail -n 1)
+            [[ -n "${latest_rc}" ]] || {
+              echo "GA requires at least rc.1 and rc.2" >&2
+              exit 1
+            }
+            latest_number=${latest_rc##*.}
+            ((latest_number >= 2)) || {
+              echo "GA requires at least rc.2; latest is ${latest_rc}" >&2
+              exit 1
+            }
+            for sequence in $(seq 1 "${latest_number}"); do
+              candidate="${base_tag}-rc.${sequence}"
+              git rev-parse --verify --quiet "refs/tags/${candidate}" >/dev/null || {
+                echo "missing required release candidate ${candidate}" >&2
+                exit 1
+              }
+            done
+            [[ $(git cat-file -t "refs/tags/${latest_rc}") == tag ]] || {
+              echo "the final RC must be an annotated tag" >&2
+              exit 1
+            }
+            rc_commit=$(git rev-parse "${latest_rc}^{}")
+            [[ "${rc_commit}" == "${GITHUB_SHA}" ]] || {
+              echo "GA must point at the exact final RC commit; publish another RC after changes" >&2
+              exit 1
+            }
+            not_before=$(git for-each-ref \
+              --format='%(taggerdate:iso-strict)' "refs/tags/${latest_rc}")
+            [[ -n "${not_before}" ]] || {
+              echo "cannot determine final RC publication time" >&2
+              exit 1
+            }
+            echo "final_rc=${latest_rc}" >>"${GITHUB_OUTPUT}"
+          fi
+
+          echo "not_before=${not_before}" >>"${GITHUB_OUTPUT}"
+
+      - name: Download exact-commit performance evidence
+        run: |
+          ./benchmarks/download_release_evidence.sh \
+            "${GITHUB_SHA}" performance release-evidence/performance
+          gh attestation verify \
+            release-evidence/performance/gate-summary.json \
+            --repo "${GH_REPO}"
+
+      - name: Download exact-commit soak evidence
+        if: needs.validate-tag.outputs.release_kind == 'ga'
+        run: |
+          ./benchmarks/download_release_evidence.sh \
+            "${GITHUB_SHA}" full-24h release-evidence/full-24h
+          ./benchmarks/download_release_evidence.sh \
+            "${GITHUB_SHA}" mixed-7d release-evidence/mixed-7d
+          gh attestation verify \
+            release-evidence/full-24h/full-24h.json \
+            --repo "${GH_REPO}"
+          gh attestation verify \
+            release-evidence/mixed-7d/mixed-7d.json \
+            --repo "${GH_REPO}"
+
+      - name: Reject unresolved P0 or P1 issues
+        if: needs.validate-tag.outputs.release_kind == 'ga'
+        run: |
+          gh issue list --repo "${GH_REPO}" --state open --limit 1000 \
+            --json number,title,url,labels >release-evidence/open-issues.json
+          jq '[.[] | select(.labels | any(.name | test(
+                "^(p0|p1|priority[ :/_-]*p0|priority[ :/_-]*p1)$"; "i")))]' \
+            release-evidence/open-issues.json >release-evidence/blocking-issues.json
+          if [[ $(jq length release-evidence/blocking-issues.json) -ne 0 ]]; then
+            echo "unresolved P0/P1 issues block GA:" >&2
+            jq -r '.[] | "#\(.number) \(.title) \(.url)"' \
+              release-evidence/blocking-issues.json >&2
+            exit 1
+          fi
+
+      - name: Validate release evidence as one ordered set
+        env:
+          NOT_BEFORE: ${{ steps.freeze.outputs.not_before }}
+        run: |
+          arguments=(
+            release
+            --tag "${GITHUB_REF_NAME}"
+            --source-sha "${GITHUB_SHA}"
+            --performance release-evidence/performance/gate-summary.json
+          )
+          if [[ "${RELEASE_KIND}" == ga ]]; then
+            arguments+=(
+              --full-24h release-evidence/full-24h/full-24h.json
+              --mixed-7d release-evidence/mixed-7d/mixed-7d.json
+              --not-before "${NOT_BEFORE}"
+            )
+          fi
+          ./benchmarks/verify_release_evidence.py "${arguments[@]}" |
+            tee release-evidence/release-gate-result.json
+
+      - name: Assemble publishable gate evidence
+        run: |
+          install -d release-gate-assets
+          install -m 0644 release-evidence/performance/gate-summary.json \
+            release-gate-assets/performance-gate-summary.json
+          install -m 0644 release-evidence/performance/download-receipt.json \
+            release-gate-assets/performance-download-receipt.json
+          install -m 0644 release-evidence/release-gate-result.json \
+            release-gate-assets/release-gate-result.json
+          if [[ "${RELEASE_KIND}" == ga ]]; then
+            install -m 0644 release-evidence/full-24h/full-24h.json \
+              release-gate-assets/full-24h.json
+            install -m 0644 release-evidence/full-24h/download-receipt.json \
+              release-gate-assets/full-24h-download-receipt.json
+            install -m 0644 release-evidence/mixed-7d/mixed-7d.json \
+              release-gate-assets/mixed-7d.json
+            install -m 0644 release-evidence/mixed-7d/download-receipt.json \
+              release-gate-assets/mixed-7d-download-receipt.json
+            install -m 0644 release-evidence/blocking-issues.json \
+              release-gate-assets/blocking-issues.json
+          fi
+
+      - name: Upload verified release-gate evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: minitun-release-gate-evidence
+          if-no-files-found: error
+          retention-days: 90
+          path: release-gate-assets/
 
   packages:
     name: Build tested packages
-    needs: validate-tag
+    needs:
+      - validate-tag
+      - release-gates
     permissions:
       contents: read
       packages: write
+      id-token: write
+      attestations: write
     uses: ./.github/workflows/package.yml
     with:
       package_version: ${{ needs.validate-tag.outputs.package_version }}
@@ -71,16 +259,19 @@ jobs:
     name: Publish GitHub Release
     needs:
       - validate-tag
+      - release-gates
       - packages
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       actions: read
       contents: write
+      id-token: write
+      attestations: write
 
     steps:
       - name: Check out tagged source
-        uses: actions/checkout@v7
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -98,6 +289,19 @@ jobs:
           merge-multiple: true
           path: release-assets/rpm
 
+      - name: Download OCI SBOM artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: minitun-oci-sbom-*
+          merge-multiple: true
+          path: release-assets/oci-sbom
+
+      - name: Download verified release-gate evidence
+        uses: actions/download-artifact@v8
+        with:
+          name: minitun-release-gate-evidence
+          path: release-assets/release-gates
+
       - name: Assemble and verify release assets
         env:
           PACKAGE_VERSION: ${{ needs.validate-tag.outputs.package_version }}
@@ -108,31 +312,113 @@ jobs:
 
           deb_count=0
           for package in release-assets/deb/minitun-client-*.deb \
-                         release-assets/deb/minitun-server-*.deb; do
+                         release-assets/deb/minitun-server-*.deb \
+                         release-assets/deb/libminitun-client1-*.deb \
+                         release-assets/deb/libminitun-client-dev-*.deb; do
             [ -f "$package" ] || continue
             install -m 0644 "$package" "${dist_dir}/"
             deb_count=$((deb_count + 1))
           done
-          [ "$deb_count" -eq 8 ] || {
-            echo "expected 8 DEB packages, found ${deb_count}" >&2
+          [ "$deb_count" -eq 16 ] || {
+            echo "expected 16 DEB packages, found ${deb_count}" >&2
             exit 1
           }
 
           rpm_count=0
           for package in release-assets/rpm/minitun-client-*.rpm \
-                         release-assets/rpm/minitun-server-*.rpm; do
+                         release-assets/rpm/minitun-server-*.rpm \
+                         release-assets/rpm/libminitun-client1-*.rpm \
+                         release-assets/rpm/libminitun-client-devel-*.rpm; do
             [ -f "$package" ] || continue
             install -m 0644 "$package" "${dist_dir}/"
             rpm_count=$((rpm_count + 1))
           done
-          [ "$rpm_count" -eq 8 ] || {
-            echo "expected 8 RPM packages, found ${rpm_count}" >&2
+          [ "$rpm_count" -eq 16 ] || {
+            echo "expected 16 RPM packages, found ${rpm_count}" >&2
             exit 1
           }
 
-          (cd "${dist_dir}" && \
-            sha256sum ./*.deb ./*.rpm >SHA256SUMS)
-          (cd "${dist_dir}" && sha256sum --check SHA256SUMS)
+          oci_sbom_count=0
+          for sbom in release-assets/oci-sbom/*.spdx.json \
+                      release-assets/oci-sbom/*.cyclonedx.json; do
+            [ -f "$sbom" ] || continue
+            install -m 0644 "$sbom" "${dist_dir}/"
+            oci_sbom_count=$((oci_sbom_count + 1))
+          done
+          [ "$oci_sbom_count" -eq 4 ] || {
+            echo "expected four OCI SBOMs, found ${oci_sbom_count}" >&2
+            exit 1
+          }
+
+          gate_evidence_count=0
+          for evidence in release-assets/release-gates/*.json; do
+            [ -f "$evidence" ] || continue
+            install -m 0644 "$evidence" "${dist_dir}/"
+            gate_evidence_count=$((gate_evidence_count + 1))
+          done
+          [ "$gate_evidence_count" -ge 3 ] || {
+            echo "expected verified release-gate evidence, found ${gate_evidence_count} files" >&2
+            exit 1
+          }
+
+
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: release-assets/dist
+          format: spdx-json
+          output-file: release-assets/dist/minitun-${{ needs.validate-tag.outputs.package_version }}.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Generate CycloneDX SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: release-assets/dist
+          format: cyclonedx-json
+          output-file: release-assets/dist/minitun-${{ needs.validate-tag.outputs.package_version }}.cyclonedx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v4.1.2
+
+      - name: Checksum, keyless-sign, and verify release assets
+        env:
+          CERTIFICATE_IDENTITY: https://github.com/${{ github.repository }}/.github/workflows/release.yml@${{ github.ref }}
+        run: |
+          set -euo pipefail
+          cd release-assets/dist
+          find . -maxdepth 1 -type f \
+            ! -name 'SHA256SUMS' \
+            ! -name '*.sigstore.json' \
+            -print0 | sort -z | xargs -0 sha256sum >SHA256SUMS
+          sha256sum --check SHA256SUMS
+          while IFS= read -r asset; do
+            cosign sign-blob \
+              --yes \
+              --bundle="${asset}.sigstore.json" \
+              "${asset}"
+            cosign verify-blob \
+              --bundle="${asset}.sigstore.json" \
+              --certificate-identity="${CERTIFICATE_IDENTITY}" \
+              --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
+              "${asset}"
+          done < <(awk '{print $2}' SHA256SUMS)
+          cosign sign-blob \
+            --yes \
+            --bundle=SHA256SUMS.sigstore.json \
+            SHA256SUMS
+          cosign verify-blob \
+            --bundle=SHA256SUMS.sigstore.json \
+            --certificate-identity="${CERTIFICATE_IDENTITY}" \
+            --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
+            SHA256SUMS
+
+      - name: Attest package and SDK provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: release-assets/dist/*
 
       - name: Upload assembled release artifact
         uses: actions/upload-artifact@v7

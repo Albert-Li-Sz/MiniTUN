@@ -21,6 +21,7 @@ struct TunnelBinding final {
     std::string tunnel_id;
     std::string bind_host;
     std::uint16_t bind_port{0U};
+    std::uint64_t config_revision{1U};
 
     friend bool operator==(const TunnelBinding&, const TunnelBinding&) = default;
 };
@@ -49,9 +50,12 @@ class TunnelRegistry final {
     TunnelRegistry(const TunnelRegistry&) = delete;
     TunnelRegistry& operator=(const TunnelRegistry&) = delete;
 
-    [[nodiscard]] common::Result<void> register_tunnel(const TunnelBinding& binding);
+    /// A zero per-client limit uses the registry-wide configured maximum.
+    [[nodiscard]] common::Result<void> register_tunnel(const TunnelBinding& binding,
+                                                       std::size_t max_for_client = 0U);
     void unregister_tunnel(std::string_view client_id, std::uint64_t session_generation,
-                           std::string_view tunnel_id) noexcept;
+                           std::string_view tunnel_id,
+                           std::uint64_t config_revision = 0U) noexcept;
     void remove_session(std::string_view client_id, std::uint64_t session_generation) noexcept;
     void remove_client(std::string_view client_id) noexcept;
     void clear() noexcept;

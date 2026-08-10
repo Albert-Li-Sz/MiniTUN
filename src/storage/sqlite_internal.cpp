@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <fcntl.h>
+#include <iterator>
 #include <limits>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -765,6 +766,38 @@ common::Result<void> validate_server_record(const ServerRecord& record) {
         !result) {
         return result;
     }
+    if (auto result = validate_optional_text(record.tls_server_name, 1U, kMaxTlsServerNameBytes,
+                                             "TLS server name");
+        !result) {
+        return result;
+    }
+    constexpr std::string_view reference_fields[]{
+        "CA credential reference",
+        "client certificate reference",
+        "client private-key reference",
+    };
+    const std::optional<std::string>* references[]{
+        &record.ca_credential_ref,
+        &record.client_certificate_ref,
+        &record.client_private_key_ref,
+    };
+    for (std::size_t index = 0U; index < std::size(references); ++index) {
+        if (auto result = validate_optional_text(
+                *references[index], 1U, kMaxCredentialReferenceBytes, reference_fields[index]);
+            !result) {
+            return result;
+        }
+    }
+    if (record.client_certificate_ref.has_value() != record.client_private_key_ref.has_value()) {
+        return common::Error{common::ErrorCode::invalid_argument,
+                             "client certificate and private-key references must be paired"};
+    }
+    if (record.config_revision == 0U ||
+        record.config_revision >
+            static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
+        return common::Error{common::ErrorCode::invalid_argument,
+                             "server configuration revision is outside the storage limit"};
+    }
     if (!is_known_enum(record.desired_state, server_desired_state_from_string) ||
         !is_known_enum(record.actual_state, server_actual_state_from_string)) {
         return common::Error{common::ErrorCode::invalid_argument,
@@ -815,6 +848,12 @@ common::Result<void> validate_tunnel_record(const TunnelRecord& record) {
         !result) {
         return result;
     }
+    if (record.config_revision == 0U ||
+        record.config_revision >
+            static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
+        return common::Error{common::ErrorCode::invalid_argument,
+                             "tunnel configuration revision is outside the storage limit"};
+    }
     if (record.created_at_unix_ms < 0 || record.updated_at_unix_ms < record.created_at_unix_ms ||
         (record.last_synced_at_unix_ms.has_value() &&
          (*record.last_synced_at_unix_ms < record.created_at_unix_ms ||
@@ -839,10 +878,18 @@ common::Result<ServerRecord> read_server(sqlite3_stmt* statement) {
     auto latency = optional_int64(statement, 10, "servers.latency_ms");
     auto created_at = required_int64(statement, 11, "servers.created_at");
     auto updated_at = required_int64(statement, 12, "servers.updated_at");
+    auto tls_server_name = optional_text(statement, 13, "servers.tls_server_name");
+    auto ca_credential_ref = optional_text(statement, 14, "servers.ca_credential_ref");
+    auto client_certificate_ref = optional_text(statement, 15, "servers.client_certificate_ref");
+    auto client_private_key_ref = optional_text(statement, 16, "servers.client_private_key_ref");
+    auto config_revision = required_int64(statement, 17, "servers.config_revision");
+    auto managed_by_config = required_int64(statement, 18, "servers.managed_by_config");
 
     if (!id_text || !name || !endpoint_value || !credential_ref || !remote_server_id ||
         !desired_text || !actual_text || !error_text || !error_message || !reconnect_attempt ||
-        !latency || !created_at || !updated_at) {
+        !latency || !created_at || !updated_at || !tls_server_name || !ca_credential_ref ||
+        !client_certificate_ref || !client_private_key_ref || !config_revision ||
+        !managed_by_config) {
         return common::Error{common::ErrorCode::database_error,
                              "database contains a malformed server row"};
     }
@@ -854,7 +901,8 @@ common::Result<ServerRecord> read_server(sqlite3_stmt* statement) {
     if (!id || !endpoint || !desired.has_value() || !actual.has_value() || *reconnect_attempt < 0 ||
         *reconnect_attempt > std::numeric_limits<std::int32_t>::max() ||
         (latency->has_value() &&
-         (**latency < 0 || **latency > std::numeric_limits<std::int32_t>::max()))) {
+         (**latency < 0 || **latency > std::numeric_limits<std::int32_t>::max())) ||
+        *config_revision <= 0 || (*managed_by_config != 0 && *managed_by_config != 1)) {
         return common::Error{common::ErrorCode::database_error,
                              "database contains an invalid server row"};
     }
@@ -881,6 +929,12 @@ common::Result<ServerRecord> read_server(sqlite3_stmt* statement) {
         .latency_ms = std::move(*latency),
         .created_at_unix_ms = *created_at,
         .updated_at_unix_ms = *updated_at,
+        .tls_server_name = std::move(*tls_server_name),
+        .ca_credential_ref = std::move(*ca_credential_ref),
+        .client_certificate_ref = std::move(*client_certificate_ref),
+        .client_private_key_ref = std::move(*client_private_key_ref),
+        .config_revision = static_cast<std::uint64_t>(*config_revision),
+        .managed_by_config = *managed_by_config != 0,
     };
     auto validated = validate_server_record(record);
     if (!validated) {
@@ -906,10 +960,13 @@ common::Result<TunnelRecord> read_tunnel(sqlite3_stmt* statement) {
     auto created_at = required_int64(statement, 12, "tunnels.created_at");
     auto updated_at = required_int64(statement, 13, "tunnels.updated_at");
     auto last_synced_at = optional_int64(statement, 14, "tunnels.last_synced_at");
+    auto config_revision = required_int64(statement, 15, "tunnels.config_revision");
+    auto managed_by_config = required_int64(statement, 16, "tunnels.managed_by_config");
 
     if (!id_text || !name || !server_id_text || !protocol_text || !local_host || !local_port ||
         !remote_host || !remote_port || !desired_text || !actual_text || !error_text ||
-        !error_message || !created_at || !updated_at || !last_synced_at) {
+        !error_message || !created_at || !updated_at || !last_synced_at || !config_revision ||
+        !managed_by_config) {
         return common::Error{common::ErrorCode::database_error,
                              "database contains a malformed tunnel row"};
     }
@@ -923,7 +980,8 @@ common::Result<TunnelRecord> read_tunnel(sqlite3_stmt* statement) {
     const auto desired = tunnel_desired_state_from_string(*desired_text);
     const auto actual = tunnel_actual_state_from_string(*actual_text);
     if (!id || !server_id || !local_endpoint || !remote_endpoint || !protocol.has_value() ||
-        !desired.has_value() || !actual.has_value()) {
+        !desired.has_value() || !actual.has_value() || *config_revision <= 0 ||
+        (*managed_by_config != 0 && *managed_by_config != 1)) {
         return common::Error{common::ErrorCode::database_error,
                              "database contains an invalid tunnel row"};
     }
@@ -950,6 +1008,8 @@ common::Result<TunnelRecord> read_tunnel(sqlite3_stmt* statement) {
         .created_at_unix_ms = *created_at,
         .updated_at_unix_ms = *updated_at,
         .last_synced_at_unix_ms = std::move(*last_synced_at),
+        .config_revision = static_cast<std::uint64_t>(*config_revision),
+        .managed_by_config = *managed_by_config != 0,
     };
     auto validated = validate_tunnel_record(record);
     if (!validated) {

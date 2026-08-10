@@ -3,39 +3,39 @@ layout: home
 
 hero:
   name: MiniTun
-  text: 轻量、安全的 TCP 反向隧道
-  tagline: 将公网服务器上的 TCP 端口稳定转发到内网 Linux 主机，适合以 systemd 服务长期运行。
+  text: 团队自托管的 TCP 反向隧道
+  tagline: Remote Protocol v2、每客户端策略、确定性状态收敛、声明式配置与稳定本地 SDK。
   image:
     src: /logo.svg
     alt: MiniTun
   actions:
     - theme: brand
       text: 快速部署
-      link: /#生产部署
+      link: /configuration
     - theme: alt
       text: 查看 CLI
       link: /cli
 
 features:
   - title: 安全传输
-    details: 远程连接使用 TLS 1.2+，并通过 HMAC-SHA256 质询完成 Token 认证，包含重放防护、时钟偏差检查与认证限速。
+    details: TLS 1.2+ 与 Protocol v2；每客户端 PSK、可选证书绑定、端口 ACL、配额、重放防护与认证限速。
   - title: 持久控制面
-    details: 服务器、隧道和客户端身份保存在 SQLite 中；服务重启后自动恢复连接与隧道状态。
+    details: schema v4 保存稳定身份、配置 revision 和 ownership；generation-scoped reconciler 在断线与乱序响应后确定性收敛。
   - title: 多服务器会话
     details: 一个客户端守护进程可同时连接多个公网服务器，会话、隧道与 Worker Pool 相互隔离。
   - title: 生产运维
-    details: 内置 health、readiness、metrics、reload 与 doctor 命令，支持诊断、热加载与 SQLite 在线备份。
+    details: client/server 都可启用 health、readiness 与 Prometheus 指标，并提供审计、热加载、诊断和成对备份。
   - title: 多架构交付
-    details: 提供 Client/Server DEB、RPM 与 OCI 镜像，覆盖 amd64、arm64、armhf、riscv64 等常见 Linux 架构。
+    details: 提供 Client/Server/SDK DEB、RPM 与多架构 OCI，以及 SBOM、校验和、keyless 签名和 provenance。
   - title: 持续验证
-    details: CI 覆盖 GCC、Clang、CTest、Sanitizer、libFuzzer、软件包安装测试与 OCI 镜像发布验证。
+    details: CI 覆盖 GCC、Clang、Sanitizer、coverage、clang-tidy、CodeQL、fuzz、ABI、故障注入、软件包与独立性能门禁。
 ---
 
 ## 工作原理
 
-MiniTun 由公网服务端 <code>minitun-server</code>、客户端守护进程 <code>minitund</code> 和命令行工具 <code>minitun</code>
-组成。公网服务端负责接受客户端会话并监听对外 TCP 端口；客户端守护进程保存配置、维护
-会话与 Worker，并连接内网本地服务；CLI 通过受权限保护的 Unix 套接字管理本地守护进程。
+MiniTun 由公网服务端 <code>minitun-server</code>、客户端守护进程 <code>minitund</code>、
+命令行工具 <code>minitun</code> 和 <code>libminitun-client.so.1</code> 组成。CLI/SDK 只通过
+受权限保护的 Unix IPC 管理 daemon；远程控制和 Worker 使用 TLS 下的 Protocol v2。
 
 <div class="minitun-flow">
   <div class="flow-node">公网 TCP 客户端</div>
@@ -67,6 +67,7 @@ MiniTun 由公网服务端 <code>minitun-server</code>、客户端守护进程 <
 
 ~~~bash
 minitun daemon status
+minitun daemon identity --json
 minitun health
 minitun readiness
 minitun metrics
@@ -83,8 +84,13 @@ minitun tun inspect web --json
 
 ## 文档入口
 
-- [命令行界面](/cli)：命令、Token 输入、隧道语义与退出码。
-- [系统架构](/architecture)：组件、持久化、会话、Worker 与中继生命周期。
-- [远程协议](/protocol)：帧格式、认证、隧道注册与数据中继。
+- [命令行界面](/cli)：生命周期命令、PSK 输入、JSON 输出与退出码。
+- [配置与策略](/configuration)：每客户端策略和声明式资源。
+- [系统架构](/architecture)：schema v4、reconciler、session、Worker 与 relay。
+- [Remote Protocol v2](/protocol)：能力协商、认证、注册与数据中继。
+- [本地控制 SDK](/sdk)：C11 ABI、C++20 wrapper 和安装方式。
+- [运维与可观测性](/operations)：管理端点、指标、审计和备份。
+- [v1 迁移](/migration-v1)：从 v0.4.1 协调升级与离线回滚。
+- [性能门禁](/performance)：正式基准、24 小时压力与 7 天浸泡。
 - [开发文档](/development)：源码构建、本地演示、测试、打包、发布与排障。
 - [变更日志](/changelog)：近期版本变更记录。

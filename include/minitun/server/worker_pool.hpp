@@ -19,6 +19,8 @@ struct WorkerRegistration final {
     std::string client_id;
     std::uint64_t session_generation{0U};
     std::string worker_id;
+    /// Zero uses the server-wide per-session maximum.
+    std::size_t max_idle_workers{0U};
 
     friend bool operator==(const WorkerRegistration&, const WorkerRegistration&) = default;
 };

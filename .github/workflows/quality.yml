@@ -1,0 +1,126 @@
+name: Quality gates
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  scripts-and-supply-chain:
+    name: Scripts, docs, and dependency advisories
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install validation tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes \
+            jq python3 ruby shellcheck
+      - name: Validate shell, Python, YAML, and JSON inputs
+        run: |
+          bash -n benchmarks/*.sh tests/integration/*.sh packaging/tests/*.sh
+          shellcheck -x benchmarks/*.sh tests/integration/*.sh packaging/tests/*.sh
+          python3 -m py_compile \
+            benchmarks/relay_load.py \
+            benchmarks/verify_release_evidence.py \
+            ci/check_sarif.py
+          MINITUN_SOURCE_DIR="${PWD}" \
+            python3 tests/release/test_verify_release_evidence.py
+          MINITUN_SOURCE_DIR="${PWD}" \
+            python3 tests/release/test_check_sarif.py
+          ruby -e 'require "yaml"; Dir[".github/workflows/*.yml", ".github/dependabot.yml"].each { |f| YAML.safe_load(File.read(f), aliases: true) }'
+          jq empty CMakePresets.json renovate.json package.json package-lock.json \
+            packaging/config/minitun-server/clients.json.example
+      - name: Install and audit documentation dependencies
+        run: |
+          npm ci
+          npm audit --audit-level=high
+          npm run docs:build
+
+  clang-tidy:
+    name: clang-tidy (zero warnings)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes \
+            clang clang-tidy cmake ninja-build libssl-dev libsqlite3-dev \
+            libasio-dev libspdlog-dev nlohmann-json3-dev libcli11-dev \
+            libgtest-dev pkg-config
+      - name: Configure and analyze
+        env:
+          CC: clang
+          CXX: clang++
+        run: |
+          cmake -S . -B build/tidy -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_CLANG_TIDY=clang-tidy \
+            -DMINITUN_USE_SYSTEM_DEPS=ON \
+            -DMINITUN_BUILD_TESTS=ON \
+            -DMINITUN_WARNINGS_AS_ERRORS=ON
+          cmake --build build/tidy --parallel 2
+
+  coverage:
+    name: Coverage (line 85%, branch 75%)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes \
+            cmake g++ gcovr ninja-build openssl python3 \
+            libssl-dev libsqlite3-dev libasio-dev libspdlog-dev \
+            nlohmann-json3-dev libcli11-dev libgtest-dev pkg-config
+      - name: Configure, test, and enforce coverage
+        run: |
+          cmake --preset coverage
+          cmake --build --preset coverage --parallel 2
+          ctest --preset coverage --output-on-failure --no-tests=error
+          gcovr \
+            --root . \
+            --filter 'src/' \
+            --filter 'include/' \
+            --exclude 'build/' \
+            --exclude-unreachable-branches \
+            --exclude-throw-branches \
+            --gcov-ignore-parse-errors negative_hits.warn_once_per_file \
+            --fail-under-line 85 \
+            --fail-under-branch 75 \
+            --html-details coverage.html \
+            --xml coverage.xml \
+            build/coverage
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: minitun-coverage
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            coverage.html
+            coverage.*.html
+            coverage.xml

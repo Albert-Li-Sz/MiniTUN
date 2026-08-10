@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -21,7 +22,8 @@ namespace {
 constexpr std::string_view kTunnelColumns =
     "id, name, server_id, protocol, local_host, local_port, "
     "remote_host, remote_port, desired_state, actual_state, "
-    "last_error_code, last_error_message, created_at, updated_at, last_synced_at";
+    "last_error_code, last_error_message, created_at, updated_at, last_synced_at, "
+    "config_revision, managed_by_config";
 
 [[nodiscard]] common::Result<void> bind_optional_text(internal::Statement& statement,
                                                       const int index,
@@ -87,8 +89,10 @@ common::Result<void> TunnelRepository::create(const TunnelRecord& record,
         "INSERT INTO tunnels("
         "id, name, server_id, protocol, local_host, local_port, "
         "remote_host, remote_port, desired_state, actual_state, "
-        "last_error_code, last_error_message, created_at, updated_at, last_synced_at"
-        ") VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+        "last_error_code, last_error_message, created_at, updated_at, last_synced_at, "
+        "config_revision, managed_by_config"
+        ") VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, "
+        "?16, ?17)",
         "insert tunnel record");
     if (!statement) {
         return fail(statement.error());
@@ -112,6 +116,8 @@ common::Result<void> TunnelRepository::create(const TunnelRecord& record,
         record.last_synced_at_unix_ms.has_value()
             ? statement->bind_int64(15, *record.last_synced_at_unix_ms)
             : statement->bind_null(15),
+        statement->bind_int64(16, static_cast<std::int64_t>(record.config_revision)),
+        statement->bind_int64(17, record.managed_by_config ? 1 : 0),
     };
     for (auto& binding : bindings) {
         if (!binding) {
@@ -325,10 +331,11 @@ common::Result<void> TunnelRepository::update(const TunnelRecord& record,
         return fail(existing.error());
     }
     if (record.created_at_unix_ms != existing->created_at_unix_ms ||
-        record.updated_at_unix_ms < existing->updated_at_unix_ms) {
+        record.updated_at_unix_ms < existing->updated_at_unix_ms ||
+        record.config_revision < existing->config_revision) {
         return fail(common::Error{
             common::ErrorCode::invalid_argument,
-            "tunnel creation time is immutable and update time must not move backward",
+            "tunnel creation time is immutable and update time/revision must not move backward",
         });
     }
 
@@ -338,7 +345,8 @@ common::Result<void> TunnelRepository::update(const TunnelRecord& record,
         "name = ?1, server_id = ?2, protocol = ?3, local_host = ?4, local_port = ?5, "
         "remote_host = ?6, remote_port = ?7, desired_state = ?8, actual_state = ?9, "
         "last_error_code = ?10, last_error_message = ?11, updated_at = ?12, "
-        "last_synced_at = ?13 WHERE id = ?14",
+        "last_synced_at = ?13, config_revision = ?14, managed_by_config = ?15 "
+        "WHERE id = ?16",
         "update tunnel record");
     if (!statement) {
         return fail(statement.error());
@@ -360,7 +368,9 @@ common::Result<void> TunnelRepository::update(const TunnelRecord& record,
         record.last_synced_at_unix_ms.has_value()
             ? statement->bind_int64(13, *record.last_synced_at_unix_ms)
             : statement->bind_null(13),
-        statement->bind_text(14, record.id.str()),
+        statement->bind_int64(14, static_cast<std::int64_t>(record.config_revision)),
+        statement->bind_int64(15, record.managed_by_config ? 1 : 0),
+        statement->bind_text(16, record.id.str()),
     };
     for (auto& binding : bindings) {
         if (!binding) {
@@ -446,6 +456,79 @@ TunnelRepository::mark_active_pending_by_server(const common::Id& server_id,
         return committed.error();
     }
     return static_cast<std::size_t>(changed);
+}
+
+common::Result<bool> TunnelRepository::update_runtime_state_if_revision(
+    const common::Id& id, const common::Id& server_id, const std::uint64_t expected_revision,
+    const TunnelActualState actual_state, const std::optional<common::Error>& error,
+    const std::int64_t updated_at, const bool synchronized) {
+    if (id.kind() != common::IdKind::tunnel || server_id.kind() != common::IdKind::server ||
+        expected_revision == 0U ||
+        expected_revision > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) ||
+        updated_at < 0 ||
+        (actual_state != TunnelActualState::pending &&
+         actual_state != TunnelActualState::registering &&
+         actual_state != TunnelActualState::active &&
+         actual_state != TunnelActualState::failed &&
+         actual_state != TunnelActualState::disabled)) {
+        return common::Error{common::ErrorCode::invalid_argument,
+                             "conditional tunnel transition arguments are invalid"};
+    }
+    if (error.has_value()) {
+        if (error->code() == common::ErrorCode::ok ||
+            error->message().size() > kMaxErrorMessageBytes) {
+            return common::Error{common::ErrorCode::invalid_argument,
+                                 "conditional tunnel transition error is invalid"};
+        }
+    }
+
+    auto transaction = database_.begin_transaction();
+    if (!transaction) {
+        return std::move(transaction).error();
+    }
+    auto statement = internal::Statement::prepare(
+        database_.handle_,
+        "UPDATE tunnels SET actual_state = ?1, last_error_code = ?2, "
+        "last_error_message = ?3, updated_at = MAX(updated_at, ?4), "
+        "last_synced_at = CASE WHEN ?5 = 1 THEN MAX(updated_at, ?4) ELSE last_synced_at END "
+        "WHERE id = ?6 AND server_id = ?7 "
+        "AND ((?1 = 'disabled' AND desired_state = 'disabled') OR "
+        "     (?1 <> 'disabled' AND desired_state = 'active')) "
+        "AND config_revision = ?8",
+        "conditionally update tunnel runtime state");
+    if (!statement) {
+        return statement.error();
+    }
+    common::Result<void> bindings[]{
+        statement->bind_text(1, to_string(actual_state)),
+        error.has_value() ? statement->bind_text(2, common::to_string(error->code()))
+                          : statement->bind_null(2),
+        error.has_value() ? statement->bind_text(3, error->message()) : statement->bind_null(3),
+        statement->bind_int64(4, updated_at),
+        statement->bind_int64(5, synchronized ? 1 : 0),
+        statement->bind_text(6, id.str()),
+        statement->bind_text(7, server_id.str()),
+        statement->bind_int64(8, static_cast<std::int64_t>(expected_revision)),
+    };
+    for (auto& binding : bindings) {
+        if (!binding) {
+            return binding.error();
+        }
+    }
+    auto step = statement->step();
+    if (!step) {
+        return step.error();
+    }
+    if (*step != internal::StepResult::done) {
+        return common::Error{common::ErrorCode::database_error,
+                             "conditional tunnel update unexpectedly returned a row"};
+    }
+    const bool changed = sqlite3_changes(database_.handle_) == 1;
+    auto committed = transaction->commit();
+    if (!committed) {
+        return committed.error();
+    }
+    return changed;
 }
 
 common::Result<void> TunnelRepository::mark_removed(const common::Id& id,

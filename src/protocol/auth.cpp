@@ -64,8 +64,10 @@ common::Result<std::uint64_t> generate_session_generation() {
 
 common::Result<AuthenticationData>
 compute_authentication_data(const std::string_view token, const std::string_view client_id,
+                            const std::string_view server_id,
                             const std::int64_t timestamp_seconds,
-                            const AuthenticationNonce& nonce) {
+                            const AuthenticationNonce& nonce,
+                            const CapabilitySet selected_capabilities) {
     if (token.empty() || token.size() > 64U * 1024U) {
         return common::Result<AuthenticationData>::failure(
             common::ErrorCode::invalid_argument,
@@ -76,6 +78,17 @@ compute_authentication_data(const std::string_view token, const std::string_view
             common::ErrorCode::invalid_argument,
             "client ID is invalid for authentication");
     }
+    if (!common::Id::parse(server_id, common::IdKind::server)) {
+        return common::Result<AuthenticationData>::failure(
+            common::ErrorCode::invalid_argument,
+            "server ID is invalid for authentication");
+    }
+    if ((selected_capabilities & kRequiredCapabilities) != kRequiredCapabilities ||
+        (selected_capabilities & ~kSupportedCapabilities) != 0U) {
+        return common::Result<AuthenticationData>::failure(
+            common::ErrorCode::invalid_argument,
+            "authentication capability selection is invalid");
+    }
 
     PayloadWriter writer;
     if (auto result = writer.write_u16(kProtocolVersion); !result) {
@@ -84,10 +97,16 @@ compute_authentication_data(const std::string_view token, const std::string_view
     if (auto result = writer.write_string(client_id); !result) {
         return common::Result<AuthenticationData>::failure(result.error());
     }
+    if (auto result = writer.write_string(server_id); !result) {
+        return common::Result<AuthenticationData>::failure(result.error());
+    }
     if (auto result = writer.write_u64(std::bit_cast<std::uint64_t>(timestamp_seconds)); !result) {
         return common::Result<AuthenticationData>::failure(result.error());
     }
     if (auto result = writer.write_bytes(nonce); !result) {
+        return common::Result<AuthenticationData>::failure(result.error());
+    }
+    if (auto result = writer.write_u64(selected_capabilities); !result) {
         return common::Result<AuthenticationData>::failure(result.error());
     }
     auto input = std::move(writer).finish();
@@ -110,10 +129,94 @@ compute_authentication_data(const std::string_view token, const std::string_view
 
 common::Result<bool>
 verify_authentication_data(const std::string_view token, const std::string_view client_id,
+                           const std::string_view server_id,
                            const std::int64_t timestamp_seconds,
                            const AuthenticationNonce& nonce,
+                           const CapabilitySet selected_capabilities,
                            const AuthenticationData& candidate) {
-    auto expected = compute_authentication_data(token, client_id, timestamp_seconds, nonce);
+    auto expected = compute_authentication_data(token, client_id, server_id,
+                                                timestamp_seconds, nonce,
+                                                selected_capabilities);
+    if (!expected) {
+        return common::Result<bool>::failure(expected.error());
+    }
+    return CRYPTO_memcmp(expected->data(), candidate.data(), expected->size()) == 0;
+}
+
+common::Result<AuthenticationData>
+compute_worker_authentication_data(const std::string_view token,
+                                   const std::string_view client_id,
+                                   const std::string_view server_id,
+                                   const std::uint64_t session_generation,
+                                   const std::string_view worker_id,
+                                   const std::int64_t timestamp_seconds,
+                                   const AuthenticationNonce& nonce) {
+    if (token.empty() || token.size() > 64U * 1024U) {
+        return common::Result<AuthenticationData>::failure(
+            common::ErrorCode::invalid_argument, "worker authentication token length is invalid");
+    }
+    if (!common::Id::parse(client_id, common::IdKind::client) ||
+        !common::Id::parse(server_id, common::IdKind::server) ||
+        !common::Id::parse(worker_id, common::IdKind::connection) ||
+        session_generation == 0U) {
+        return common::Result<AuthenticationData>::failure(
+            common::ErrorCode::invalid_argument, "worker authentication identity is invalid");
+    }
+
+    PayloadWriter writer;
+    if (auto result = writer.write_string("minitun-worker-auth"); !result) {
+        return common::Result<AuthenticationData>::failure(result.error());
+    }
+    if (auto result = writer.write_u16(kProtocolVersion); !result) {
+        return common::Result<AuthenticationData>::failure(result.error());
+    }
+    if (auto result = writer.write_string(client_id); !result) {
+        return common::Result<AuthenticationData>::failure(result.error());
+    }
+    if (auto result = writer.write_string(server_id); !result) {
+        return common::Result<AuthenticationData>::failure(result.error());
+    }
+    if (auto result = writer.write_u64(session_generation); !result) {
+        return common::Result<AuthenticationData>::failure(result.error());
+    }
+    if (auto result = writer.write_string(worker_id); !result) {
+        return common::Result<AuthenticationData>::failure(result.error());
+    }
+    if (auto result = writer.write_u64(std::bit_cast<std::uint64_t>(timestamp_seconds)); !result) {
+        return common::Result<AuthenticationData>::failure(result.error());
+    }
+    if (auto result = writer.write_bytes(nonce); !result) {
+        return common::Result<AuthenticationData>::failure(result.error());
+    }
+    auto input = std::move(writer).finish();
+    if (!input) {
+        return common::Result<AuthenticationData>::failure(input.error());
+    }
+
+    AuthenticationData output{};
+    std::size_t output_size = 0U;
+    const auto* const result = EVP_Q_mac(
+        nullptr, "HMAC", nullptr, "SHA256", nullptr, token.data(), token.size(), input->data(),
+        input->size(), output.data(), output.size(), &output_size);
+    if (result == nullptr || output_size != output.size()) {
+        return common::Result<AuthenticationData>::failure(
+            common::ErrorCode::internal_error, "worker authentication digest generation failed");
+    }
+    return output;
+}
+
+common::Result<bool>
+verify_worker_authentication_data(const std::string_view token,
+                                  const std::string_view client_id,
+                                  const std::string_view server_id,
+                                  const std::uint64_t session_generation,
+                                  const std::string_view worker_id,
+                                  const std::int64_t timestamp_seconds,
+                                  const AuthenticationNonce& nonce,
+                                  const AuthenticationData& candidate) {
+    auto expected = compute_worker_authentication_data(token, client_id, server_id,
+                                                       session_generation, worker_id,
+                                                       timestamp_seconds, nonce);
     if (!expected) {
         return common::Result<bool>::failure(expected.error());
     }
@@ -168,11 +271,28 @@ void NonceReplayCache::remove_expired(const std::chrono::steady_clock::time_poin
 
 common::Result<bool> verify_and_consume_authentication_data(
     NonceReplayCache& replay_cache, const std::string_view token,
-    const std::string_view client_id, const std::int64_t timestamp_seconds,
-    const AuthenticationNonce& nonce, const AuthenticationData& candidate,
+    const std::string_view client_id, const std::string_view server_id,
+    const std::int64_t timestamp_seconds, const AuthenticationNonce& nonce,
+    const CapabilitySet selected_capabilities, const AuthenticationData& candidate,
     const std::chrono::steady_clock::time_point now) {
     auto verified =
-        verify_authentication_data(token, client_id, timestamp_seconds, nonce, candidate);
+        verify_authentication_data(token, client_id, server_id, timestamp_seconds, nonce,
+                                   selected_capabilities, candidate);
+    if (!verified || !*verified) {
+        return verified;
+    }
+    return replay_cache.consume(client_id, nonce, now);
+}
+
+common::Result<bool> verify_and_consume_worker_authentication_data(
+    NonceReplayCache& replay_cache, const std::string_view token,
+    const std::string_view client_id, const std::string_view server_id,
+    const std::uint64_t session_generation, const std::string_view worker_id,
+    const std::int64_t timestamp_seconds, const AuthenticationNonce& nonce,
+    const AuthenticationData& candidate, const std::chrono::steady_clock::time_point now) {
+    auto verified = verify_worker_authentication_data(
+        token, client_id, server_id, session_generation, worker_id, timestamp_seconds, nonce,
+        candidate);
     if (!verified || !*verified) {
         return verified;
     }

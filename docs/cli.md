@@ -1,166 +1,166 @@
 # 命令行界面
 
-`minitun` 是无状态的短生命周期客户端。它从不打开 SQLite，也不直接连接公网
-MiniTun 服务端；每条资源命令只向本地 `minitund` Unix 套接字发送一个请求，打印
-响应后退出。
+`minitun` 是无状态、短生命周期客户端。它不打开 SQLite，也不直接连接公网 server；
+每条命令只向本地 `minitund` Unix socket 发送一个 IPC envelope v1 请求。
 
-## 命令
+全局选项：
 
 ```text
-minitun server add <server-endpoint> [--name <name>]
-minitun server login <server-id-or-name> [--token-stdin]
-minitun server list [--json]
-minitun server inspect <server-id-or-name> [--json]
-minitun server remove <server-id-or-name>
+--socket <path>   daemon socket，默认 /run/minitun/minitun.sock
+```
 
+## daemon 与运行状态
+
+```text
+minitun daemon status
+minitun daemon identity [--json]
+minitun status [--json]
+minitun health
+minitun readiness
+minitun metrics
+minitun reload
+minitun version
+```
+
+`daemon identity` 返回跨重启稳定的 `client_id`，用于 server 的 `clients.json`。daemon
+readiness 检查状态库、凭据库和 IPC，不要求所有远端在线。`metrics` 的计数在进程重启后
+归零。
+
+## server 生命周期
+
+```text
+minitun server add <endpoint> [--name <name>]
+minitun server login <id-or-name> [--psk-stdin]
+minitun server update <id-or-name>
+        [--name <name> | --clear-name]
+        [--endpoint <host:port>]
+        [--tls-server-name <name> | --clear-tls-server-name]
+        [--ca-file <pem> | --clear-ca]
+        [--client-cert <pem> --client-key <pem> | --clear-client-identity]
+minitun server enable <id-or-name>
+minitun server disable <id-or-name>
+minitun server logout <id-or-name>
+minitun server list [--json]
+minitun server inspect <id-or-name> [--json]
+minitun server remove <id-or-name>
+```
+
+`server login` 默认在 TTY 中显示 `PSK:` 并关闭回显。自动化必须显式从标准输入读取：
+
+```bash
+minitun server login edge --psk-stdin </secure/path/edge.psk
+```
+
+`--token-stdin` 保留为 v0.4.x CLI 迁移别名；新脚本应使用 `--psk-stdin`。PSK 不能作为
+位置参数或普通 option，因此不会进入 shell history、进程参数或 `/proc`。JSON 响应只
+返回 `credential_configured` 等布尔状态，不返回秘密或凭据引用。
+
+endpoint、TLS server name、CA 或客户端证书身份变化只重建对应 server session。名称
+变化不引起 session 抖动。`disable` 保留资源记录；`enable` 自动恢复同步。`logout`
+删除该 server 的 PSK、CA、client cert 和 private key，并切换为未认证状态。
+
+## tunnel 生命周期
+
+```text
 minitun tun add <server-id-or-name> <local-port> <server-port>
-                [--local-host <host>] [--name <name>]
+        [--local-host <host>] [--name <name>]
+minitun tun update <tun-id-or-name>
+        [--name <name> | --clear-name]
+        [--local-host <host>] [--local-port <port>] [--server-port <port>]
+minitun tun enable <tun-id-or-name>
+minitun tun disable <tun-id-or-name>
 minitun tun list [server-id-or-name] [--json]
 minitun tun inspect <tun-id-or-name> [--json]
 minitun tun remove <tun-id-or-name>
-
-minitun status
-minitun doctor [--json] [--checkpoint]
-               [--backup-state <path>] [--backup-credentials <path>]
-               [--restore-state <path>] [--restore-credentials <path>]
-minitun health
-minitun readiness
-minitun metrics
-minitun reload
-minitun daemon status
-minitun version
-minitun help
 ```
 
-所有命令都接受以下全局覆盖选项：
+示例：
 
-```text
---socket <path>   本地 minitund 套接字（默认 /run/minitun/minitun.sock）
+```bash
+minitun tun add edge 8080 6000 --name web
 ```
 
-`status --json`、`doctor --json`、`health`、`readiness`、`metrics` 和 `reload` 输出 JSON 对象；
-`list --json` 输出 JSON 数组，`inspect --json` 输出单个 JSON 对象。服务器 JSON
-只包含 `credential_configured`，绝不暴露凭据引用或 Token。列表和详情命令不会
-返回已经删除的墓碑记录。
+表示 `公网 server 0.0.0.0:6000 -> daemon 127.0.0.1:8080`。即使 server 离线，记录
+也以 `desired_state=active`、`actual_state=pending` 创建。稳定 tunnel ID 和 server
+归属不可更新；名称、本地地址/端口和公开端口可以更新。
 
-隧道 JSON 还包含以下诊断字段：
+修改公开端口时先撤销旧 listener，再注册新端口。新端口失败时资源保持新期望配置并
+显示 `failed`，旧入口不会继续存在。disable 保留记录并注销 listener；enable 后重新
+收敛。remove 删除记录并异步保证远端 listener 不再转发。
+
+tunnel JSON 的关键诊断字段：
 
 | 字段 | 含义 |
 | --- | --- |
-| `server_actual_state` | 关联服务器当前状态；关联记录不存在时为 `null` |
-| `pending_reason` | 隧道为 `pending` 时的稳定原因标识，否则为 `null` |
-| `last_synced_at` | 最近一次远端注册或注销响应的 Unix 毫秒时间戳；从未同步时为 `null` |
+| `config_revision` | 单调递增的期望配置 revision |
+| `server_actual_state` | 所属 server 当前实际状态 |
+| `pending_reason` | `pending` 的稳定原因，否则为 `null` |
+| `last_synced_at` | 最近匹配远端响应的 Unix 毫秒时间戳 |
+| `last_error` | 最近一次稳定、非敏感同步错误 |
 
-## Token 输入
-
-未指定 `--token-stdin` 时，`server login` 要求交互式终端，并在读取一行 Token
-期间关闭回显：
-
-```text
-Token:
-```
-
-自动化场景必须显式选择从标准输入读取一行：
-
-```bash
-printf '%s\n' "$MINITUN_TOKEN" |
-  minitun server login primary --token-stdin
-```
-
-Token 不能作为位置参数或普通选项传入，因此不会进入 Shell 历史、进程参数或
-`/proc`。守护进程在本地保存凭据、唤醒对应的状态同步会话，并在不向 CLI 返回
-秘密的情况下使用它进行远程认证。
-
-## 隧道语义
-
-默认命令：
-
-```bash
-minitun tun add primary 22 6000
-```
-
-会持久化以下期望 TCP 路由：
+## 声明式配置
 
 ```text
-公网服务端 0.0.0.0:6000 -> 本地客户端 127.0.0.1:22
+minitun config export
+minitun config plan <format-version-1.json> [--prune]
+minitun config apply <format-version-1.json> [--prune]
 ```
 
-即使公网服务端离线，记录仍会以 `desired_state=active`、`actual_state=pending`
-创建。也可以指定自定义本地目标和显示名称：
+plan 只读并稳定排序 create/update/disable/delete 动作。apply 默认不删除；只有
+`--prune` 才删除此前由 apply 管理、但现在缺失的资源，命令式资源不受影响。全量预校验
+和状态事务保证失败不出现半套资源；相同配置重复 apply 返回零动作，不重建 session。
+
+`config export` 不输出凭据路径或内容，只标记是否已配置。完整格式见
+[配置文档](configuration.md)。
+
+## 数据库诊断、备份与恢复
+
+```text
+minitun doctor [--json] [--checkpoint]
+       [--backup-state <path>] [--backup-credentials <path>]
+       [--restore-state <path>] [--restore-credentials <path>]
+```
+
+生产升级前应在 daemon 在线时生成同一批次的 state/credentials 备份：
 
 ```bash
-minitun tun add primary 8080 6001 \
-  --local-host 192.168.1.10 \
-  --name nas-web
+install -d -m 0700 /var/backups/minitun/pre-v1
+minitun doctor --json --checkpoint \
+  --backup-state /var/backups/minitun/pre-v1/state.db \
+  --backup-credentials /var/backups/minitun/pre-v1/credentials.db
 ```
 
-`tun remove` 会在返回成功前物理删除本地状态行，因此名称和端口可以立即重新创建。
-控制面提交后会立即唤醒对应服务器会话并注销公网监听器，心跳同步只作为兜底；删除
-完成后到注销之间的新连接不会再转发到本地目标。`server remove` 同样先提交状态删除，
-再清理独立凭据库，避免活动状态引用已经删除的 Token。
+同时在线恢复时会先验证两个来源，再分别原子替换并唤醒同步；两个 SQLite 文件之间不是
+同一个数据库事务，因此必须使用成对备份。schema v4 降级回 v0.4.1 需要离线恢复，见
+[迁移指南](migration-v1.md)。
 
-## 本地运维命令
+## 输出与退出码
 
-`health` 和 `readiness` 用于服务管理和本地探测。二者只访问本地 Unix 套接字，
-不会增加公网监听面：
-
-```bash
-minitun health
-minitun readiness
-```
-
-`metrics` 返回本地运行指标，包括活动会话、空闲与活动 Worker、连接配额、重连次数、
-持久化/协议错误计数、Worker 配额拒绝次数和成功中继的双向字节数。客户端侧没有公网
-排队语义，因此 `connections.pending` 当前为 `0`：
-
-```bash
-minitun metrics
-minitun status --json
-```
-
-`reload` 会请求 `minitund` 重新创建远程会话，使 CA、Token 和会话配置在不重启
-守护进程的情况下生效；已建立的中继按优雅关闭期限排空：
-
-```bash
-minitun reload
-```
-
-`doctor` 用于本地 SQLite 诊断、WAL checkpoint、在线备份和受控恢复。备份与恢复路径
-必须位于真实、私有且受保护的目录中：
-
-```bash
-minitun doctor --json --checkpoint
-minitun doctor --json \
-  --backup-state /var/backups/minitun/state.db \
-  --backup-credentials /var/backups/minitun/credentials.db
-```
-
-恢复操作会在线替换相应数据库内容，并唤醒状态同步。同时恢复两个数据库时，守护进程
-会在修改任一实时数据库前完整验证两个来源；每个 SQLite 文件独立原子替换，但两个文件
-之间不构成同一数据库事务。生产恢复前应同时备份 `state.db` 与 `credentials.db`，并使用
-同一时间点生成的成对备份，避免状态记录和凭据引用不一致。
-
-## 退出码
+`status --json`、`doctor --json`、health/readiness/metrics/reload、config 命令输出 JSON
+object；`list --json` 输出 array；`inspect --json` 输出单个 object。墓碑和内部凭据引用
+不出现在公开结果。
 
 | 代码 | 含义 |
 | ---: | --- |
 | `0` | 成功 |
-| `2` | 参数无效、资源未知或资源冲突 |
-| `3` | 本地守护进程不可用或不可访问 |
+| `2` | 参数无效、资源未知或冲突 |
+| `3` | 本地 daemon 不可用或不可访问 |
 | `4` | 认证失败 |
-| `5` | 远程或网络失败 |
-| `10` | 协议、数据库、资源或内部失败 |
+| `5` | 远程、TLS 或网络失败 |
+| `10` | 协议、数据库、资源耗尽或内部失败 |
 
-CLI11 的帮助/版本控制流也以 `0` 退出；其他所有解析失败统一规范为 `2`。
-
-## 守护进程选项
+## daemon 关键选项
 
 ```text
 minitund [--foreground]
-          [--socket /run/minitun/minitun.sock]
-          [--database /var/lib/minitun/state.db]
-          [--credentials /var/lib/minitun/credentials.db]
+  [--socket /run/minitun/minitun.sock]
+  [--database /var/lib/minitun/state.db]
+  [--credentials /var/lib/minitun/credentials.db]
+  [--admin-listen <numeric-host:port>] [--admin-token-file <file>]
+  [--tls-ca <pem>] [--relay-idle-timeout <seconds>]
+  [--shutdown-timeout <seconds>]
+  [--max-idle-workers-per-server <n>] [--max-total-idle-workers <n>]
+  [--max-total-connections <n>] [--io-threads <1..16>]
 ```
 
-`minitund` 会打开并迁移两个数据库、归一化重启状态、确认每个已持久化凭据引用都
-存在，然后启动 IPC。父目录必须事先存在，并归守护进程账户所有或受到相应保护。
+`--insecure-skip-verify` 只用于本地开发，生产不得使用。

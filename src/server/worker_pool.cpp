@@ -1,5 +1,6 @@
 #include <minitun/server/worker_pool.hpp>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -58,9 +59,13 @@ class WorkerPool::Impl final {
             return common::Result<void>::failure(common::ErrorCode::already_exists,
                                                  "worker ID is already registered");
         }
-        if (entries_.size() >= max_total_idle_workers_ ||
+        const std::size_t effective_session_limit =
+            registration.max_idle_workers == 0U
+                ? max_idle_workers_per_session_
+                : std::min(registration.max_idle_workers, max_idle_workers_per_session_);
+        if (effective_session_limit == 0U || entries_.size() >= max_total_idle_workers_ ||
             idle_count(registration.client_id, registration.session_generation) >=
-                max_idle_workers_per_session_) {
+                effective_session_limit) {
             return common::Result<void>::failure(common::ErrorCode::resource_exhausted,
                                                  "idle worker limit has been reached");
         }

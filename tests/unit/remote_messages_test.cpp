@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cstdint>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -7,6 +8,7 @@
 
 #include <minitun/common/error.hpp>
 #include <minitun/common/id.hpp>
+#include <minitun/protocol/codec.hpp>
 #include <minitun/protocol/messages.hpp>
 
 namespace minitun::protocol {
@@ -18,6 +20,34 @@ namespace {
     return id ? id->str() : std::string{};
 }
 
+template <typename Decoder>
+void expect_all_truncations_and_trailing_bytes(const std::vector<std::uint8_t>& payload,
+                                               Decoder&& decoder) {
+    ASSERT_FALSE(payload.empty());
+    for (std::size_t size = 0U; size < payload.size(); ++size) {
+        SCOPED_TRACE(size);
+        const std::vector<std::uint8_t> prefix(payload.begin(),
+                                               payload.begin() + static_cast<std::ptrdiff_t>(size));
+        EXPECT_FALSE(decoder(prefix));
+    }
+    auto trailing = payload;
+    trailing.push_back(0U);
+    EXPECT_FALSE(decoder(trailing));
+}
+
+template <typename WriteFields>
+[[nodiscard]] std::vector<std::uint8_t> wire_payload(WriteFields&& write_fields) {
+    PayloadWriter writer;
+    if (!write_fields(writer)) {
+        throw std::runtime_error("failed to construct a malformed test payload");
+    }
+    auto payload = std::move(writer).finish();
+    if (!payload) {
+        throw std::runtime_error("failed to finish a malformed test payload");
+    }
+    return std::move(*payload);
+}
+
 TEST(RemoteMessagesTest, RoundTripsHandshakeAndHeartbeatPayloads) {
     AuthenticationNonce nonce{};
     AuthenticationData digest{};
@@ -26,9 +56,10 @@ TEST(RemoteMessagesTest, RoundTripsHandshakeAndHeartbeatPayloads) {
         digest[index] = static_cast<std::uint8_t>(0xffU - index);
     }
 
-    const HelloMessage hello{generated_id(common::IdKind::client)};
-    const HelloAckMessage ack{generated_id(common::IdKind::server), -123, nonce};
-    const AuthMessage auth{hello.client_id, 456, nonce, digest};
+    const HelloMessage hello{generated_id(common::IdKind::client), kSupportedCapabilities};
+    const HelloAckMessage ack{generated_id(common::IdKind::server), -123, nonce,
+                              kRequiredCapabilities};
+    const AuthMessage auth{hello.client_id, 456, nonce, digest, kRequiredCapabilities};
     const AuthOkMessage ok{99U, 5'000U, 2U, 32U};
     const AuthErrorMessage error{common::ErrorCode::authentication_failed};
     const HeartbeatMessage heartbeat{0x0102030405060708ULL};
@@ -62,9 +93,8 @@ TEST(RemoteMessagesTest, RejectsInvalidIdentifiersFixedLengthsAndTrailingBytes) 
     const HelloAckMessage ack{generated_id(common::IdKind::server), 0, {}};
     auto ack_payload = encode_hello_ack(ack);
     ASSERT_TRUE(ack_payload);
-    ASSERT_GT(ack_payload->size(), kAuthenticationNonceSize);
-    (*ack_payload)[ack_payload->size() - kAuthenticationNonceSize - 2U] = 0U;
-    (*ack_payload)[ack_payload->size() - kAuthenticationNonceSize - 1U] = 31U;
+    ASSERT_FALSE(ack_payload->empty());
+    ack_payload->pop_back();
     EXPECT_FALSE(decode_hello_ack(*ack_payload));
 
     auto heartbeat = encode_heartbeat({1U});
@@ -99,10 +129,10 @@ TEST(RemoteMessagesTest, NegotiatesWorkerIdleTimeoutThroughOpaqueHeartbeatSequen
 
 TEST(RemoteMessagesTest, RoundTripsTunnelRegistrationPayloads) {
     const std::string tunnel_id = generated_id(common::IdKind::tunnel);
-    const RegisterTunnelMessage registration{tunnel_id, "0.0.0.0", 6'000U};
-    const RegisterTunnelOkMessage registered{tunnel_id};
-    const RegisterTunnelErrorMessage rejected{tunnel_id, common::ErrorCode::remote_port_in_use};
-    const UnregisterTunnelMessage removal{tunnel_id};
+    const RegisterTunnelMessage registration{tunnel_id, "0.0.0.0", 6'000U, 7U};
+    const RegisterTunnelOkMessage registered{tunnel_id, 7U};
+    const RegisterTunnelErrorMessage rejected{tunnel_id, common::ErrorCode::remote_port_in_use, 7U};
+    const UnregisterTunnelMessage removal{tunnel_id, 7U};
 
     const auto registration_payload = encode_register_tunnel(registration);
     const auto registered_payload = encode_register_tunnel_ok(registered);
@@ -127,6 +157,7 @@ TEST(RemoteMessagesTest, RejectsInvalidTunnelRegistrationPayloads) {
     EXPECT_FALSE(encode_register_tunnel({"tun_invalid", "0.0.0.0", 6'000U}));
     EXPECT_FALSE(encode_register_tunnel({tunnel_id, "", 6'000U}));
     EXPECT_FALSE(encode_register_tunnel({tunnel_id, "0.0.0.0", 0U}));
+    EXPECT_FALSE(encode_register_tunnel({tunnel_id, "0.0.0.0", 6'000U, 0U}));
     EXPECT_FALSE(encode_register_tunnel_error({tunnel_id, common::ErrorCode::ok}));
 
     auto registration = encode_register_tunnel({tunnel_id, "0.0.0.0", 6'000U});
@@ -142,7 +173,12 @@ TEST(RemoteMessagesTest, RoundTripsWorkerPoolPayloads) {
     const std::string connection_id = generated_id(common::IdKind::connection);
 
     const RequestWorkersMessage request{2U};
-    const WorkerHelloMessage hello{client_id, 42U, worker_id};
+    AuthenticationNonce worker_nonce{};
+    worker_nonce.fill(0x21U);
+    AuthenticationData worker_proof{};
+    worker_proof.fill(0x43U);
+    const WorkerHelloMessage hello{client_id, 42U,          worker_id,
+                                   1'234'567, worker_nonce, worker_proof};
     const WorkerAcceptedMessage accepted{worker_id};
     const StartRelayMessage relay{tunnel_id, connection_id};
     const LocalConnectOkMessage connected{connection_id};
@@ -180,6 +216,236 @@ TEST(RemoteMessagesTest, RejectsInvalidWorkerPoolPayloads) {
     EXPECT_FALSE(encode_worker_accepted({"conn_invalid"}));
     EXPECT_FALSE(encode_start_relay({"tun_invalid", connection_id}));
     EXPECT_FALSE(encode_local_connect_error({connection_id, common::ErrorCode::ok}));
+}
+
+TEST(RemoteMessagesTest, EveryDecoderRejectsAllTruncationsAndTrailingBytes) {
+    const std::string client_id = generated_id(common::IdKind::client);
+    const std::string server_id = generated_id(common::IdKind::server);
+    const std::string tunnel_id = generated_id(common::IdKind::tunnel);
+    const std::string connection_id = generated_id(common::IdKind::connection);
+    AuthenticationNonce nonce{};
+    AuthenticationData digest{};
+    nonce.fill(0x31U);
+    digest.fill(0x71U);
+
+    const auto hello = encode_hello({client_id, kSupportedCapabilities});
+    const auto ack = encode_hello_ack({server_id, -17, nonce, kRequiredCapabilities});
+    const auto auth = encode_auth({client_id, 23, nonce, digest, kRequiredCapabilities});
+    const auto auth_ok = encode_auth_ok({7U, 5'000U, 1U, 8U});
+    const auto auth_error = encode_auth_error({common::ErrorCode::authentication_failed});
+    const auto heartbeat = encode_heartbeat({9U});
+    const auto registration = encode_register_tunnel({tunnel_id, "0.0.0.0", 6'000U, 11U});
+    const auto registration_ok = encode_register_tunnel_ok({tunnel_id, 11U});
+    const auto registration_error =
+        encode_register_tunnel_error({tunnel_id, common::ErrorCode::remote_port_in_use, 11U});
+    const auto unregistration = encode_unregister_tunnel({tunnel_id, 12U});
+    const auto unregistration_ok = encode_unregister_tunnel_ok({tunnel_id, 12U});
+    const auto request_workers = encode_request_workers({4U});
+    const auto worker_hello =
+        encode_worker_hello({client_id, 7U, connection_id, -99, nonce, digest});
+    const auto worker_accepted = encode_worker_accepted({connection_id});
+    const auto relay = encode_start_relay({tunnel_id, connection_id});
+    const auto local_ok = encode_local_connect_ok({connection_id});
+    const auto local_error =
+        encode_local_connect_error({connection_id, common::ErrorCode::local_connect_failed});
+    ASSERT_TRUE(hello);
+    ASSERT_TRUE(ack);
+    ASSERT_TRUE(auth);
+    ASSERT_TRUE(auth_ok);
+    ASSERT_TRUE(auth_error);
+    ASSERT_TRUE(heartbeat);
+    ASSERT_TRUE(registration);
+    ASSERT_TRUE(registration_ok);
+    ASSERT_TRUE(registration_error);
+    ASSERT_TRUE(unregistration);
+    ASSERT_TRUE(unregistration_ok);
+    ASSERT_TRUE(request_workers);
+    ASSERT_TRUE(worker_hello);
+    ASSERT_TRUE(worker_accepted);
+    ASSERT_TRUE(relay);
+    ASSERT_TRUE(local_ok);
+    ASSERT_TRUE(local_error);
+
+    expect_all_truncations_and_trailing_bytes(*hello, decode_hello);
+    expect_all_truncations_and_trailing_bytes(*ack, decode_hello_ack);
+    expect_all_truncations_and_trailing_bytes(*auth, decode_auth);
+    expect_all_truncations_and_trailing_bytes(*auth_ok, decode_auth_ok);
+    expect_all_truncations_and_trailing_bytes(*auth_error, decode_auth_error);
+    expect_all_truncations_and_trailing_bytes(*heartbeat, decode_heartbeat);
+    expect_all_truncations_and_trailing_bytes(*registration, decode_register_tunnel);
+    expect_all_truncations_and_trailing_bytes(*registration_ok, decode_register_tunnel_ok);
+    expect_all_truncations_and_trailing_bytes(*registration_error, decode_register_tunnel_error);
+    expect_all_truncations_and_trailing_bytes(*unregistration, decode_unregister_tunnel);
+    expect_all_truncations_and_trailing_bytes(*unregistration_ok, decode_unregister_tunnel_ok);
+    expect_all_truncations_and_trailing_bytes(*request_workers, decode_request_workers);
+    expect_all_truncations_and_trailing_bytes(*worker_hello, decode_worker_hello);
+    expect_all_truncations_and_trailing_bytes(*worker_accepted, decode_worker_accepted);
+    expect_all_truncations_and_trailing_bytes(*relay, decode_start_relay);
+    expect_all_truncations_and_trailing_bytes(*local_ok, decode_local_connect_ok);
+    expect_all_truncations_and_trailing_bytes(*local_error, decode_local_connect_error);
+}
+
+TEST(RemoteMessagesTest, RejectsEverySemanticWireInvariant) {
+    const std::string client_id = generated_id(common::IdKind::client);
+    const std::string server_id = generated_id(common::IdKind::server);
+    const std::string tunnel_id = generated_id(common::IdKind::tunnel);
+    const std::string connection_id = generated_id(common::IdKind::connection);
+    AuthenticationNonce nonce{};
+    AuthenticationData digest{};
+
+    const auto hello_wire = [&client_id](const std::string_view id,
+                                         const CapabilitySet capabilities) {
+        return wire_payload([&](PayloadWriter& writer) {
+            return writer.write_string(id) && writer.write_u64(capabilities);
+        });
+    };
+    EXPECT_FALSE(decode_hello(hello_wire("client_invalid", kRequiredCapabilities)));
+    EXPECT_FALSE(decode_hello(hello_wire(client_id, 0U)));
+    EXPECT_FALSE(encode_hello({client_id, 0U}));
+    EXPECT_TRUE(encode_hello({client_id, kRequiredCapabilities | (1ULL << 63U)}));
+
+    const auto ack_wire = [&nonce](const std::string_view id, const CapabilitySet capabilities) {
+        return wire_payload([&](PayloadWriter& writer) {
+            return writer.write_string(id) && writer.write_u64(0U) && writer.write_bytes(nonce) &&
+                   writer.write_u64(capabilities);
+        });
+    };
+    EXPECT_FALSE(decode_hello_ack(ack_wire("server_invalid", kRequiredCapabilities)));
+    EXPECT_FALSE(decode_hello_ack(ack_wire(server_id, 0U)));
+    EXPECT_FALSE(decode_hello_ack(ack_wire(server_id, kRequiredCapabilities | (1ULL << 63U))));
+    EXPECT_FALSE(encode_hello_ack({server_id, 0, nonce, 0U}));
+    EXPECT_FALSE(encode_hello_ack({server_id, 0, nonce, kRequiredCapabilities | (1ULL << 63U)}));
+
+    const auto auth_wire = [&nonce, &digest](const std::string_view id,
+                                             const CapabilitySet capabilities) {
+        return wire_payload([&](PayloadWriter& writer) {
+            return writer.write_string(id) && writer.write_u64(0U) && writer.write_bytes(nonce) &&
+                   writer.write_bytes(digest) && writer.write_u64(capabilities);
+        });
+    };
+    EXPECT_FALSE(decode_auth(auth_wire("client_invalid", kRequiredCapabilities)));
+    EXPECT_FALSE(decode_auth(auth_wire(client_id, 0U)));
+    EXPECT_FALSE(decode_auth(auth_wire(client_id, kRequiredCapabilities | (1ULL << 63U))));
+    EXPECT_FALSE(encode_auth({"client_invalid", 0, nonce, digest, kRequiredCapabilities}));
+    EXPECT_FALSE(encode_auth({client_id, 0, nonce, digest, 0U}));
+
+    const auto auth_ok_wire = [](const std::uint64_t generation, const std::uint32_t heartbeat,
+                                 const std::uint16_t minimum, const std::uint16_t maximum) {
+        return wire_payload([&](PayloadWriter& writer) {
+            return writer.write_u64(generation) && writer.write_u32(heartbeat) &&
+                   writer.write_u16(minimum) && writer.write_u16(maximum);
+        });
+    };
+    EXPECT_FALSE(decode_auth_ok(auth_ok_wire(0U, 5'000U, 1U, 8U)));
+    EXPECT_FALSE(decode_auth_ok(auth_ok_wire(1U, 999U, 1U, 8U)));
+    EXPECT_FALSE(decode_auth_ok(auth_ok_wire(1U, 60'001U, 1U, 8U)));
+    EXPECT_FALSE(decode_auth_ok(auth_ok_wire(1U, 5'000U, 9U, 8U)));
+    EXPECT_FALSE(decode_auth_ok(auth_ok_wire(1U, 5'000U, 1U, 129U)));
+
+    const auto error_wire = [](const std::string_view code) {
+        return wire_payload([&](PayloadWriter& writer) { return writer.write_string(code); });
+    };
+    EXPECT_FALSE(decode_auth_error(error_wire("unknown")));
+    EXPECT_FALSE(decode_auth_error(error_wire("ok")));
+
+    const auto tunnel_revision_wire = [&tunnel_id](const std::string_view id,
+                                                   const std::uint64_t revision) {
+        return wire_payload([&](PayloadWriter& writer) {
+            return writer.write_string(id) && writer.write_u64(revision);
+        });
+    };
+    EXPECT_FALSE(decode_register_tunnel_ok(tunnel_revision_wire("tun_invalid", 1U)));
+    EXPECT_FALSE(decode_unregister_tunnel(tunnel_revision_wire(tunnel_id, 0U)));
+    EXPECT_FALSE(encode_register_tunnel_ok({tunnel_id, 0U}));
+    EXPECT_FALSE(encode_unregister_tunnel({"tun_invalid", 1U}));
+    EXPECT_FALSE(encode_unregister_tunnel_ok({tunnel_id, 0U}));
+
+    const auto register_wire = [&tunnel_id](const std::string_view id, const std::string_view host,
+                                            const std::uint16_t port,
+                                            const std::uint64_t revision) {
+        return wire_payload([&](PayloadWriter& writer) {
+            return writer.write_string(id) && writer.write_string(host) && writer.write_u16(port) &&
+                   writer.write_u64(revision);
+        });
+    };
+    EXPECT_FALSE(decode_register_tunnel(register_wire("tun_invalid", "0.0.0.0", 1U, 1U)));
+    EXPECT_FALSE(decode_register_tunnel(register_wire(tunnel_id, "", 1U, 1U)));
+    EXPECT_FALSE(decode_register_tunnel(register_wire(tunnel_id, "0.0.0.0", 0U, 1U)));
+    EXPECT_FALSE(decode_register_tunnel(register_wire(tunnel_id, "0.0.0.0", 1U, 0U)));
+    EXPECT_FALSE(encode_register_tunnel(
+        {tunnel_id, std::string(kMaxTunnelBindHostBytes + 1U, 'x'), 1U, 1U}));
+
+    const auto register_error_wire = [](const std::string_view id, const std::string_view code,
+                                        const std::uint64_t revision) {
+        return wire_payload([&](PayloadWriter& writer) {
+            return writer.write_string(id) && writer.write_string(code) &&
+                   writer.write_u64(revision);
+        });
+    };
+    EXPECT_FALSE(
+        decode_register_tunnel_error(register_error_wire("tun_invalid", "remote_port_in_use", 1U)));
+    EXPECT_FALSE(decode_register_tunnel_error(register_error_wire(tunnel_id, "unknown", 1U)));
+    EXPECT_FALSE(decode_register_tunnel_error(register_error_wire(tunnel_id, "ok", 1U)));
+    EXPECT_FALSE(
+        decode_register_tunnel_error(register_error_wire(tunnel_id, "remote_port_in_use", 0U)));
+    EXPECT_FALSE(
+        encode_register_tunnel_error({"tun_invalid", common::ErrorCode::remote_port_in_use, 1U}));
+    EXPECT_FALSE(
+        encode_register_tunnel_error({tunnel_id, common::ErrorCode::remote_port_in_use, 0U}));
+
+    const auto workers_wire = [](const std::uint16_t count) {
+        return wire_payload([&](PayloadWriter& writer) { return writer.write_u16(count); });
+    };
+    EXPECT_FALSE(decode_request_workers(workers_wire(0U)));
+    EXPECT_FALSE(decode_request_workers(workers_wire(129U)));
+
+    const auto worker_wire = [&nonce, &digest](const std::string_view client,
+                                               const std::uint64_t generation,
+                                               const std::string_view worker) {
+        return wire_payload([&](PayloadWriter& writer) {
+            return writer.write_string(client) && writer.write_u64(generation) &&
+                   writer.write_string(worker) && writer.write_u64(0U) &&
+                   writer.write_bytes(nonce) && writer.write_bytes(digest);
+        });
+    };
+    EXPECT_FALSE(decode_worker_hello(worker_wire("client_invalid", 1U, connection_id)));
+    EXPECT_FALSE(decode_worker_hello(worker_wire(client_id, 0U, connection_id)));
+    EXPECT_FALSE(decode_worker_hello(worker_wire(client_id, 1U, "conn_invalid")));
+    EXPECT_FALSE(encode_worker_hello({"client_invalid", 1U, connection_id}));
+    EXPECT_FALSE(encode_worker_hello({client_id, 1U, "conn_invalid"}));
+
+    const auto identity_wire = [](const std::string_view identity) {
+        return wire_payload([&](PayloadWriter& writer) { return writer.write_string(identity); });
+    };
+    EXPECT_FALSE(decode_worker_accepted(identity_wire("conn_invalid")));
+    EXPECT_FALSE(decode_local_connect_ok(identity_wire("conn_invalid")));
+    EXPECT_FALSE(encode_local_connect_ok({"conn_invalid"}));
+
+    const auto relay_wire = [](const std::string_view tunnel, const std::string_view connection) {
+        return wire_payload([&](PayloadWriter& writer) {
+            return writer.write_string(tunnel) && writer.write_string(connection);
+        });
+    };
+    EXPECT_FALSE(decode_start_relay(relay_wire("tun_invalid", connection_id)));
+    EXPECT_FALSE(decode_start_relay(relay_wire(tunnel_id, "conn_invalid")));
+    EXPECT_FALSE(encode_start_relay({tunnel_id, "conn_invalid"}));
+
+    const auto local_error_wire = [](const std::string_view connection,
+                                     const std::string_view code) {
+        return wire_payload([&](PayloadWriter& writer) {
+            return writer.write_string(connection) && writer.write_string(code);
+        });
+    };
+    EXPECT_FALSE(decode_local_connect_error(local_error_wire("conn_invalid", "timeout")));
+    EXPECT_FALSE(decode_local_connect_error(local_error_wire(connection_id, "unknown")));
+    EXPECT_FALSE(decode_local_connect_error(local_error_wire(connection_id, "ok")));
+    EXPECT_FALSE(
+        encode_local_connect_error({"conn_invalid", common::ErrorCode::local_connect_failed}));
+
+    const auto tagged = encode_worker_timeout_heartbeat_sequence(1U, 1U);
+    ASSERT_TRUE(tagged);
+    constexpr std::uint64_t timeout_bits = 0x1ffULL << 39U;
+    EXPECT_FALSE(decode_worker_idle_timeout_seconds(*tagged & ~timeout_bits).has_value());
 }
 
 } // namespace

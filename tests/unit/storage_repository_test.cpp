@@ -1,6 +1,8 @@
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <iomanip>
+#include <limits>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -203,6 +205,93 @@ TEST(ServerRepositoryTest, EnforcesInputAndConfiguredCountLimits) {
     EXPECT_EQ(wrong_kind_result.error().code(), common::ErrorCode::invalid_argument);
 }
 
+TEST(ServerRepositoryTest, RejectsEveryInvalidRecordFieldBeforePersistence) {
+    test::TemporaryDatabaseFile temporary;
+    auto repository = StateRepository::open(temporary.path_string());
+    ASSERT_TRUE(repository) << repository.error();
+
+    const auto expect_invalid = [&repository](const ServerRecord& record) {
+        const auto created = (*repository)->servers().create(record);
+        ASSERT_FALSE(created);
+        EXPECT_EQ(created.error().code(), common::ErrorCode::invalid_argument) << created.error();
+    };
+    std::vector<ServerRecord> invalid;
+    auto add = [&invalid](ServerRecord value) { invalid.push_back(std::move(value)); };
+
+    ServerRecord value = make_server(100, "valid");
+    value.id = make_id(common::IdKind::tunnel, 100);
+    add(value);
+    value = make_server(101, "");
+    add(value);
+    value = make_server(102, std::string(kMaxNameBytes + 1U, 'x'));
+    add(value);
+    value = make_server(103, std::string{"a\0b", 3U});
+    add(value);
+    value = make_server(104, std::string{"\xff", 1U});
+    add(value);
+    value = make_server(105, "valid");
+    value.credential_ref = "";
+    add(value);
+    value = make_server(106, "valid");
+    value.remote_server_id = std::string(kMaxRemoteServerIdBytes + 1U, 'x');
+    add(value);
+    value = make_server(107, "valid");
+    value.tls_server_name = std::string{"bad\0name", 8U};
+    add(value);
+    value = make_server(108, "valid");
+    value.ca_credential_ref = std::string(kMaxCredentialReferenceBytes + 1U, 'x');
+    add(value);
+    value = make_server(109, "valid");
+    value.client_certificate_ref = "certificate";
+    add(value);
+    value = make_server(110, "valid");
+    value.config_revision = 0U;
+    add(value);
+    value = make_server(111, "valid");
+    value.config_revision =
+        static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) + 1U;
+    add(value);
+    value = make_server(112, "valid");
+    value.desired_state = static_cast<ServerDesiredState>(255U);
+    add(value);
+    value = make_server(113, "valid");
+    value.actual_state = static_cast<ServerActualState>(255U);
+    add(value);
+    value = make_server(114, "valid");
+    value.last_error_code = common::ErrorCode::ok;
+    add(value);
+    value = make_server(115, "valid");
+    value.last_error_code = static_cast<common::ErrorCode>(255U);
+    add(value);
+    value = make_server(116, "valid");
+    value.last_error_message = std::string(kMaxErrorMessageBytes + 1U, 'x');
+    add(value);
+    value = make_server(117, "valid");
+    value.reconnect_attempt =
+        static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()) + 1U;
+    add(value);
+    value = make_server(118, "valid");
+    value.latency_ms = -1;
+    add(value);
+    value = make_server(119, "valid");
+    value.latency_ms = static_cast<std::int64_t>(std::numeric_limits<std::int32_t>::max()) + 1;
+    add(value);
+    value = make_server(120, "valid");
+    value.created_at_unix_ms = -1;
+    add(value);
+    value = make_server(121, "valid");
+    value.updated_at_unix_ms = value.created_at_unix_ms - 1;
+    add(value);
+
+    for (const auto& record : invalid) {
+        SCOPED_TRACE(record.id.str());
+        expect_invalid(record);
+    }
+    auto listed = (*repository)->servers().list();
+    ASSERT_TRUE(listed) << listed.error();
+    EXPECT_TRUE(listed->empty());
+}
+
 TEST(TunnelRepositoryTest, EnforcesPerServerRemoteBindingAndForeignKeys) {
     test::TemporaryDatabaseFile temporary;
     auto repository = StateRepository::open(temporary.path_string());
@@ -239,6 +328,296 @@ TEST(TunnelRepositoryTest, EnforcesPerServerRemoteBindingAndForeignKeys) {
     const auto ambiguous = (*repository)->tunnels().get_by_name("ssh");
     ASSERT_FALSE(ambiguous);
     EXPECT_EQ(ambiguous.error().code(), common::ErrorCode::invalid_argument);
+}
+
+TEST(TunnelRepositoryTest, RejectsEveryInvalidRecordAndTransitionArgument) {
+    test::TemporaryDatabaseFile temporary;
+    auto repository = StateRepository::open(temporary.path_string());
+    ASSERT_TRUE(repository) << repository.error();
+    const ServerRecord server = make_server(130, "validation");
+    ASSERT_TRUE((*repository)->servers().create(server));
+
+    const auto expect_invalid = [&repository](const TunnelRecord& record) {
+        const auto created = (*repository)->tunnels().create(record);
+        ASSERT_FALSE(created);
+        EXPECT_EQ(created.error().code(), common::ErrorCode::invalid_argument) << created.error();
+    };
+    std::vector<TunnelRecord> invalid;
+    auto add = [&invalid](TunnelRecord value) { invalid.push_back(std::move(value)); };
+    TunnelRecord value = make_tunnel(130, server.id, 7'000U, "valid");
+    value.id = make_id(common::IdKind::server, 130);
+    add(value);
+    value = make_tunnel(131, make_id(common::IdKind::tunnel, 1), 7'001U, "valid");
+    add(value);
+    value = make_tunnel(132, server.id, 7'002U, "");
+    add(value);
+    value = make_tunnel(133, server.id, 7'003U, std::string(kMaxNameBytes + 1U, 'x'));
+    add(value);
+    value = make_tunnel(134, server.id, 7'004U, std::string{"\xff", 1U});
+    add(value);
+    value = make_tunnel(135, server.id, 7'005U, "valid");
+    value.protocol = static_cast<TunnelProtocol>(255U);
+    add(value);
+    value = make_tunnel(136, server.id, 7'006U, "valid");
+    value.desired_state = static_cast<TunnelDesiredState>(255U);
+    add(value);
+    value = make_tunnel(137, server.id, 7'007U, "valid");
+    value.actual_state = static_cast<TunnelActualState>(255U);
+    add(value);
+    value = make_tunnel(138, server.id, 7'008U, "valid");
+    value.last_error_code = common::ErrorCode::ok;
+    add(value);
+    value = make_tunnel(139, server.id, 7'009U, "valid");
+    value.last_error_message = std::string(kMaxErrorMessageBytes + 1U, 'x');
+    add(value);
+    value = make_tunnel(140, server.id, 7'010U, "valid");
+    value.config_revision = 0U;
+    add(value);
+    value = make_tunnel(141, server.id, 7'011U, "valid");
+    value.config_revision =
+        static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) + 1U;
+    add(value);
+    value = make_tunnel(142, server.id, 7'012U, "valid");
+    value.created_at_unix_ms = -1;
+    add(value);
+    value = make_tunnel(143, server.id, 7'013U, "valid");
+    value.updated_at_unix_ms = value.created_at_unix_ms - 1;
+    add(value);
+    value = make_tunnel(144, server.id, 7'014U, "valid");
+    value.last_synced_at_unix_ms = value.created_at_unix_ms - 1;
+    add(value);
+    value = make_tunnel(145, server.id, 7'015U, "valid");
+    value.last_synced_at_unix_ms = value.updated_at_unix_ms + 1;
+    add(value);
+
+    for (const auto& record : invalid) {
+        SCOPED_TRACE(record.id.str());
+        expect_invalid(record);
+    }
+
+    const auto wrong_server_id = make_id(common::IdKind::tunnel, 999U);
+    const auto wrong_tunnel_id = make_id(common::IdKind::server, 999U);
+    EXPECT_EQ((*repository)->tunnels().list_by_server(wrong_server_id).error().code(),
+              common::ErrorCode::invalid_argument);
+    EXPECT_EQ((*repository)->tunnels().get_by_id(wrong_tunnel_id).error().code(),
+              common::ErrorCode::invalid_argument);
+    EXPECT_EQ((*repository)->tunnels().get_by_name("").error().code(),
+              common::ErrorCode::invalid_argument);
+    EXPECT_EQ(
+        (*repository)->tunnels().get_by_name(std::string(kMaxNameBytes + 1U, 'x')).error().code(),
+        common::ErrorCode::invalid_argument);
+    EXPECT_EQ((*repository)->tunnels().mark_removed(wrong_tunnel_id, 1).error().code(),
+              common::ErrorCode::invalid_argument);
+    EXPECT_EQ((*repository)->tunnels().erase(wrong_tunnel_id).error().code(),
+              common::ErrorCode::invalid_argument);
+    EXPECT_EQ((*repository)
+                  ->tunnels()
+                  .mark_active_pending_by_server(wrong_server_id, std::nullopt, 1)
+                  .error()
+                  .code(),
+              common::ErrorCode::invalid_argument);
+    EXPECT_EQ((*repository)
+                  ->tunnels()
+                  .mark_active_pending_by_server(server.id, std::nullopt, -1)
+                  .error()
+                  .code(),
+              common::ErrorCode::invalid_argument);
+    EXPECT_EQ((*repository)
+                  ->tunnels()
+                  .mark_active_pending_by_server(server.id,
+                                                 common::Error{common::ErrorCode::ok, "invalid"}, 1)
+                  .error()
+                  .code(),
+              common::ErrorCode::invalid_argument);
+    EXPECT_EQ((*repository)
+                  ->tunnels()
+                  .mark_active_pending_by_server(
+                      server.id,
+                      common::Error{common::ErrorCode::connection_failed,
+                                    std::string(kMaxErrorMessageBytes + 1U, 'x')},
+                      1)
+                  .error()
+                  .code(),
+              common::ErrorCode::invalid_argument);
+
+    const TunnelRecord tunnel = make_tunnel(150, server.id, 7'100U, "conditional");
+    ASSERT_TRUE((*repository)->tunnels().create(tunnel));
+    const auto conditional = [&repository, &tunnel,
+                              &server](const common::Id& id, const common::Id& server_id,
+                                       const std::uint64_t revision, const TunnelActualState state,
+                                       const std::optional<common::Error>& error,
+                                       const std::int64_t updated_at) {
+        return (*repository)
+            ->tunnels()
+            .update_runtime_state_if_revision(id, server_id, revision, state, error, updated_at,
+                                              false);
+    };
+    EXPECT_FALSE(
+        conditional(wrong_tunnel_id, server.id, 1U, TunnelActualState::pending, std::nullopt, 1));
+    EXPECT_FALSE(
+        conditional(tunnel.id, wrong_server_id, 1U, TunnelActualState::pending, std::nullopt, 1));
+    EXPECT_FALSE(
+        conditional(tunnel.id, server.id, 0U, TunnelActualState::pending, std::nullopt, 1));
+    EXPECT_FALSE(
+        conditional(tunnel.id, server.id,
+                    static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) + 1U,
+                    TunnelActualState::pending, std::nullopt, 1));
+    EXPECT_FALSE(
+        conditional(tunnel.id, server.id, 1U, TunnelActualState::removing, std::nullopt, 1));
+    EXPECT_FALSE(
+        conditional(tunnel.id, server.id, 1U, TunnelActualState::pending, std::nullopt, -1));
+    EXPECT_FALSE(conditional(tunnel.id, server.id, 1U, TunnelActualState::pending,
+                             common::Error{common::ErrorCode::ok, "invalid"}, 1));
+    EXPECT_FALSE(conditional(tunnel.id, server.id, 1U, TunnelActualState::pending,
+                             common::Error{common::ErrorCode::connection_failed,
+                                           std::string(kMaxErrorMessageBytes + 1U, 'x')},
+                             1));
+}
+
+TEST(StorageRepositoryCorruptionTest, RejectsMalformedServerAndTunnelRowsFieldByField) {
+    test::TemporaryDatabaseFile temporary;
+    auto repository = StateRepository::open(temporary.path_string());
+    ASSERT_TRUE(repository) << repository.error();
+    const ServerRecord server = make_server(160, "corrupt-server");
+    const TunnelRecord tunnel = make_tunnel(160, server.id, 7'200U, "corrupt-tunnel");
+    ASSERT_TRUE((*repository)->servers().create(server));
+    ASSERT_TRUE((*repository)->tunnels().create(tunnel));
+
+    test::NativeSqliteDatabase injector{temporary.path()};
+    injector.execute("PRAGMA ignore_check_constraints = ON");
+    struct Corruption final {
+        std::string name;
+        std::string corrupt;
+        std::string restore;
+    };
+    const std::string server_where = " WHERE id = '" + server.id.str() + "'";
+    const std::vector<Corruption> server_corruptions{
+        {"id", "UPDATE servers SET id = 'server_invalid'" + server_where,
+         "UPDATE servers SET id = '" + server.id.str() + "' WHERE id = 'server_invalid'"},
+        {"name-type", "UPDATE servers SET name = X'37'" + server_where,
+         "UPDATE servers SET name = 'corrupt-server'" + server_where},
+        {"endpoint-type", "UPDATE servers SET endpoint = X'37'" + server_where,
+         "UPDATE servers SET endpoint = 'tunnel.example.com:2333'" + server_where},
+        {"endpoint-canonical",
+         "UPDATE servers SET endpoint = 'TUNNEL.EXAMPLE.COM:2333'" + server_where,
+         "UPDATE servers SET endpoint = 'tunnel.example.com:2333'" + server_where},
+        {"credential-type", "UPDATE servers SET credential_ref = X'37'" + server_where,
+         "UPDATE servers SET credential_ref = 'credential-key'" + server_where},
+        {"remote-id-type", "UPDATE servers SET remote_server_id = X'37'" + server_where,
+         "UPDATE servers SET remote_server_id = 'remote-server-id'" + server_where},
+        {"desired-state", "UPDATE servers SET desired_state = 'invalid'" + server_where,
+         "UPDATE servers SET desired_state = 'enabled'" + server_where},
+        {"actual-state", "UPDATE servers SET actual_state = 'invalid'" + server_where,
+         "UPDATE servers SET actual_state = 'online'" + server_where},
+        {"error-code", "UPDATE servers SET last_error_code = 'ok'" + server_where,
+         "UPDATE servers SET last_error_code = 'connection_timeout'" + server_where},
+        {"error-message-type", "UPDATE servers SET last_error_message = X'37'" + server_where,
+         "UPDATE servers SET last_error_message = 'previous non-sensitive timeout'" + server_where},
+        {"reconnect-type", "UPDATE servers SET reconnect_attempt = 'three'" + server_where,
+         "UPDATE servers SET reconnect_attempt = 3" + server_where},
+        {"reconnect-negative", "UPDATE servers SET reconnect_attempt = -1" + server_where,
+         "UPDATE servers SET reconnect_attempt = 3" + server_where},
+        {"reconnect-large", "UPDATE servers SET reconnect_attempt = 2147483648" + server_where,
+         "UPDATE servers SET reconnect_attempt = 3" + server_where},
+        {"latency-type", "UPDATE servers SET latency_ms = 'slow'" + server_where,
+         "UPDATE servers SET latency_ms = 42" + server_where},
+        {"latency-negative", "UPDATE servers SET latency_ms = -1" + server_where,
+         "UPDATE servers SET latency_ms = 42" + server_where},
+        {"created-type", "UPDATE servers SET created_at = 'now'" + server_where,
+         "UPDATE servers SET created_at = 1160" + server_where},
+        {"created-negative", "UPDATE servers SET created_at = -1" + server_where,
+         "UPDATE servers SET created_at = 1160" + server_where},
+        {"updated-before-created", "UPDATE servers SET updated_at = 1" + server_where,
+         "UPDATE servers SET updated_at = 2160" + server_where},
+        {"tls-type", "UPDATE servers SET tls_server_name = X'37'" + server_where,
+         "UPDATE servers SET tls_server_name = NULL" + server_where},
+        {"ca-type", "UPDATE servers SET ca_credential_ref = X'37'" + server_where,
+         "UPDATE servers SET ca_credential_ref = NULL" + server_where},
+        {"certificate-type", "UPDATE servers SET client_certificate_ref = X'37'" + server_where,
+         "UPDATE servers SET client_certificate_ref = NULL" + server_where},
+        {"private-key-type", "UPDATE servers SET client_private_key_ref = X'37'" + server_where,
+         "UPDATE servers SET client_private_key_ref = NULL" + server_where},
+        {"revision-type", "UPDATE servers SET config_revision = 'one'" + server_where,
+         "UPDATE servers SET config_revision = 1" + server_where},
+        {"revision-zero", "UPDATE servers SET config_revision = 0" + server_where,
+         "UPDATE servers SET config_revision = 1" + server_where},
+        {"ownership", "UPDATE servers SET managed_by_config = 2" + server_where,
+         "UPDATE servers SET managed_by_config = 0" + server_where},
+    };
+    for (const auto& item : server_corruptions) {
+        SCOPED_TRACE("server " + item.name);
+        injector.execute(item.corrupt);
+        const auto listed = (*repository)->servers().list();
+        ASSERT_FALSE(listed);
+        EXPECT_EQ(listed.error().code(), common::ErrorCode::database_error) << listed.error();
+        injector.execute(item.restore);
+        ASSERT_TRUE((*repository)->servers().get_by_id(server.id));
+    }
+
+    const std::string tunnel_where = " WHERE id = '" + tunnel.id.str() + "'";
+    const std::vector<Corruption> tunnel_corruptions{
+        {"id", "UPDATE tunnels SET id = 'tunnel_invalid'" + tunnel_where,
+         "UPDATE tunnels SET id = '" + tunnel.id.str() + "' WHERE id = 'tunnel_invalid'"},
+        {"name-type", "UPDATE tunnels SET name = X'37'" + tunnel_where,
+         "UPDATE tunnels SET name = 'corrupt-tunnel'" + tunnel_where},
+        {"server-id-type", "UPDATE tunnels SET server_id = 7" + tunnel_where,
+         "UPDATE tunnels SET server_id = '" + server.id.str() + "'" + tunnel_where},
+        {"server-id-value", "UPDATE tunnels SET server_id = 'server_invalid'" + tunnel_where,
+         "UPDATE tunnels SET server_id = '" + server.id.str() + "'" + tunnel_where},
+        {"protocol-type", "UPDATE tunnels SET protocol = 7" + tunnel_where,
+         "UPDATE tunnels SET protocol = 'tcp'" + tunnel_where},
+        {"protocol-value", "UPDATE tunnels SET protocol = 'udp'" + tunnel_where,
+         "UPDATE tunnels SET protocol = 'tcp'" + tunnel_where},
+        {"local-host-type", "UPDATE tunnels SET local_host = X'37'" + tunnel_where,
+         "UPDATE tunnels SET local_host = '127.0.0.1'" + tunnel_where},
+        {"local-host-value", "UPDATE tunnels SET local_host = 'LOCALHOST'" + tunnel_where,
+         "UPDATE tunnels SET local_host = '127.0.0.1'" + tunnel_where},
+        {"local-port-type", "UPDATE tunnels SET local_port = 'twenty-two'" + tunnel_where,
+         "UPDATE tunnels SET local_port = 22" + tunnel_where},
+        {"local-port-zero", "UPDATE tunnels SET local_port = 0" + tunnel_where,
+         "UPDATE tunnels SET local_port = 22" + tunnel_where},
+        {"remote-host-type", "UPDATE tunnels SET remote_host = X'37'" + tunnel_where,
+         "UPDATE tunnels SET remote_host = '0.0.0.0'" + tunnel_where},
+        {"remote-port-type", "UPDATE tunnels SET remote_port = 'port'" + tunnel_where,
+         "UPDATE tunnels SET remote_port = 7200" + tunnel_where},
+        {"remote-port-large", "UPDATE tunnels SET remote_port = 65536" + tunnel_where,
+         "UPDATE tunnels SET remote_port = 7200" + tunnel_where},
+        {"desired-state", "UPDATE tunnels SET desired_state = 'invalid'" + tunnel_where,
+         "UPDATE tunnels SET desired_state = 'active'" + tunnel_where},
+        {"actual-state", "UPDATE tunnels SET actual_state = 'invalid'" + tunnel_where,
+         "UPDATE tunnels SET actual_state = 'active'" + tunnel_where},
+        {"error-code", "UPDATE tunnels SET last_error_code = 'ok'" + tunnel_where,
+         "UPDATE tunnels SET last_error_code = 'local_connect_failed'" + tunnel_where},
+        {"error-message-type", "UPDATE tunnels SET last_error_message = X'37'" + tunnel_where,
+         "UPDATE tunnels SET last_error_message = 'previous local failure'" + tunnel_where},
+        {"created-type", "UPDATE tunnels SET created_at = 'now'" + tunnel_where,
+         "UPDATE tunnels SET created_at = 3160" + tunnel_where},
+        {"created-negative", "UPDATE tunnels SET created_at = -1" + tunnel_where,
+         "UPDATE tunnels SET created_at = 3160" + tunnel_where},
+        {"updated-before-created", "UPDATE tunnels SET updated_at = 1" + tunnel_where,
+         "UPDATE tunnels SET updated_at = 4160" + tunnel_where},
+        {"last-synced-type", "UPDATE tunnels SET last_synced_at = 'now'" + tunnel_where,
+         "UPDATE tunnels SET last_synced_at = 3660" + tunnel_where},
+        {"last-synced-early", "UPDATE tunnels SET last_synced_at = 1" + tunnel_where,
+         "UPDATE tunnels SET last_synced_at = 3660" + tunnel_where},
+        {"last-synced-late", "UPDATE tunnels SET last_synced_at = 9999" + tunnel_where,
+         "UPDATE tunnels SET last_synced_at = 3660" + tunnel_where},
+        {"revision-type", "UPDATE tunnels SET config_revision = 'one'" + tunnel_where,
+         "UPDATE tunnels SET config_revision = 1" + tunnel_where},
+        {"revision-zero", "UPDATE tunnels SET config_revision = 0" + tunnel_where,
+         "UPDATE tunnels SET config_revision = 1" + tunnel_where},
+        {"ownership", "UPDATE tunnels SET managed_by_config = 2" + tunnel_where,
+         "UPDATE tunnels SET managed_by_config = 0" + tunnel_where},
+    };
+    for (const auto& item : tunnel_corruptions) {
+        SCOPED_TRACE("tunnel " + item.name);
+        injector.execute(item.corrupt);
+        const auto listed = (*repository)->tunnels().list();
+        ASSERT_FALSE(listed);
+        EXPECT_EQ(listed.error().code(), common::ErrorCode::database_error) << listed.error();
+        injector.execute(item.restore);
+        ASSERT_TRUE((*repository)->tunnels().get_by_id(tunnel.id));
+    }
 }
 
 TEST(TunnelRepositoryTest, RoundTripsUpdatesTombstonesAndCascadingErase) {
@@ -516,6 +895,246 @@ TEST(StorageTransactionTest, SerializesConcurrentWritesOnOneConnection) {
     const auto servers = (*repository)->servers().list();
     ASSERT_TRUE(servers) << servers.error();
     EXPECT_EQ(servers->size(), kWorkerCount);
+}
+
+TEST(StorageRepositoryInjectionTest, TriggerFailuresRollBackEveryMutation) {
+    {
+        test::TemporaryDatabaseFile temporary;
+        auto repository = StateRepository::open(temporary.path_string());
+        ASSERT_TRUE(repository) << repository.error();
+        test::NativeSqliteDatabase injector{temporary.path()};
+        injector.execute("CREATE TRIGGER reject_server_insert BEFORE INSERT ON servers BEGIN "
+                         "SELECT RAISE(ABORT, 'injected server insert'); END");
+        const auto created = (*repository)->servers().create(make_server(110, "insert"));
+        ASSERT_FALSE(created);
+        EXPECT_EQ(created.error().code(), common::ErrorCode::invalid_argument);
+    }
+    {
+        test::TemporaryDatabaseFile temporary;
+        auto repository = StateRepository::open(temporary.path_string());
+        ASSERT_TRUE(repository) << repository.error();
+        ServerRecord server = make_server(111, "update");
+        ASSERT_TRUE((*repository)->servers().create(server));
+        test::NativeSqliteDatabase injector{temporary.path()};
+        injector.execute("CREATE TRIGGER reject_server_update BEFORE UPDATE ON servers BEGIN "
+                         "SELECT RAISE(ABORT, 'injected server update'); END");
+        server.endpoint = make_endpoint("new.example.com:2444");
+        ++server.updated_at_unix_ms;
+        ++server.config_revision;
+        const auto updated = (*repository)->servers().update(server);
+        ASSERT_FALSE(updated);
+        EXPECT_EQ(updated.error().code(), common::ErrorCode::invalid_argument);
+    }
+    {
+        test::TemporaryDatabaseFile temporary;
+        auto repository = StateRepository::open(temporary.path_string());
+        ASSERT_TRUE(repository) << repository.error();
+        const ServerRecord server = make_server(112, "mark-children");
+        const TunnelRecord tunnel = make_tunnel(112, server.id, 6'300, "child");
+        ASSERT_TRUE((*repository)->servers().create(server));
+        ASSERT_TRUE((*repository)->tunnels().create(tunnel));
+        test::NativeSqliteDatabase injector{temporary.path()};
+        injector.execute("CREATE TRIGGER reject_child_tombstone BEFORE UPDATE OF desired_state ON "
+                         "tunnels BEGIN SELECT RAISE(ABORT, 'injected child tombstone'); END");
+        const auto marked = (*repository)->servers().mark_removed(
+            server.id, std::max(server.updated_at_unix_ms, tunnel.updated_at_unix_ms) + 100);
+        ASSERT_FALSE(marked);
+        EXPECT_EQ(marked.error().code(), common::ErrorCode::invalid_argument);
+        EXPECT_EQ((*repository)->tunnels().get_by_id(tunnel.id)->desired_state,
+                  TunnelDesiredState::active);
+    }
+    {
+        test::TemporaryDatabaseFile temporary;
+        auto repository = StateRepository::open(temporary.path_string());
+        ASSERT_TRUE(repository) << repository.error();
+        const ServerRecord server = make_server(113, "mark-server");
+        ASSERT_TRUE((*repository)->servers().create(server));
+        test::NativeSqliteDatabase injector{temporary.path()};
+        injector.execute("CREATE TRIGGER reject_server_tombstone BEFORE UPDATE OF desired_state ON "
+                         "servers BEGIN SELECT RAISE(ABORT, 'injected server tombstone'); END");
+        const auto marked = (*repository)->servers().mark_removed(
+            server.id, server.updated_at_unix_ms + 100);
+        ASSERT_FALSE(marked);
+        EXPECT_EQ(marked.error().code(), common::ErrorCode::invalid_argument);
+        EXPECT_EQ((*repository)->servers().get_by_id(server.id)->desired_state,
+                  ServerDesiredState::enabled);
+    }
+    {
+        test::TemporaryDatabaseFile temporary;
+        auto repository = StateRepository::open(temporary.path_string());
+        ASSERT_TRUE(repository) << repository.error();
+        const ServerRecord server = make_server(114, "erase-server");
+        const TunnelRecord tunnel = make_tunnel(114, server.id, 6'310, "child");
+        ASSERT_TRUE((*repository)->servers().create(server));
+        ASSERT_TRUE((*repository)->tunnels().create(tunnel));
+        const std::int64_t tombstone_at = std::max(server.updated_at_unix_ms,
+                                                   tunnel.updated_at_unix_ms) + 100;
+        ASSERT_TRUE((*repository)->tunnels().mark_removed(tunnel.id, tombstone_at));
+        ASSERT_TRUE((*repository)->servers().mark_removed(server.id, tombstone_at + 100));
+        test::NativeSqliteDatabase injector{temporary.path()};
+        injector.execute("CREATE TRIGGER reject_server_delete BEFORE DELETE ON servers BEGIN "
+                         "SELECT RAISE(ABORT, 'injected server erase'); END");
+        const auto erased = (*repository)->servers().erase(server.id);
+        ASSERT_FALSE(erased);
+        EXPECT_EQ(erased.error().code(), common::ErrorCode::invalid_argument);
+        EXPECT_TRUE((*repository)->servers().get_by_id(server.id));
+    }
+    {
+        test::TemporaryDatabaseFile temporary;
+        auto repository = StateRepository::open(temporary.path_string());
+        ASSERT_TRUE(repository) << repository.error();
+        const ServerRecord server = make_server(115, "tunnel-mutations");
+        TunnelRecord tunnel = make_tunnel(115, server.id, 6'320, "tunnel");
+        ASSERT_TRUE((*repository)->servers().create(server));
+        {
+            test::NativeSqliteDatabase injector{temporary.path()};
+            injector.execute("CREATE TRIGGER reject_tunnel_insert BEFORE INSERT ON tunnels BEGIN "
+                             "SELECT RAISE(ABORT, 'injected tunnel insert'); END");
+            const auto created = (*repository)->tunnels().create(tunnel);
+            ASSERT_FALSE(created);
+            EXPECT_EQ(created.error().code(), common::ErrorCode::invalid_argument);
+            injector.execute("DROP TRIGGER reject_tunnel_insert");
+        }
+        ASSERT_TRUE((*repository)->tunnels().create(tunnel));
+        {
+            test::NativeSqliteDatabase injector{temporary.path()};
+            injector.execute("CREATE TRIGGER reject_tunnel_update BEFORE UPDATE ON tunnels BEGIN "
+                             "SELECT RAISE(ABORT, 'injected tunnel update'); END");
+            tunnel.local_endpoint = make_endpoint("127.0.0.1:2222");
+            ++tunnel.updated_at_unix_ms;
+            ++tunnel.config_revision;
+            const auto updated = (*repository)->tunnels().update(tunnel);
+            ASSERT_FALSE(updated);
+            EXPECT_EQ(updated.error().code(), common::ErrorCode::invalid_argument);
+            injector.execute("DROP TRIGGER reject_tunnel_update");
+        }
+        {
+            test::NativeSqliteDatabase injector{temporary.path()};
+            injector.execute(
+                "CREATE TRIGGER reject_tunnel_tombstone BEFORE UPDATE OF desired_state ON "
+                "tunnels BEGIN SELECT RAISE(ABORT, 'injected tunnel tombstone'); END");
+            const auto marked = (*repository)->tunnels().mark_removed(
+                tunnel.id, tunnel.updated_at_unix_ms + 100);
+            ASSERT_FALSE(marked);
+            EXPECT_EQ(marked.error().code(), common::ErrorCode::invalid_argument);
+            injector.execute("DROP TRIGGER reject_tunnel_tombstone");
+        }
+        ASSERT_TRUE(
+            (*repository)->tunnels().mark_removed(tunnel.id, tunnel.updated_at_unix_ms + 200));
+        {
+            test::NativeSqliteDatabase injector{temporary.path()};
+            injector.execute("CREATE TRIGGER reject_tunnel_delete BEFORE DELETE ON tunnels BEGIN "
+                             "SELECT RAISE(ABORT, 'injected tunnel erase'); END");
+            const auto erased = (*repository)->tunnels().erase(tunnel.id);
+            ASSERT_FALSE(erased);
+            EXPECT_EQ(erased.error().code(), common::ErrorCode::invalid_argument);
+            EXPECT_TRUE((*repository)->tunnels().get_by_id(tunnel.id));
+        }
+    }
+    {
+        test::TemporaryDatabaseFile temporary;
+        auto repository = StateRepository::open(temporary.path_string());
+        ASSERT_TRUE(repository) << repository.error();
+        const ServerRecord server = make_server(116, "runtime-transition");
+        const TunnelRecord tunnel = make_tunnel(116, server.id, 6'330, "runtime");
+        ASSERT_TRUE((*repository)->servers().create(server));
+        ASSERT_TRUE((*repository)->tunnels().create(tunnel));
+        test::NativeSqliteDatabase injector{temporary.path()};
+        injector.execute("CREATE TRIGGER reject_runtime_transition BEFORE UPDATE OF actual_state ON "
+                         "tunnels WHEN NEW.actual_state = 'active' BEGIN "
+                         "SELECT RAISE(ABORT, 'injected runtime transition'); END");
+        const auto transition = (*repository)->tunnels().update_runtime_state_if_revision(
+            tunnel.id, server.id, tunnel.config_revision, TunnelActualState::active, std::nullopt,
+            tunnel.updated_at_unix_ms + 100, true);
+        ASSERT_FALSE(transition);
+        EXPECT_EQ(transition.error().code(), common::ErrorCode::invalid_argument);
+    }
+}
+
+TEST(StorageRepositoryInjectionTest, ReadAndCascadePrepareFailuresAreReported) {
+    {
+        test::TemporaryDatabaseFile temporary;
+        auto repository = StateRepository::open(temporary.path_string());
+        ASSERT_TRUE(repository) << repository.error();
+        const ServerRecord server = make_server(117, "read-servers");
+        ASSERT_TRUE((*repository)->servers().create(server));
+        test::NativeSqliteDatabase injector{temporary.path()};
+        injector.execute("DROP TABLE tunnels; DROP TABLE servers; "
+                         "CREATE TABLE servers(id TEXT PRIMARY KEY)");
+
+        const auto by_id = (*repository)->servers().get_by_id(server.id);
+        ASSERT_FALSE(by_id);
+        EXPECT_EQ(by_id.error().code(), common::ErrorCode::database_error);
+        const auto by_name = (*repository)->servers().get_by_name("read-servers");
+        ASSERT_FALSE(by_name);
+        EXPECT_EQ(by_name.error().code(), common::ErrorCode::database_error);
+        const auto listed = (*repository)->servers().list();
+        ASSERT_FALSE(listed);
+        EXPECT_EQ(listed.error().code(), common::ErrorCode::database_error);
+    }
+    {
+        test::TemporaryDatabaseFile temporary;
+        auto repository = StateRepository::open(temporary.path_string());
+        ASSERT_TRUE(repository) << repository.error();
+        const ServerRecord server = make_server(118, "read-tunnels");
+        const TunnelRecord tunnel = make_tunnel(118, server.id, 6'340, "read");
+        ASSERT_TRUE((*repository)->servers().create(server));
+        ASSERT_TRUE((*repository)->tunnels().create(tunnel));
+        test::NativeSqliteDatabase injector{temporary.path()};
+        injector.execute("DROP TABLE tunnels; CREATE TABLE tunnels(id TEXT PRIMARY KEY)");
+
+        const auto by_id = (*repository)->tunnels().get_by_id(tunnel.id);
+        ASSERT_FALSE(by_id);
+        EXPECT_EQ(by_id.error().code(), common::ErrorCode::database_error);
+        const auto by_name = (*repository)->tunnels().get_by_name("read");
+        ASSERT_FALSE(by_name);
+        EXPECT_EQ(by_name.error().code(), common::ErrorCode::database_error);
+        const auto listed = (*repository)->tunnels().list();
+        ASSERT_FALSE(listed);
+        EXPECT_EQ(listed.error().code(), common::ErrorCode::database_error);
+        const auto by_server = (*repository)->tunnels().list_by_server(server.id);
+        ASSERT_FALSE(by_server);
+        EXPECT_EQ(by_server.error().code(), common::ErrorCode::database_error);
+        const auto pending = (*repository)->tunnels().mark_active_pending_by_server(
+            server.id, std::nullopt, tunnel.updated_at_unix_ms + 100);
+        ASSERT_FALSE(pending);
+        EXPECT_EQ(pending.error().code(), common::ErrorCode::database_error);
+    }
+    {
+        test::TemporaryDatabaseFile temporary;
+        auto repository = StateRepository::open(temporary.path_string());
+        ASSERT_TRUE(repository) << repository.error();
+        const ServerRecord server = make_server(119, "cascade-servers");
+        const TunnelRecord tunnel = make_tunnel(119, server.id, 6'350, "cascade");
+        ASSERT_TRUE((*repository)->servers().create(server));
+        ASSERT_TRUE((*repository)->tunnels().create(tunnel));
+        test::NativeSqliteDatabase injector{temporary.path()};
+        injector.execute("DROP TABLE tunnels");
+
+        const auto marked = (*repository)->servers().mark_removed(
+            server.id, std::max(server.updated_at_unix_ms, tunnel.updated_at_unix_ms) + 100);
+        ASSERT_FALSE(marked);
+        EXPECT_EQ(marked.error().code(), common::ErrorCode::database_error);
+    }
+    {
+        test::TemporaryDatabaseFile temporary;
+        auto repository = StateRepository::open(temporary.path_string());
+        ASSERT_TRUE(repository) << repository.error();
+        const ServerRecord server = make_server(120, "erase-servers");
+        const TunnelRecord tunnel = make_tunnel(120, server.id, 6'360, "erase");
+        ASSERT_TRUE((*repository)->servers().create(server));
+        ASSERT_TRUE((*repository)->tunnels().create(tunnel));
+        const std::int64_t tombstone_at = std::max(server.updated_at_unix_ms,
+                                                   tunnel.updated_at_unix_ms) + 100;
+        ASSERT_TRUE((*repository)->tunnels().mark_removed(tunnel.id, tombstone_at));
+        ASSERT_TRUE((*repository)->servers().mark_removed(server.id, tombstone_at + 100));
+        test::NativeSqliteDatabase injector{temporary.path()};
+        injector.execute("DROP TABLE tunnels");
+
+        const auto erased = (*repository)->servers().erase(server.id);
+        ASSERT_FALSE(erased);
+        EXPECT_EQ(erased.error().code(), common::ErrorCode::database_error);
+    }
 }
 
 } // namespace

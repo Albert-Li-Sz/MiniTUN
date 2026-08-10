@@ -1,11 +1,15 @@
-MiniTun 不会安装证书、私钥或认证 Token。
+MiniTun 不会安装或生成 TLS 私钥、客户端 PSK 或客户端策略。
 
-启用 minitun-server.service 前，请安装以下由管理员提供的文件：
+启用 minitun-server.service 前，请由管理员安装：
 
-  server.crt  PEM 证书链，minitun-server 必须具有读取权限
-  server.key  匹配的 PEM 私钥，模式 0600，所有者为 minitun-server
-  token       认证 Token，模式 0600，所有者为 minitun-server
+  server.crt   PEM 证书链，minitun-server 必须具有读取权限
+  server.key   匹配的 PEM 私钥，0600，owner minitun-server
+  clients.json 严格客户端策略，0640，owner/group minitun-server
+  client PSK   每客户端独立文件，0600，owner minitun-server
 
-软件包提供的 unit 监听 0.0.0.0:2333，不额外限制隧道端口，应用层默认允许全部有效
-TCP 端口 1-65535。如需设置端口白名单或修改监听地址，请使用
-systemctl edit minitun-server 创建 override，不要直接修改发行方 unit。
+策略示例安装在 /etc/minitun-server/clients.json.example。若策略使用
+certificate_san 或 certificate_sha256，还需通过 systemd override 增加 --client-ca。
+
+软件包 unit 监听 0.0.0.0:2333。公开 tunnel 端口由 clients.json 的 allowed_ports
+逐客户端限制；云防火墙也应只放行实际使用的端口。修改启动选项请使用
+systemctl edit minitun-server，不要直接编辑发行方 unit。

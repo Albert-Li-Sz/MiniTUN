@@ -63,6 +63,20 @@
       }
     },
     {
+      "name": "coverage",
+      "displayName": "GCC coverage build",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_COMPILER": "gcc",
+        "CMAKE_CXX_COMPILER": "g++",
+        "MINITUN_USE_SYSTEM_DEPS": "ON",
+        "MINITUN_ENABLE_COVERAGE": "ON",
+        "MINITUN_ENABLE_FAULT_INJECTION": "ON",
+        "MINITUN_WARNINGS_AS_ERRORS": "ON"
+      }
+    },
+    {
       "name": "fuzz",
       "displayName": "LibFuzzer smoke build with ASan and UBSan",
       "inherits": "asan",
@@ -130,6 +144,10 @@
       "configurePreset": "tsan"
     },
     {
+      "name": "coverage",
+      "configurePreset": "coverage"
+    },
+    {
       "name": "fuzz",
       "configurePreset": "fuzz",
       "targets": [
@@ -177,6 +195,13 @@
     {
       "name": "tsan",
       "configurePreset": "tsan",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "coverage",
+      "configurePreset": "coverage",
       "output": {
         "outputOnFailure": true
       }

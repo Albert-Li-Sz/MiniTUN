@@ -20,6 +20,7 @@
 #include <minitun/common/error.hpp>
 #include <minitun/common/id.hpp>
 #include <minitun/common/logging.hpp>
+#include <minitun/protocol/tls.hpp>
 #include <minitun/server/accept_recovery.hpp>
 
 namespace minitun::server {
@@ -41,7 +42,8 @@ inline constexpr std::size_t kMaximumTotalTunnels = 100'000U;
                                                     const common::PortRange& allowed_ports) {
     if (!common::Id::parse(binding.client_id, common::IdKind::client) ||
         !common::Id::parse(binding.tunnel_id, common::IdKind::tunnel) ||
-        binding.session_generation == 0U || binding.bind_host.empty() || binding.bind_port == 0U) {
+        binding.session_generation == 0U || binding.config_revision == 0U ||
+        binding.bind_host.empty() || binding.bind_port == 0U) {
         return common::Result<void>::failure(common::ErrorCode::invalid_argument,
                                              "tunnel binding is invalid");
     }
@@ -133,6 +135,7 @@ class TunnelRegistry::Impl final {
                     acceptor_.get_executor(),
                     [self](const asio::error_code& error, asio::ip::tcp::socket socket) mutable {
                         if (!error) {
+                            protocol::configure_tcp_transport(socket);
                             self->retry_policy_.reset();
                             if (self->connection_handler_) {
                                 try {
@@ -199,7 +202,8 @@ class TunnelRegistry::Impl final {
           max_total_tunnels_(max_total_tunnels), connection_handler_(std::move(connection_handler)),
           reserved_descriptor_(std::make_shared<ReservedFileDescriptor>()) {}
 
-    [[nodiscard]] common::Result<void> register_tunnel(const TunnelBinding& binding) {
+    [[nodiscard]] common::Result<void> register_tunnel(const TunnelBinding& binding,
+                                                       const std::size_t max_for_client) {
         auto valid = validate_binding(binding, allowed_ports_);
         if (!valid) {
             return valid;
@@ -218,7 +222,11 @@ class TunnelRegistry::Impl final {
             existing->second->stop();
             listeners_.erase(existing);
         }
-        if (client_size(binding.client_id) >= max_tunnels_per_client_) {
+        const std::size_t effective_client_limit =
+            max_for_client == 0U ? max_tunnels_per_client_
+                                 : std::min(max_for_client, max_tunnels_per_client_);
+        if (effective_client_limit == 0U ||
+            client_size(binding.client_id) >= effective_client_limit) {
             return common::Result<void>::failure(common::ErrorCode::resource_exhausted,
                                                  "client tunnel limit has been reached");
         }
@@ -238,10 +246,13 @@ class TunnelRegistry::Impl final {
     }
 
     void unregister_tunnel(const std::string_view client_id, const std::uint64_t session_generation,
-                           const std::string_view tunnel_id) noexcept {
+                           const std::string_view tunnel_id,
+                           const std::uint64_t config_revision) noexcept {
         const auto iterator = listeners_.find(binding_key(client_id, tunnel_id));
         if (iterator == listeners_.end() ||
-            iterator->second->binding().session_generation != session_generation) {
+            iterator->second->binding().session_generation != session_generation ||
+            (config_revision != 0U &&
+             iterator->second->binding().config_revision != config_revision)) {
             return;
         }
         iterator->second->stop();
@@ -337,14 +348,17 @@ TunnelRegistry::TunnelRegistry(asio::any_io_executor listener_executor,
 
 TunnelRegistry::~TunnelRegistry() noexcept = default;
 
-common::Result<void> TunnelRegistry::register_tunnel(const TunnelBinding& binding) {
-    return implementation_->register_tunnel(binding);
+common::Result<void> TunnelRegistry::register_tunnel(const TunnelBinding& binding,
+                                                     const std::size_t max_for_client) {
+    return implementation_->register_tunnel(binding, max_for_client);
 }
 
 void TunnelRegistry::unregister_tunnel(const std::string_view client_id,
                                        const std::uint64_t session_generation,
-                                       const std::string_view tunnel_id) noexcept {
-    implementation_->unregister_tunnel(client_id, session_generation, tunnel_id);
+                                       const std::string_view tunnel_id,
+                                       const std::uint64_t config_revision) noexcept {
+    implementation_->unregister_tunnel(client_id, session_generation, tunnel_id,
+                                       config_revision);
 }
 
 void TunnelRegistry::remove_session(const std::string_view client_id,

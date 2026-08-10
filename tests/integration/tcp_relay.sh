@@ -7,6 +7,7 @@ server_bin=${3:?missing minitun-server binary}
 
 runtime_root=$(cd "${TMPDIR:-/tmp}" && pwd -P)
 runtime_dir=$(mktemp -d "$runtime_root/minitun-relay.XXXXXX")
+integration_dir=$(cd "$(dirname "$0")" && pwd -P)
 socket_path="$runtime_dir/minitun.sock"
 state_path="$runtime_dir/state.db"
 credentials_path="$runtime_dir/credentials.db"
@@ -31,6 +32,22 @@ openssl req -x509 -newkey rsa:2048 -sha256 -days 1 -nodes \
     -keyout "$runtime_dir/server.key" \
     -out "$runtime_dir/server.crt" >/dev/null 2>&1
 chmod 0600 "$runtime_dir/server.key"
+openssl req -x509 -newkey rsa:2048 -sha256 -days 1 -nodes \
+    -subj /CN=MiniTun-Relay-Client-CA \
+    -keyout "$runtime_dir/client-ca.key" \
+    -out "$runtime_dir/client-ca.crt" >/dev/null 2>&1
+openssl req -newkey rsa:2048 -sha256 -nodes \
+    -subj /CN=minitun-relay-client \
+    -keyout "$runtime_dir/client.key" \
+    -out "$runtime_dir/client.csr" >/dev/null 2>&1
+openssl x509 -req -sha256 -days 1 \
+    -in "$runtime_dir/client.csr" \
+    -CA "$runtime_dir/client-ca.crt" \
+    -CAkey "$runtime_dir/client-ca.key" \
+    -CAcreateserial \
+    -extfile <(printf 'subjectAltName=DNS:relay-client.example\nextendedKeyUsage=clientAuth\n') \
+    -out "$runtime_dir/client.crt" >/dev/null 2>&1
+chmod 0600 "$runtime_dir/client-ca.key" "$runtime_dir/client.key"
 token='stage-ten-relay-token'
 printf '%s\n' "$token" >"$runtime_dir/token"
 chmod 0600 "$runtime_dir/token"
@@ -93,8 +110,8 @@ start_server() {
         --listen "127.0.0.1:$control_port" \
         --tls-cert "$runtime_dir/server.crt" \
         --tls-key "$runtime_dir/server.key" \
-        --token-file "$runtime_dir/token" \
-        --allow-ports 1024-65535 \
+        --clients-config "$runtime_dir/clients.json" \
+        --client-ca "$runtime_dir/client-ca.crt" \
         --heartbeat-interval 1 \
         --heartbeat-timeout 3 \
         --relay-idle-timeout 2 \
@@ -208,10 +225,33 @@ if elapsed > 15:
 PY
 }
 
-start_server
 start_daemon
+client_id=$(bash "$integration_dir/write_client_policy.sh" "$minitun_bin" "$socket_path" \
+    "$runtime_dir/clients.json" "$runtime_dir/token")
+python3 - "$runtime_dir/clients.json" "$client_id" <<'PY'
+import json
+import os
+import sys
+
+path, expected_client_id = sys.argv[1:]
+with open(path, encoding="utf-8") as stream:
+    document = json.load(stream)
+if document["clients"][0]["client_id"] != expected_client_id:
+    raise SystemExit("client policy identity mismatch")
+document["clients"][0]["certificate_san"] = "DNS:relay-client.example"
+temporary = path + ".cert.tmp"
+with open(temporary, "w", encoding="utf-8") as stream:
+    json.dump(document, stream, separators=(",", ":"), sort_keys=True)
+    stream.write("\n")
+os.chmod(temporary, 0o640)
+os.replace(temporary, path)
+PY
+start_server
 "$minitun_bin" --socket "$socket_path" server add "localhost:$control_port" --name primary \
     >/dev/null
+"$minitun_bin" --socket "$socket_path" server update primary \
+    --client-cert "$runtime_dir/client.crt" \
+    --client-key "$runtime_dir/client.key" >/dev/null
 printf '%s\n' "$token" |
     "$minitun_bin" --socket "$socket_path" server login primary --token-stdin >/dev/null
 "$minitun_bin" --socket "$socket_path" tun add primary "$local_port" "$remote_port" \

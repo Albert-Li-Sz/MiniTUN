@@ -90,14 +90,14 @@ TEST(VersionTest, ReportsEveryRequiredBuildField) {
     EXPECT_FALSE(info.git_commit.empty());
     EXPECT_FALSE(info.build_type.empty());
     EXPECT_FALSE(info.compiler.empty());
-    EXPECT_EQ(info.protocol_version, std::uint16_t{1});
+    EXPECT_EQ(info.protocol_version, std::uint16_t{2});
 
     const std::string formatted = format_version_info("minitun-test");
     EXPECT_NE(formatted.find("minitun-test "), std::string::npos);
     EXPECT_NE(formatted.find("git commit: "), std::string::npos);
     EXPECT_NE(formatted.find("build type: "), std::string::npos);
     EXPECT_NE(formatted.find("compiler: "), std::string::npos);
-    EXPECT_NE(formatted.find("protocol version: 1"), std::string::npos);
+    EXPECT_NE(formatted.find("protocol version: 2"), std::string::npos);
 }
 
 } // namespace

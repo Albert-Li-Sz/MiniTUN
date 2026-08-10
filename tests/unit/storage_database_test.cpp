@@ -7,6 +7,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include <sys/stat.h>
 #include <unistd.h>
@@ -81,7 +82,7 @@ using test::TemporaryDatabaseFile;
     };
 }
 
-TEST(StorageDatabaseTest, FreshDatabaseMigratesCompleteVersionThreeSchema) {
+TEST(StorageDatabaseTest, FreshDatabaseMigratesCompleteVersionFourSchema) {
     TemporaryDatabaseFile temporary;
     auto database = Database::open(temporary.path_string());
 
@@ -102,14 +103,14 @@ TEST(StorageDatabaseTest, FreshDatabaseMigratesCompleteVersionThreeSchema) {
                                 "'schema_version', 'servers', 'tunnels', 'daemon_identity')"),
               4);
     EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM pragma_table_info('schema_version')"), 2);
-    EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM pragma_table_info('servers')"), 13);
-    EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM pragma_table_info('tunnels')"), 15);
+    EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM pragma_table_info('servers')"), 19);
+    EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM pragma_table_info('tunnels')"), 17);
     EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM pragma_table_info('daemon_identity')"), 2);
     EXPECT_EQ(
         probe.query_int64("SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name IN ("
                           "'idx_servers_reconcile', 'idx_tunnels_reconcile', 'idx_tunnels_name')"),
         3);
-    EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM schema_version"), 3);
+    EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM schema_version"), 4);
     EXPECT_EQ(probe.query_int64("SELECT MAX(version) FROM schema_version"), kCurrentSchemaVersion);
     EXPECT_GE(probe.query_int64("SELECT MIN(applied_at) FROM schema_version"), 0);
     EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM daemon_identity"), 0);
@@ -213,7 +214,7 @@ TEST(StorageDatabaseTest, ReopeningCurrentSchemaIsIdempotentAndPreservesData) {
     EXPECT_EQ(*restored, sample_server());
 
     NativeSqliteDatabase probe{temporary.path(), SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX};
-    EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM schema_version"), 3);
+    EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM schema_version"), 4);
     EXPECT_EQ(probe.query_int64("SELECT applied_at FROM schema_version WHERE version = 1"),
               first_applied_at);
     EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM servers"), 1);
@@ -228,20 +229,28 @@ TEST(StorageDatabaseTest, MigratesVersionOneInPlaceAndPreservesData) {
     }
     {
         NativeSqliteDatabase fixture{temporary.path()};
-        fixture.execute("ALTER TABLE tunnels DROP COLUMN last_synced_at;"
+        fixture.execute("ALTER TABLE tunnels DROP COLUMN managed_by_config;"
+                        "ALTER TABLE tunnels DROP COLUMN config_revision;"
+                        "ALTER TABLE tunnels DROP COLUMN last_synced_at;"
+                        "ALTER TABLE servers DROP COLUMN managed_by_config;"
+                        "ALTER TABLE servers DROP COLUMN config_revision;"
+                        "ALTER TABLE servers DROP COLUMN client_private_key_ref;"
+                        "ALTER TABLE servers DROP COLUMN client_certificate_ref;"
+                        "ALTER TABLE servers DROP COLUMN ca_credential_ref;"
+                        "ALTER TABLE servers DROP COLUMN tls_server_name;"
                         "DROP TABLE daemon_identity;"
-                        "DELETE FROM schema_version WHERE version IN (2, 3)");
+                        "DELETE FROM schema_version WHERE version IN (2, 3, 4)");
     }
 
     auto migrated = StateRepository::open(temporary.path_string());
     ASSERT_TRUE(migrated) << migrated.error();
-    EXPECT_EQ(*(*migrated)->schema_version(), 3);
+    EXPECT_EQ(*(*migrated)->schema_version(), 4);
     const auto restored = (*migrated)->servers().get_by_id(sample_server().id);
     ASSERT_TRUE(restored) << restored.error();
     EXPECT_EQ(*restored, sample_server());
 
     NativeSqliteDatabase probe{temporary.path(), SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX};
-    EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM schema_version"), 3);
+    EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM schema_version"), 4);
     EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM sqlite_master "
                                 "WHERE type = 'table' AND name = 'daemon_identity'"),
               1);
@@ -260,16 +269,73 @@ TEST(StorageDatabaseTest, MigratesVersionTwoTunnelRowsInPlace) {
     }
     {
         NativeSqliteDatabase fixture{temporary.path()};
-        fixture.execute("ALTER TABLE tunnels DROP COLUMN last_synced_at;"
-                        "DELETE FROM schema_version WHERE version = 3");
+        fixture.execute("ALTER TABLE tunnels DROP COLUMN managed_by_config;"
+                        "ALTER TABLE tunnels DROP COLUMN config_revision;"
+                        "ALTER TABLE tunnels DROP COLUMN last_synced_at;"
+                        "ALTER TABLE servers DROP COLUMN managed_by_config;"
+                        "ALTER TABLE servers DROP COLUMN config_revision;"
+                        "ALTER TABLE servers DROP COLUMN client_private_key_ref;"
+                        "ALTER TABLE servers DROP COLUMN client_certificate_ref;"
+                        "ALTER TABLE servers DROP COLUMN ca_credential_ref;"
+                        "ALTER TABLE servers DROP COLUMN tls_server_name;"
+                        "DELETE FROM schema_version WHERE version IN (3, 4)");
     }
 
     auto migrated = StateRepository::open(temporary.path_string());
     ASSERT_TRUE(migrated) << migrated.error();
-    EXPECT_EQ(*(*migrated)->schema_version(), 3);
+    EXPECT_EQ(*(*migrated)->schema_version(), 4);
     const auto restored = (*migrated)->tunnels().get_by_id(expected.id);
     ASSERT_TRUE(restored) << restored.error();
     EXPECT_EQ(*restored, expected);
+}
+
+TEST(StorageDatabaseTest, MigratesVersionThreeFromV041AndPreservesIdsCredentialsAndTunnels) {
+    TemporaryDatabaseFile temporary;
+    ServerRecord expected_server = sample_server();
+    expected_server.credential_ref = "server/srv_00000000000000000000000000000001/psk/a";
+    expected_server.remote_server_id = "srv_remote_v041";
+    expected_server.actual_state = ServerActualState::online;
+    TunnelRecord expected_tunnel = sample_tunnel_with_missing_server();
+    expected_tunnel.server_id = expected_server.id;
+    expected_tunnel.name = "preserved-v041-tunnel";
+    expected_tunnel.local_endpoint = require_endpoint("192.0.2.10:8080");
+    expected_tunnel.remote_endpoint = require_endpoint("0.0.0.0:16000");
+
+    {
+        auto repository = StateRepository::open(temporary.path_string());
+        ASSERT_TRUE(repository) << repository.error();
+        ASSERT_TRUE((*repository)->servers().create(expected_server));
+        ASSERT_TRUE((*repository)->tunnels().create(expected_tunnel));
+    }
+    {
+        NativeSqliteDatabase fixture{temporary.path()};
+        fixture.execute("ALTER TABLE tunnels DROP COLUMN managed_by_config;"
+                        "ALTER TABLE tunnels DROP COLUMN config_revision;"
+                        "ALTER TABLE servers DROP COLUMN managed_by_config;"
+                        "ALTER TABLE servers DROP COLUMN config_revision;"
+                        "ALTER TABLE servers DROP COLUMN client_private_key_ref;"
+                        "ALTER TABLE servers DROP COLUMN client_certificate_ref;"
+                        "ALTER TABLE servers DROP COLUMN ca_credential_ref;"
+                        "ALTER TABLE servers DROP COLUMN tls_server_name;"
+                        "DELETE FROM schema_version WHERE version = 4;");
+    }
+
+    auto migrated = StateRepository::open(temporary.path_string());
+    ASSERT_TRUE(migrated) << migrated.error();
+    EXPECT_EQ(*(*migrated)->schema_version(), 4);
+    const auto server = (*migrated)->servers().get_by_id(expected_server.id);
+    const auto tunnel = (*migrated)->tunnels().get_by_id(expected_tunnel.id);
+    ASSERT_TRUE(server) << server.error();
+    ASSERT_TRUE(tunnel) << tunnel.error();
+    EXPECT_EQ(*server, expected_server);
+    EXPECT_EQ(*tunnel, expected_tunnel);
+
+    NativeSqliteDatabase probe{temporary.path(), SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX};
+    EXPECT_EQ(probe.query_int64("SELECT MAX(version) FROM schema_version"), 4);
+    EXPECT_EQ(probe.query_int64("SELECT config_revision FROM servers"), 1);
+    EXPECT_EQ(probe.query_int64("SELECT managed_by_config FROM servers"), 0);
+    EXPECT_EQ(probe.query_int64("SELECT config_revision FROM tunnels"), 1);
+    EXPECT_EQ(probe.query_int64("SELECT managed_by_config FROM tunnels"), 0);
 }
 
 TEST(StorageDatabaseTest, PersistsOneStableDaemonClientIdentity) {
@@ -302,7 +368,7 @@ TEST(StorageDatabaseTest, RejectsFutureSchemaWithoutChangingItsData) {
         NativeSqliteDatabase fixture{temporary.path()};
         fixture.execute(
             "CREATE TABLE schema_version(version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL);"
-            "INSERT INTO schema_version(version, applied_at) VALUES(4, 1234);"
+            "INSERT INTO schema_version(version, applied_at) VALUES(5, 1234);"
             "CREATE TABLE future_data(value TEXT NOT NULL);"
             "INSERT INTO future_data(value) VALUES('preserve-me');");
     }
@@ -312,7 +378,7 @@ TEST(StorageDatabaseTest, RejectsFutureSchemaWithoutChangingItsData) {
     EXPECT_EQ(opened.error().code(), common::ErrorCode::unsupported_version);
 
     NativeSqliteDatabase probe{temporary.path(), SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX};
-    EXPECT_EQ(probe.query_int64("SELECT version FROM schema_version"), 4);
+    EXPECT_EQ(probe.query_int64("SELECT version FROM schema_version"), 5);
     EXPECT_EQ(probe.query_int64("SELECT applied_at FROM schema_version"), 1'234);
     EXPECT_EQ(probe.query_text("SELECT value FROM future_data"), "preserve-me");
     EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM sqlite_master "
@@ -385,6 +451,123 @@ TEST(StorageDatabaseTest, RejectsCurrentSchemaDriftWithoutChangingIt) {
                                "WHERE type = 'index' AND name = 'idx_servers_reconcile'"),
               "CREATE INDEX idx_servers_reconcile ON servers(name)");
     EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM servers"), 1);
+}
+
+TEST(StorageDatabaseTest, RejectsEveryCurrentSchemaAndHistoryDriftClass) {
+    struct Drift final {
+        std::string name;
+        std::string mutation;
+    };
+    const std::vector<Drift> cases{
+        {"missing-index", "DROP INDEX idx_servers_reconcile"},
+        {"server-index-definition",
+         "DROP INDEX idx_servers_reconcile; CREATE INDEX idx_servers_reconcile ON servers(name)"},
+        {"tunnel-index-definition",
+         "DROP INDEX idx_tunnels_reconcile; CREATE INDEX idx_tunnels_reconcile ON tunnels(name)"},
+        {"name-index-definition",
+         "DROP INDEX idx_tunnels_name; CREATE INDEX idx_tunnels_name ON tunnels(name)"},
+        {"identity-definition",
+         "DROP TABLE daemon_identity; CREATE TABLE daemon_identity(singleton INTEGER, client_id "
+         "TEXT)"},
+        {"unexpected-table", "CREATE TABLE unexpected(value TEXT)"},
+        {"unexpected-view", "CREATE VIEW unexpected AS SELECT 1 AS value"},
+        {"unexpected-trigger",
+         "CREATE TRIGGER unexpected AFTER INSERT ON servers BEGIN SELECT 1; END"},
+        {"unexpected-index", "CREATE INDEX unexpected ON servers(endpoint)"},
+        {"server-column", "ALTER TABLE servers ADD COLUMN unexpected TEXT"},
+        {"tunnel-column", "ALTER TABLE tunnels ADD COLUMN unexpected TEXT"},
+        {"history-gap", "DELETE FROM schema_version WHERE version = 2"},
+        {"history-empty", "DELETE FROM schema_version"},
+        {"history-type",
+         "DROP TABLE schema_version; CREATE TABLE schema_version(version TEXT, applied_at "
+         "INTEGER); INSERT INTO schema_version VALUES('one', 1)"},
+        {"foreign-key-violation",
+         "PRAGMA foreign_keys = OFF; PRAGMA ignore_check_constraints = ON; UPDATE tunnels SET "
+         "server_id = 'srv_00000000000000000000000000000099'"},
+    };
+    for (const auto& item : cases) {
+        SCOPED_TRACE(item.name);
+        TemporaryDatabaseFile temporary;
+        {
+            auto repository = StateRepository::open(temporary.path_string());
+            ASSERT_TRUE(repository) << repository.error();
+            const auto server = sample_server();
+            auto tunnel = sample_tunnel_with_missing_server();
+            tunnel.server_id = server.id;
+            ASSERT_TRUE((*repository)->servers().create(server));
+            ASSERT_TRUE((*repository)->tunnels().create(tunnel));
+            ASSERT_TRUE((*repository)->checkpoint());
+        }
+        {
+            NativeSqliteDatabase fixture{temporary.path()};
+            fixture.execute(item.mutation);
+        }
+        const auto opened = Database::open(temporary.path_string());
+        ASSERT_FALSE(opened);
+        EXPECT_EQ(opened.error().code(), common::ErrorCode::database_error) << opened.error();
+    }
+}
+
+TEST(StorageDatabaseTest, HandlesAlreadyPresentColumnsAndRejectsPartialMigrationObjects) {
+    {
+        TemporaryDatabaseFile temporary;
+        {
+            auto repository = StateRepository::open(temporary.path_string());
+            ASSERT_TRUE(repository) << repository.error();
+        }
+        {
+            NativeSqliteDatabase fixture{temporary.path()};
+            fixture.execute("DELETE FROM schema_version WHERE version = 4");
+        }
+        auto migrated = Database::open(temporary.path_string());
+        ASSERT_TRUE(migrated) << migrated.error();
+        EXPECT_EQ(*(*migrated)->schema_version(), 4);
+    }
+    {
+        TemporaryDatabaseFile temporary;
+        {
+            auto repository = StateRepository::open(temporary.path_string());
+            ASSERT_TRUE(repository) << repository.error();
+        }
+        {
+            NativeSqliteDatabase fixture{temporary.path()};
+            fixture.execute("ALTER TABLE tunnels DROP COLUMN managed_by_config;"
+                            "ALTER TABLE tunnels DROP COLUMN config_revision;"
+                            "ALTER TABLE servers DROP COLUMN managed_by_config;"
+                            "ALTER TABLE servers DROP COLUMN config_revision;"
+                            "ALTER TABLE servers DROP COLUMN client_private_key_ref;"
+                            "ALTER TABLE servers DROP COLUMN client_certificate_ref;"
+                            "ALTER TABLE servers DROP COLUMN ca_credential_ref;"
+                            "ALTER TABLE servers DROP COLUMN tls_server_name;"
+                            "DELETE FROM schema_version WHERE version IN (3, 4)");
+        }
+        auto migrated = Database::open(temporary.path_string());
+        ASSERT_TRUE(migrated) << migrated.error();
+        EXPECT_EQ(*(*migrated)->schema_version(), 4);
+    }
+    {
+        TemporaryDatabaseFile temporary;
+        {
+            auto repository = StateRepository::open(temporary.path_string());
+            ASSERT_TRUE(repository) << repository.error();
+        }
+        {
+            NativeSqliteDatabase fixture{temporary.path()};
+            fixture.execute("ALTER TABLE tunnels DROP COLUMN managed_by_config;"
+                            "ALTER TABLE tunnels DROP COLUMN config_revision;"
+                            "ALTER TABLE tunnels DROP COLUMN last_synced_at;"
+                            "ALTER TABLE servers DROP COLUMN managed_by_config;"
+                            "ALTER TABLE servers DROP COLUMN config_revision;"
+                            "ALTER TABLE servers DROP COLUMN client_private_key_ref;"
+                            "ALTER TABLE servers DROP COLUMN client_certificate_ref;"
+                            "ALTER TABLE servers DROP COLUMN ca_credential_ref;"
+                            "ALTER TABLE servers DROP COLUMN tls_server_name;"
+                            "DELETE FROM schema_version WHERE version IN (2, 3, 4)");
+        }
+        const auto rejected = Database::open(temporary.path_string());
+        ASSERT_FALSE(rejected);
+        EXPECT_EQ(rejected.error().code(), common::ErrorCode::database_error);
+    }
 }
 
 TEST(StorageDatabaseTest, RejectsConstraintViolatingRowsWithoutChangingThem) {
@@ -465,6 +648,73 @@ TEST(StorageDatabaseTest, NestedTransactionIsRejectedWithoutEndingOuterTransacti
     EXPECT_EQ(nested.error().code(), common::ErrorCode::invalid_argument);
     EXPECT_TRUE(outer->active());
     ASSERT_TRUE(outer->rollback());
+}
+
+TEST(StorageDatabaseTest, ActiveTransactionsBlockMaintenanceAndTerminalCallsAreSingleUse) {
+    TemporaryDatabaseFile temporary;
+    TemporaryDatabaseFile source_file;
+    auto database = Database::open(temporary.path_string());
+    auto source = Database::open(source_file.path_string());
+    ASSERT_TRUE(database) << database.error();
+    ASSERT_TRUE(source) << source.error();
+    const auto backup = temporary.directory() / "active-backup.db";
+
+    auto transaction = (*database)->begin_transaction();
+    ASSERT_TRUE(transaction) << transaction.error();
+    EXPECT_EQ((*database)->backup_to(backup.string()).error().code(),
+              common::ErrorCode::invalid_argument);
+    EXPECT_EQ((*database)->validate_restore_source(source_file.path_string()).error().code(),
+              common::ErrorCode::invalid_argument);
+    EXPECT_EQ((*database)->restore_from(source_file.path_string()).error().code(),
+              common::ErrorCode::invalid_argument);
+    ASSERT_TRUE(transaction->rollback());
+    EXPECT_FALSE(transaction->active());
+    EXPECT_EQ(transaction->rollback().error().code(), common::ErrorCode::invalid_argument);
+    EXPECT_EQ(transaction->commit().error().code(), common::ErrorCode::invalid_argument);
+
+    auto committed = (*database)->begin_transaction();
+    ASSERT_TRUE(committed) << committed.error();
+    ASSERT_TRUE(committed->commit());
+    EXPECT_FALSE(committed->active());
+    EXPECT_EQ(committed->commit().error().code(), common::ErrorCode::invalid_argument);
+}
+
+TEST(StorageDatabaseTest, RestoresValidatedStateAndRejectsUnsafeBackupPaths) {
+    TemporaryDatabaseFile live_file;
+    TemporaryDatabaseFile source_file;
+    auto live = StateRepository::open(live_file.path_string());
+    auto source = StateRepository::open(source_file.path_string());
+    ASSERT_TRUE(live) << live.error();
+    ASSERT_TRUE(source) << source.error();
+    ASSERT_TRUE((*source)->servers().create(sample_server()));
+    ASSERT_TRUE((*source)->checkpoint());
+
+    ASSERT_TRUE((*live)->validate_restore_source(source_file.path_string()));
+    ASSERT_TRUE((*live)->restore_from(source_file.path_string()));
+    ASSERT_TRUE((*live)->servers().get_by_id(sample_server().id));
+
+    EXPECT_EQ((*live)->backup_to("").error().code(), common::ErrorCode::invalid_argument);
+    EXPECT_EQ((*live)->backup_to(live_file.path_string()).error().code(),
+              common::ErrorCode::invalid_argument);
+    EXPECT_EQ((*live)->backup_to(std::string(kMaxDatabasePathBytes + 1U, 'x')).error().code(),
+              common::ErrorCode::invalid_argument);
+    EXPECT_EQ((*live)
+                  ->backup_to((live_file.directory() / "missing" / "backup.db").string())
+                  .error()
+                  .code(),
+              common::ErrorCode::not_found);
+    EXPECT_EQ((*live)->validate_restore_source(live_file.path_string()).error().code(),
+              common::ErrorCode::invalid_argument);
+}
+
+TEST(StorageDatabaseTest, DiagnosticsReportsMissingBackingPathWithoutUsingStaleState) {
+    TemporaryDatabaseFile temporary;
+    auto database = Database::open(temporary.path_string());
+    ASSERT_TRUE(database) << database.error();
+    ASSERT_TRUE(std::filesystem::remove(temporary.path()));
+    const auto diagnostics = (*database)->diagnostics();
+    ASSERT_FALSE(diagnostics);
+    EXPECT_EQ(diagnostics.error().code(), common::ErrorCode::database_error);
 }
 
 TEST(StorageDatabaseTest, AnotherConnectionCannotSeeUncommittedWrites) {

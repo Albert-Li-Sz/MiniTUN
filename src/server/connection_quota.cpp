@@ -17,15 +17,20 @@ class ConnectionQuota::Impl final {
     Impl(const std::size_t max_per_client, const std::size_t max_total) noexcept
         : max_per_client_(max_per_client), max_total_(max_total) {}
 
-    [[nodiscard]] common::Result<void> acquire(const std::string_view client_id) {
+    [[nodiscard]] common::Result<void> acquire(const std::string_view client_id,
+                                               const std::size_t max_for_client) {
         if (!common::Id::parse(client_id, common::IdKind::client)) {
             return common::Result<void>::failure(common::ErrorCode::invalid_argument,
                                                  "connection quota client ID is invalid");
         }
+        if (max_for_client == 0U || max_for_client > max_per_client_) {
+            return common::Result<void>::failure(common::ErrorCode::invalid_argument,
+                                                 "connection quota override is invalid");
+        }
         const std::scoped_lock lock{mutex_};
         const auto iterator = clients_.find(std::string{client_id});
         const std::size_t client_count = iterator == clients_.end() ? 0U : iterator->second;
-        if (total_ >= max_total_ || client_count >= max_per_client_) {
+        if (total_ >= max_total_ || client_count >= max_for_client) {
             return common::Result<void>::failure(common::ErrorCode::resource_exhausted,
                                                  "connection quota has been reached");
         }
@@ -61,6 +66,8 @@ class ConnectionQuota::Impl final {
         const auto iterator = clients_.find(std::string{client_id});
         return iterator == clients_.end() ? 0U : iterator->second;
     }
+
+    [[nodiscard]] std::size_t max_per_client() const noexcept { return max_per_client_; }
 
   private:
     std::size_t max_per_client_;
@@ -105,7 +112,13 @@ ConnectionQuota::~ConnectionQuota() noexcept = default;
 
 common::Result<ConnectionQuota::Lease>
 ConnectionQuota::try_acquire(const std::string_view client_id) {
-    auto acquired = implementation_->acquire(client_id);
+    return try_acquire(client_id, implementation_->max_per_client());
+}
+
+common::Result<ConnectionQuota::Lease>
+ConnectionQuota::try_acquire(const std::string_view client_id,
+                             const std::size_t max_for_client) {
+    auto acquired = implementation_->acquire(client_id, max_for_client);
     if (!acquired) {
         return common::Result<Lease>::failure(acquired.error());
     }

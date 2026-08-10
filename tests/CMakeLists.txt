@@ -1,8 +1,11 @@
 add_executable(minitun_unit_tests
     unit/accept_recovery_test.cpp
+    unit/admin_server_test.cpp
     unit/common_test.cpp
+    unit/client_policy_test.cpp
     unit/connection_quota_test.cpp
     unit/credential_store_test.cpp
+    unit/credential_keys_test.cpp
     unit/daemon_control_service_test.cpp
     unit/endpoint_test.cpp
     unit/id_test.cpp
@@ -19,21 +22,30 @@ add_executable(minitun_unit_tests
     unit/relay_test.cpp
     unit/remote_state_machine_test.cpp
     unit/reconnect_backoff_test.cpp
+    unit/sdk_client_test.cpp
+    unit/server_manager_test.cpp
     unit/server_session_registry_test.cpp
     unit/secure_string_test.cpp
+    unit/sqlite_internal_test.cpp
     unit/state_recovery_test.cpp
     unit/storage_database_test.cpp
     unit/storage_diagnostics_test.cpp
     unit/storage_models_test.cpp
     unit/storage_repository_test.cpp
     unit/time_test.cpp
+    unit/tls_test.cpp
     unit/tunnel_registry_test.cpp
+    unit/tunnel_reconciler_test.cpp
     unit/worker_pool_test.cpp
 )
+
+target_include_directories(minitun_unit_tests PRIVATE "${PROJECT_SOURCE_DIR}/src/storage")
 
 target_link_libraries(minitun_unit_tests
     PRIVATE
         MiniTun::daemon
+        MiniTun::admin
+        MiniTun::Client
         MiniTun::server
         MiniTun::storage
         MiniTun::ipc
@@ -55,6 +67,54 @@ target_link_libraries(minitun_tls_auth_client
 minitun_apply_sanitizers(minitun_tls_auth_client)
 minitun_apply_lto(minitun_tls_auth_client)
 
+add_executable(minitun_c_sdk_smoke sdk/c_client_smoke.c)
+target_link_libraries(minitun_c_sdk_smoke PRIVATE MiniTun::Client)
+set_target_properties(minitun_c_sdk_smoke PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED YES)
+
+add_executable(minitun_cpp_sdk_smoke sdk/cpp_client_smoke.cpp)
+target_link_libraries(minitun_cpp_sdk_smoke PRIVATE MiniTun::Client minitun_project_warnings)
+set_target_properties(minitun_cpp_sdk_smoke PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED YES)
+
+add_test(NAME sdk.c11-smoke COMMAND minitun_c_sdk_smoke)
+set_tests_properties(sdk.c11-smoke PROPERTIES LABELS "sdk;smoke")
+add_test(NAME sdk.cpp20-smoke COMMAND minitun_cpp_sdk_smoke)
+set_tests_properties(sdk.cpp20-smoke PROPERTIES LABELS "sdk;smoke")
+add_test(NAME sdk.find-package
+    COMMAND "${CMAKE_COMMAND}"
+        "-DMINITUN_BUILD_DIR=${CMAKE_BINARY_DIR}"
+        "-DMINITUN_SOURCE_DIR=${CMAKE_SOURCE_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/integration/sdk_downstream.cmake"
+)
+set_tests_properties(sdk.find-package PROPERTIES LABELS "sdk;install" TIMEOUT 60)
+add_test(NAME sdk.abi-baseline
+    COMMAND "${CMAKE_COMMAND}"
+        "-DMINITUN_LIBRARY=$<TARGET_FILE:minitun_client>"
+        "-DMINITUN_NM=${CMAKE_NM}"
+        "-DMINITUN_BASELINE=${CMAKE_SOURCE_DIR}/abi/minitun-client-1.symbols"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/integration/sdk_abi.cmake"
+)
+set_tests_properties(sdk.abi-baseline PROPERTIES LABELS "sdk;abi")
+
+find_package(Python3 QUIET COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME release.evidence-verifier
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/release/test_verify_release_evidence.py"
+    )
+    set_tests_properties(release.evidence-verifier PROPERTIES
+        LABELS "release;performance;security"
+        ENVIRONMENT "MINITUN_SOURCE_DIR=${CMAKE_SOURCE_DIR}"
+    )
+    add_test(NAME security.sarif-gate
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/release/test_check_sarif.py"
+    )
+    set_tests_properties(security.sarif-gate PROPERTIES
+        LABELS "security;codeql;release"
+        ENVIRONMENT "MINITUN_SOURCE_DIR=${CMAKE_SOURCE_DIR}"
+    )
+endif()
+
 include(GoogleTest)
 gtest_discover_tests(minitun_unit_tests
     TEST_PREFIX "unit."
@@ -66,7 +126,7 @@ add_test(NAME smoke.minitun-version
 )
 set_tests_properties(smoke.minitun-version PROPERTIES
     LABELS "smoke"
-    PASS_REGULAR_EXPRESSION "protocol version: 1"
+    PASS_REGULAR_EXPRESSION "protocol version: 2"
 )
 
 if(Git_FOUND AND EXISTS "${CMAKE_SOURCE_DIR}/.git")
@@ -97,6 +157,30 @@ set_tests_properties(smoke.server-help PROPERTIES
 )
 
 if(UNIX)
+    if(MINITUN_ENABLE_FAULT_INJECTION)
+        foreach(failpoint
+                daemon.after_registering_state_commit
+                daemon.after_register_request_write
+                daemon.after_register_response_receive
+                server.after_listener_established)
+            string(REPLACE "." "-" failpoint_test_name "${failpoint}")
+            add_test(NAME "fault.${failpoint_test_name}"
+                COMMAND
+                    "${CMAKE_CURRENT_SOURCE_DIR}/integration/fault_injection_reconciliation.sh"
+                    $<TARGET_FILE:minitun>
+                    $<TARGET_FILE:minitund>
+                    $<TARGET_FILE:minitun-server>
+                    "${failpoint}"
+            )
+            set_tests_properties("fault.${failpoint_test_name}" PROPERTIES
+                LABELS "integration;fault-injection;reconciliation"
+                TIMEOUT 60
+                PASS_REGULAR_EXPRESSION "fault injection reconciliation passed"
+                RUN_SERIAL TRUE
+            )
+        endforeach()
+    endif()
+
     add_test(NAME integration.cli-daemon-ipc
         COMMAND
             "${CMAKE_CURRENT_SOURCE_DIR}/integration/cli_daemon_ipc.sh"
@@ -114,6 +198,18 @@ if(UNIX)
             "${CMAKE_CURRENT_SOURCE_DIR}/integration/tls_auth.sh"
             $<TARGET_FILE:minitun-server>
             $<TARGET_FILE:minitun_tls_auth_client>
+    )
+
+    add_test(NAME integration.admin-endpoints
+        COMMAND
+            "${CMAKE_CURRENT_SOURCE_DIR}/integration/admin_endpoints.sh"
+            $<TARGET_FILE:minitund>
+            $<TARGET_FILE:minitun-server>
+    )
+    set_tests_properties(integration.admin-endpoints PROPERTIES
+        LABELS "integration;admin;metrics"
+        TIMEOUT 30
+        PASS_REGULAR_EXPRESSION "admin endpoint integration passed"
     )
     set_tests_properties(integration.tls-auth PROPERTIES
         LABELS "integration;tls;auth"
@@ -173,6 +269,19 @@ if(UNIX)
         PASS_REGULAR_EXPRESSION "credential rotation integration passed"
     )
 
+    add_test(NAME integration.policy-reload
+        COMMAND
+            "${CMAKE_CURRENT_SOURCE_DIR}/integration/policy_reload.sh"
+            $<TARGET_FILE:minitun>
+            $<TARGET_FILE:minitund>
+            $<TARGET_FILE:minitun-server>
+    )
+    set_tests_properties(integration.policy-reload PROPERTIES
+        LABELS "integration;tls;auth;relay;policy"
+        TIMEOUT 60
+        PASS_REGULAR_EXPRESSION "client policy reload integration passed"
+    )
+
     add_test(NAME integration.worker-pool
         COMMAND
             "${CMAKE_CURRENT_SOURCE_DIR}/integration/worker_pool.sh"
@@ -218,6 +327,7 @@ if(UNIX)
             "-DMINITUN_BUILD_DIR=${CMAKE_BINARY_DIR}"
             "-DMINITUN_BINDIR=${CMAKE_INSTALL_BINDIR}"
             "-DMINITUN_LIBEXECDIR=${CMAKE_INSTALL_LIBEXECDIR}"
+            "-DMINITUN_LIBDIR=${CMAKE_INSTALL_LIBDIR}"
             "-DMINITUN_INCLUDEDIR=${CMAKE_INSTALL_INCLUDEDIR}"
             "-DMINITUN_MANDIR=${CMAKE_INSTALL_MANDIR}"
             "-DMINITUN_SYSCONFDIR=${CMAKE_INSTALL_SYSCONFDIR}"

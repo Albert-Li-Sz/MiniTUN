@@ -1,0 +1,21 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended"
+  ],
+  "schedule": [
+    "before 5am on monday"
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^cmake/Dependencies\\.cmake$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\s+set\\(MINITUN_[A-Z0-9_]+_VERSION \\\"(?<currentValue>[^\\\"]+)\\\"\\)"
+      ],
+      "versioningTemplate": "semver-coerced"
+    }
+  ]
+}

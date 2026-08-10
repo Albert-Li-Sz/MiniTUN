@@ -24,11 +24,33 @@ inline constexpr std::uint16_t kMaximumWorkerIdleTimeoutSeconds = 300U;
 inline constexpr std::uint16_t kWorkerIdleTimeoutGraceSeconds = 5U;
 inline constexpr std::uint64_t kMaximumNegotiatedHeartbeatSequence = (1ULL << 39U) - 1U;
 
+using CapabilitySet = std::uint64_t;
+
+enum class Capability : CapabilitySet {
+    pipelined_control = 1ULL << 0U,
+    per_client_policy = 1ULL << 1U,
+    tunnel_revisions = 1ULL << 2U,
+    client_certificate_binding = 1ULL << 3U,
+    multiplexed_streams = 1ULL << 4U,
+};
+
+[[nodiscard]] constexpr CapabilitySet capability_bit(const Capability capability) noexcept {
+    return static_cast<CapabilitySet>(capability);
+}
+
+inline constexpr CapabilitySet kRequiredCapabilities =
+    capability_bit(Capability::pipelined_control) |
+    capability_bit(Capability::per_client_policy) |
+    capability_bit(Capability::tunnel_revisions);
+inline constexpr CapabilitySet kSupportedCapabilities =
+    kRequiredCapabilities | capability_bit(Capability::client_certificate_binding);
+
 using AuthenticationNonce = std::array<std::uint8_t, kAuthenticationNonceSize>;
 using AuthenticationData = std::array<std::uint8_t, kAuthenticationDataSize>;
 
 struct HelloMessage final {
     std::string client_id;
+    CapabilitySet capabilities{kSupportedCapabilities};
 
     friend bool operator==(const HelloMessage&, const HelloMessage&) = default;
 };
@@ -37,6 +59,7 @@ struct HelloAckMessage final {
     std::string server_id;
     std::int64_t server_time_seconds{0};
     AuthenticationNonce nonce{};
+    CapabilitySet selected_capabilities{kRequiredCapabilities};
 
     friend bool operator==(const HelloAckMessage&, const HelloAckMessage&) = default;
 };
@@ -46,6 +69,7 @@ struct AuthMessage final {
     std::int64_t timestamp_seconds{0};
     AuthenticationNonce nonce{};
     AuthenticationData authentication_data{};
+    CapabilitySet selected_capabilities{kRequiredCapabilities};
 
     friend bool operator==(const AuthMessage&, const AuthMessage&) = default;
 };
@@ -75,12 +99,14 @@ struct RegisterTunnelMessage final {
     std::string tunnel_id;
     std::string bind_host;
     std::uint16_t bind_port{0U};
+    std::uint64_t desired_revision{1U};
 
     friend bool operator==(const RegisterTunnelMessage&, const RegisterTunnelMessage&) = default;
 };
 
 struct RegisterTunnelOkMessage final {
     std::string tunnel_id;
+    std::uint64_t desired_revision{1U};
 
     friend bool operator==(const RegisterTunnelOkMessage&,
                            const RegisterTunnelOkMessage&) = default;
@@ -89,6 +115,7 @@ struct RegisterTunnelOkMessage final {
 struct RegisterTunnelErrorMessage final {
     std::string tunnel_id;
     common::ErrorCode code{common::ErrorCode::internal_error};
+    std::uint64_t desired_revision{1U};
 
     friend bool operator==(const RegisterTunnelErrorMessage&,
                            const RegisterTunnelErrorMessage&) = default;
@@ -96,6 +123,7 @@ struct RegisterTunnelErrorMessage final {
 
 struct UnregisterTunnelMessage final {
     std::string tunnel_id;
+    std::uint64_t desired_revision{1U};
 
     friend bool operator==(const UnregisterTunnelMessage&,
                            const UnregisterTunnelMessage&) = default;
@@ -113,6 +141,9 @@ struct WorkerHelloMessage final {
     std::string client_id;
     std::uint64_t session_generation{0U};
     std::string worker_id;
+    std::int64_t timestamp_seconds{0};
+    AuthenticationNonce nonce{};
+    AuthenticationData authentication_data{};
 
     friend bool operator==(const WorkerHelloMessage&, const WorkerHelloMessage&) = default;
 };

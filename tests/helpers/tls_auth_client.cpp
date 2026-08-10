@@ -35,11 +35,32 @@ struct Options final {
     std::string endpoint;
     std::string server_name{"localhost"};
     std::string ca_certificate_path;
+    std::string client_certificate_path;
+    std::string client_private_key_path;
     std::string token_file_path;
+    std::string client_id{"client_00000000000000000000000000000001"};
     bool expect_auth_failure{false};
     bool expect_goaway{false};
     std::size_t heartbeat_count{1U};
 };
+
+[[nodiscard]] minitun::common::Result<minitun::common::SecureString>
+read_tls_material(const std::string& path) {
+    std::ifstream input{path, std::ios::binary};
+    if (!input) {
+        return minitun::common::Result<minitun::common::SecureString>::failure(
+            minitun::common::ErrorCode::invalid_argument, "test TLS material cannot be opened");
+    }
+    std::string material{std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{}};
+    if (material.empty() || material.find('\0') != std::string::npos) {
+        minitun::common::secure_erase_memory(material.data(), material.capacity());
+        return minitun::common::Result<minitun::common::SecureString>::failure(
+            minitun::common::ErrorCode::invalid_argument, "test TLS material is invalid");
+    }
+    minitun::common::SecureString secured{material};
+    minitun::common::secure_erase_memory(material.data(), material.capacity());
+    return secured;
+}
 
 [[nodiscard]] minitun::common::Result<minitun::common::SecureString>
 read_token(const std::string& path) {
@@ -72,11 +93,12 @@ run_protocol(minitun::protocol::TlsStream& stream, const Options& options,
                                                          "test TLS handshake failed");
     }
 
-    auto generated_client_id = minitun::common::Id::generate(minitun::common::IdKind::client);
-    if (!generated_client_id) {
-        co_return minitun::common::Result<void>::failure(generated_client_id.error());
+    auto parsed_client_id = minitun::common::Id::parse(options.client_id,
+                                                       minitun::common::IdKind::client);
+    if (!parsed_client_id) {
+        co_return minitun::common::Result<void>::failure(parsed_client_id.error());
     }
-    const std::string client_id = generated_client_id->str();
+    const std::string client_id = parsed_client_id->str();
     minitun::protocol::StateMachine state{minitun::protocol::PeerRole::client,
                                           minitun::protocol::ConnectionKind::control};
 
@@ -104,12 +126,14 @@ run_protocol(minitun::protocol::TlsStream& stream, const Options& options,
     }
 
     const std::int64_t timestamp = minitun::common::unix_seconds_now();
-    auto digest = minitun::protocol::compute_authentication_data(token.view(), client_id, timestamp,
-                                                                 ack->nonce);
+    auto digest = minitun::protocol::compute_authentication_data(
+        token.view(), client_id, ack->server_id, timestamp, ack->nonce,
+        ack->selected_capabilities);
     if (!digest) {
         co_return minitun::common::Result<void>::failure(digest.error());
     }
-    auto auth_payload = minitun::protocol::encode_auth({client_id, timestamp, ack->nonce, *digest});
+    auto auth_payload = minitun::protocol::encode_auth(
+        {client_id, timestamp, ack->nonce, *digest, ack->selected_capabilities});
     if (!auth_payload || !state.on_send(minitun::protocol::MessageType::auth)) {
         co_return minitun::common::Result<void>::failure(minitun::common::ErrorCode::internal_error,
                                                          "test AUTH encoding failed");
@@ -189,8 +213,25 @@ run_protocol(minitun::protocol::TlsStream& stream, const Options& options,
 int run(const Options& options) {
     auto endpoint = minitun::common::Endpoint::parse(options.endpoint);
     auto token = read_token(options.token_file_path);
-    auto context = minitun::protocol::make_client_tls_context(
-        {.ca_certificate_path = options.ca_certificate_path});
+    if (options.client_certificate_path.empty() != options.client_private_key_path.empty()) {
+        return EXIT_FAILURE;
+    }
+    minitun::common::SecureString client_certificate;
+    minitun::common::SecureString client_private_key;
+    if (!options.client_certificate_path.empty()) {
+        auto certificate = read_tls_material(options.client_certificate_path);
+        auto private_key = read_tls_material(options.client_private_key_path);
+        if (!certificate || !private_key) {
+            return EXIT_FAILURE;
+        }
+        client_certificate = std::move(*certificate);
+        client_private_key = std::move(*private_key);
+    }
+    auto context = minitun::protocol::make_client_tls_context({
+        .ca_certificate_path = options.ca_certificate_path,
+        .client_certificate_pem = client_certificate.view(),
+        .client_private_key_pem = client_private_key.view(),
+    });
     if (!endpoint || !token || !context) {
         return EXIT_FAILURE;
     }
@@ -244,7 +285,10 @@ int main(int argc, char** argv) {
     app.add_option("--endpoint", options.endpoint)->required();
     app.add_option("--server-name", options.server_name)->capture_default_str();
     app.add_option("--ca-cert", options.ca_certificate_path)->required();
+    app.add_option("--client-cert", options.client_certificate_path);
+    app.add_option("--client-key", options.client_private_key_path);
     app.add_option("--token-file", options.token_file_path)->required();
+    app.add_option("--client-id", options.client_id)->capture_default_str();
     app.add_flag("--expect-auth-failure", options.expect_auth_failure);
     app.add_flag("--expect-goaway", options.expect_goaway);
     app.add_option("--heartbeat-count", options.heartbeat_count)

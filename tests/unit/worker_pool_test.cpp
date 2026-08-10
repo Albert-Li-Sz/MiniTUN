@@ -1,6 +1,7 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <stdexcept>
 #include <string>
 
 #include <asio/io_context.hpp>
@@ -30,6 +31,23 @@ namespace {
         .tunnel_id = generated_id(common::IdKind::tunnel),
         .bind_host = "127.0.0.1",
         .bind_port = 6'000U,
+    };
+}
+
+[[nodiscard]] daemon::WorkerPoolOptions valid_daemon_options() {
+    auto endpoint = common::Endpoint::parse("127.0.0.1:2333");
+    if (!endpoint) {
+        throw std::runtime_error("deterministic worker endpoint is invalid");
+    }
+    return {
+        .endpoint = std::move(*endpoint),
+        .server_id = generated_id(common::IdKind::server),
+        .remote_server_id = generated_id(common::IdKind::server),
+        .client_id = generated_id(common::IdKind::client),
+        .psk = std::make_shared<const common::SecureString>("secret"),
+        .session_generation = 1U,
+        .min_idle_workers = 0U,
+        .max_idle_workers = 0U,
     };
 }
 
@@ -94,6 +112,60 @@ TEST(WorkerPoolTest, RemovesWorkersBySessionAndClient) {
     EXPECT_EQ(pool.size(), 0U);
 }
 
+TEST(WorkerPoolTest, RejectsEveryInvalidRegistrationAndContainsCallbacks) {
+    asio::io_context io_context;
+    WorkerPool pool{2U, 4U};
+    ConnectionQuota quota{2U, 4U};
+    const std::string client_id = generated_id(common::IdKind::client);
+    const std::string worker_id = generated_id(common::IdKind::connection);
+    const auto handler = [](TunnelBinding, asio::ip::tcp::socket, ConnectionQuota::Lease) {};
+
+    EXPECT_FALSE(pool.add({generated_id(common::IdKind::server), 1U, worker_id}, handler));
+    EXPECT_FALSE(pool.add({client_id, 1U, generated_id(common::IdKind::server)}, handler));
+    EXPECT_FALSE(pool.add({client_id, 0U, worker_id}, handler));
+    EXPECT_FALSE(pool.add({client_id, 1U, worker_id}, {}));
+    ASSERT_TRUE(pool.add({client_id, 1U, worker_id}, handler,
+                         [] { throw std::runtime_error("contained removal failure"); }));
+    const auto duplicate = pool.add({client_id, 1U, worker_id}, handler);
+    ASSERT_FALSE(duplicate);
+    EXPECT_EQ(duplicate.error().code(), common::ErrorCode::already_exists);
+    pool.remove("missing-worker");
+    pool.remove(worker_id);
+    EXPECT_EQ(pool.size(), 0U);
+
+    const std::string throwing_worker = generated_id(common::IdKind::connection);
+    ASSERT_TRUE(pool.add({client_id, 1U, throwing_worker, 1U},
+                         [](TunnelBinding, asio::ip::tcp::socket, ConnectionQuota::Lease) {
+                             throw std::runtime_error("contained assignment failure");
+                         }));
+    asio::ip::tcp::socket public_socket{io_context};
+    public_socket.open(asio::ip::tcp::v4());
+    auto lease = quota.try_acquire(client_id);
+    ASSERT_TRUE(lease);
+    EXPECT_TRUE(pool.assign(binding_for(client_id, 1U), public_socket, *lease));
+    EXPECT_FALSE(public_socket.is_open());
+}
+
+TEST(WorkerPoolTest, AppliesNegotiatedLimitAndHandlesZeroConfiguredLimits) {
+    const auto handler = [](TunnelBinding, asio::ip::tcp::socket, ConnectionQuota::Lease) {};
+    const std::string client_id = generated_id(common::IdKind::client);
+    WorkerPool negotiated{4U, 8U};
+    ASSERT_TRUE(
+        negotiated.add({client_id, 1U, generated_id(common::IdKind::connection), 1U}, handler));
+    const auto bounded =
+        negotiated.add({client_id, 1U, generated_id(common::IdKind::connection), 1U}, handler);
+    ASSERT_FALSE(bounded);
+    EXPECT_EQ(bounded.error().code(), common::ErrorCode::resource_exhausted);
+    negotiated.clear();
+
+    WorkerPool no_session_capacity{0U, 8U};
+    EXPECT_FALSE(no_session_capacity.add({client_id, 1U, generated_id(common::IdKind::connection)},
+                                         handler));
+    WorkerPool no_global_capacity{4U, 0U};
+    EXPECT_FALSE(
+        no_global_capacity.add({client_id, 1U, generated_id(common::IdKind::connection)}, handler));
+}
+
 TEST(WorkerBudgetTest, EnforcesAndReleasesGlobalLimit) {
     daemon::WorkerBudget budget{2U};
     EXPECT_TRUE(budget.try_acquire());
@@ -104,6 +176,11 @@ TEST(WorkerBudgetTest, EnforcesAndReleasesGlobalLimit) {
     EXPECT_EQ(budget.in_use(), 1U);
     EXPECT_TRUE(budget.try_acquire());
     EXPECT_EQ(budget.maximum(), 2U);
+
+    daemon::WorkerBudget normalized{0U};
+    EXPECT_EQ(normalized.maximum(), 1U);
+    normalized.release();
+    EXPECT_EQ(normalized.in_use(), 0U);
 }
 
 TEST(DaemonWorkerPoolTest, AcceptsNegotiatedIdleTimeoutIncludingMaximumGrace) {
@@ -113,25 +190,147 @@ TEST(DaemonWorkerPoolTest, AcceptsNegotiatedIdleTimeoutIncludingMaximumGrace) {
     auto tls_context = std::make_shared<asio::ssl::context>(asio::ssl::context::tls_client);
     auto idle_budget = std::make_shared<daemon::WorkerBudget>(4U);
     auto connection_budget = std::make_shared<daemon::WorkerBudget>(8U);
-    auto pool =
-        daemon::WorkerPool::create(io_context.get_executor(), std::move(tls_context),
-                                   std::move(idle_budget), std::move(connection_budget),
-                                   daemon::WorkerPoolOptions{
-                                       .endpoint = std::move(*endpoint),
-                                       .server_id = generated_id(common::IdKind::server),
-                                       .client_id = generated_id(common::IdKind::client),
-                                       .session_generation = 1U,
-                                       .min_idle_workers = 0U,
-                                       .max_idle_workers = 0U,
-                                   },
-                                   [](const std::string_view) {
-                                       return common::Result<common::Endpoint>::failure(
-                                           common::ErrorCode::not_found, "unused test resolver");
-                                   });
+    auto pool = daemon::WorkerPool::create(
+        io_context.get_executor(), std::move(tls_context), std::move(idle_budget),
+        std::move(connection_budget),
+        daemon::WorkerPoolOptions{
+            .endpoint = std::move(*endpoint),
+            .server_id = generated_id(common::IdKind::server),
+            .remote_server_id = generated_id(common::IdKind::server),
+            .client_id = generated_id(common::IdKind::client),
+            .psk = std::make_shared<const common::SecureString>("secret"),
+            .session_generation = 1U,
+            .min_idle_workers = 0U,
+            .max_idle_workers = 0U,
+        },
+        [](const std::string_view) {
+            return common::Result<common::Endpoint>::failure(common::ErrorCode::not_found,
+                                                             "unused test resolver");
+        });
     ASSERT_TRUE(pool) << pool.error();
     EXPECT_TRUE((*pool)->set_idle_timeout(std::chrono::seconds{305}));
     EXPECT_FALSE((*pool)->set_idle_timeout(std::chrono::seconds{306}));
     EXPECT_FALSE((*pool)->set_idle_timeout(std::chrono::seconds{0}));
+}
+
+TEST(DaemonWorkerPoolTest, RejectsEveryIndependentOptionAndMissingDependency) {
+    asio::io_context io_context;
+    const auto resolver = [](const std::string_view) {
+        return common::Result<common::Endpoint>::failure(common::ErrorCode::not_found, "unused");
+    };
+    const auto expect_invalid = [&io_context, &resolver](daemon::WorkerPoolOptions options) {
+        const auto result = daemon::WorkerPool::create(
+            io_context.get_executor(),
+            std::make_shared<asio::ssl::context>(asio::ssl::context::tls_client),
+            std::make_shared<daemon::WorkerBudget>(4U), std::make_shared<daemon::WorkerBudget>(8U),
+            std::move(options), resolver);
+        ASSERT_FALSE(result);
+        EXPECT_EQ(result.error().code(), common::ErrorCode::invalid_argument) << result.error();
+    };
+
+    {
+        auto options = valid_daemon_options();
+        options.server_id = generated_id(common::IdKind::client);
+        expect_invalid(std::move(options));
+    }
+    {
+        auto options = valid_daemon_options();
+        options.remote_server_id = generated_id(common::IdKind::client);
+        expect_invalid(std::move(options));
+    }
+    {
+        auto options = valid_daemon_options();
+        options.client_id = generated_id(common::IdKind::server);
+        expect_invalid(std::move(options));
+    }
+    {
+        auto options = valid_daemon_options();
+        options.psk.reset();
+        expect_invalid(std::move(options));
+    }
+    {
+        auto options = valid_daemon_options();
+        options.psk = std::make_shared<const common::SecureString>("");
+        expect_invalid(std::move(options));
+    }
+    {
+        auto options = valid_daemon_options();
+        options.session_generation = 0U;
+        expect_invalid(std::move(options));
+    }
+    {
+        auto options = valid_daemon_options();
+        options.min_idle_workers = 2U;
+        options.max_idle_workers = 1U;
+        expect_invalid(std::move(options));
+    }
+    {
+        auto options = valid_daemon_options();
+        options.max_idle_workers = 129U;
+        expect_invalid(std::move(options));
+    }
+
+    const auto expect_bad_timeout = [&expect_invalid](auto member,
+                                                      const std::chrono::seconds timeout) {
+        auto options = valid_daemon_options();
+        options.*member = timeout;
+        expect_invalid(std::move(options));
+    };
+    expect_bad_timeout(&daemon::WorkerPoolOptions::connect_timeout, std::chrono::seconds::zero());
+    expect_bad_timeout(&daemon::WorkerPoolOptions::connect_timeout, std::chrono::seconds{301});
+    expect_bad_timeout(&daemon::WorkerPoolOptions::handshake_timeout, std::chrono::seconds::zero());
+    expect_bad_timeout(&daemon::WorkerPoolOptions::handshake_timeout, std::chrono::seconds{301});
+    expect_bad_timeout(&daemon::WorkerPoolOptions::idle_timeout, std::chrono::seconds::zero());
+    expect_bad_timeout(&daemon::WorkerPoolOptions::idle_timeout, std::chrono::seconds{306});
+    expect_bad_timeout(&daemon::WorkerPoolOptions::relay_inactivity_timeout,
+                       std::chrono::seconds::zero());
+    expect_bad_timeout(&daemon::WorkerPoolOptions::relay_inactivity_timeout,
+                       std::chrono::hours{24} + std::chrono::seconds{1});
+    expect_bad_timeout(&daemon::WorkerPoolOptions::graceful_shutdown_timeout,
+                       std::chrono::seconds::zero());
+    expect_bad_timeout(&daemon::WorkerPoolOptions::graceful_shutdown_timeout,
+                       std::chrono::seconds{301});
+
+    auto valid = valid_daemon_options();
+    auto tls_context = std::make_shared<asio::ssl::context>(asio::ssl::context::tls_client);
+    auto idle_budget = std::make_shared<daemon::WorkerBudget>(4U);
+    auto connection_budget = std::make_shared<daemon::WorkerBudget>(8U);
+    EXPECT_FALSE(daemon::WorkerPool::create(io_context.get_executor(), nullptr, idle_budget,
+                                            connection_budget, valid, resolver));
+    EXPECT_FALSE(daemon::WorkerPool::create(io_context.get_executor(), tls_context, nullptr,
+                                            connection_budget, valid, resolver));
+    EXPECT_FALSE(daemon::WorkerPool::create(io_context.get_executor(), tls_context, idle_budget,
+                                            nullptr, valid, resolver));
+    EXPECT_FALSE(daemon::WorkerPool::create(io_context.get_executor(), tls_context, idle_budget,
+                                            connection_budget, valid, {}));
+}
+
+TEST(DaemonWorkerPoolTest, LifecycleIsIdempotentWithoutRequestedIdleWorkers) {
+    asio::io_context io_context;
+    auto pool = daemon::WorkerPool::create(
+        io_context.get_executor(),
+        std::make_shared<asio::ssl::context>(asio::ssl::context::tls_client),
+        std::make_shared<daemon::WorkerBudget>(4U), std::make_shared<daemon::WorkerBudget>(8U),
+        valid_daemon_options(), [](const std::string_view) {
+            return common::Result<common::Endpoint>::failure(common::ErrorCode::not_found,
+                                                             "unused");
+        });
+    ASSERT_TRUE(pool) << pool.error();
+    EXPECT_EQ((*pool)->size(), 0U);
+    ASSERT_TRUE((*pool)->start());
+    const auto duplicate = (*pool)->start();
+    ASSERT_FALSE(duplicate);
+    EXPECT_EQ(duplicate.error().code(), common::ErrorCode::already_exists);
+    (*pool)->request_workers(0U);
+    (*pool)->request_workers(1U);
+    io_context.poll();
+    EXPECT_EQ((*pool)->size(), 0U);
+    (*pool)->stop();
+    (*pool)->stop();
+    EXPECT_TRUE((*pool)->start());
+    (*pool)->stop();
+    io_context.restart();
+    io_context.poll();
 }
 
 } // namespace

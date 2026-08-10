@@ -113,7 +113,40 @@ CREATE TABLE servers (
         CHECK(
             typeof(updated_at) = 'integer'
             AND updated_at >= created_at
-        )
+        ),
+
+    tls_server_name TEXT
+        CHECK(
+            tls_server_name IS NULL OR (
+                typeof(tls_server_name) = 'text'
+                AND length(CAST(tls_server_name AS BLOB)) BETWEEN 1 AND 253
+            )
+        ),
+    ca_credential_ref TEXT
+        CHECK(
+            ca_credential_ref IS NULL OR (
+                typeof(ca_credential_ref) = 'text'
+                AND length(CAST(ca_credential_ref AS BLOB)) BETWEEN 1 AND 256
+            )
+        ),
+    client_certificate_ref TEXT
+        CHECK(
+            client_certificate_ref IS NULL OR (
+                typeof(client_certificate_ref) = 'text'
+                AND length(CAST(client_certificate_ref AS BLOB)) BETWEEN 1 AND 256
+            )
+        ),
+    client_private_key_ref TEXT
+        CHECK(
+            client_private_key_ref IS NULL OR (
+                typeof(client_private_key_ref) = 'text'
+                AND length(CAST(client_private_key_ref AS BLOB)) BETWEEN 1 AND 256
+            )
+        ),
+    config_revision INTEGER NOT NULL DEFAULT 1
+        CHECK(typeof(config_revision) = 'integer' AND config_revision BETWEEN 1 AND 9223372036854775807),
+    managed_by_config INTEGER NOT NULL DEFAULT 0
+        CHECK(typeof(managed_by_config) = 'integer' AND managed_by_config IN (0, 1))
 )
 )sql";
 
@@ -204,6 +237,11 @@ CREATE TABLE tunnels (
                 AND last_synced_at BETWEEN created_at AND updated_at
             )
         ),
+
+    config_revision INTEGER NOT NULL DEFAULT 1
+        CHECK(typeof(config_revision) = 'integer' AND config_revision BETWEEN 1 AND 9223372036854775807),
+    managed_by_config INTEGER NOT NULL DEFAULT 0
+        CHECK(typeof(managed_by_config) = 'integer' AND managed_by_config IN (0, 1)),
 
     FOREIGN KEY(server_id)
         REFERENCES servers(id)
@@ -419,8 +457,6 @@ CREATE TABLE daemon_identity (
 [[nodiscard]] common::Result<void> validate_current_schema(sqlite3* database) {
     constexpr std::tuple<std::string_view, std::string_view, std::string_view> schema_objects[]{
         {"table", "schema_version", kCreateSchemaVersion},
-        {"table", "servers", kCreateServers},
-        {"table", "tunnels", kCreateTunnels},
         {"table", "daemon_identity", kCreateDaemonIdentity},
         {"index", "idx_servers_reconcile", kCreateServerReconcileIndex},
         {"index", "idx_tunnels_reconcile", kCreateTunnelReconcileIndex},
@@ -458,22 +494,39 @@ CREATE TABLE daemon_identity (
         database,
         "SELECT id, name, endpoint, credential_ref, remote_server_id, "
         "desired_state, actual_state, last_error_code, last_error_message, "
-        "reconnect_attempt, latency_ms, created_at, updated_at "
+        "reconnect_attempt, latency_ms, created_at, updated_at, "
+        "tls_server_name, ca_credential_ref, client_certificate_ref, "
+        "client_private_key_ref, config_revision, managed_by_config "
         "FROM servers LIMIT 0",
         "validate servers schema");
     if (!servers) {
         return migration_error(servers.error());
+    }
+    auto server_column_count = internal::query_single_int64(
+        database, "SELECT COUNT(*) FROM pragma_table_info('servers')",
+        "validate servers column count");
+    if (!server_column_count || *server_column_count != 19) {
+        return common::Error{common::ErrorCode::database_error,
+                             "servers schema has an unexpected column layout"};
     }
 
     auto tunnels = internal::Statement::prepare(
         database,
         "SELECT id, name, server_id, protocol, local_host, local_port, "
         "remote_host, remote_port, desired_state, actual_state, "
-        "last_error_code, last_error_message, created_at, updated_at, last_synced_at "
+        "last_error_code, last_error_message, created_at, updated_at, last_synced_at, "
+        "config_revision, managed_by_config "
         "FROM tunnels LIMIT 0",
         "validate tunnels schema");
     if (!tunnels) {
         return migration_error(tunnels.error());
+    }
+    auto tunnel_column_count = internal::query_single_int64(
+        database, "SELECT COUNT(*) FROM pragma_table_info('tunnels')",
+        "validate tunnels column count");
+    if (!tunnel_column_count || *tunnel_column_count != 17) {
+        return common::Error{common::ErrorCode::database_error,
+                             "tunnels schema has an unexpected column layout"};
     }
 
     auto identity = internal::Statement::prepare(
@@ -650,6 +703,77 @@ CREATE TABLE daemon_identity (
 
     auto insert = internal::Statement::prepare(
         database, "INSERT INTO schema_version(version, applied_at) VALUES(3, ?1)",
+        "record schema migration");
+    if (!insert) {
+        return migration_error(insert.error());
+    }
+    if (auto result = insert->bind_int64(1, common::unix_milliseconds_now()); !result) {
+        return migration_error(result.error());
+    }
+    auto step = insert->step();
+    if (!step || *step != internal::StepResult::done) {
+        return !step ? migration_error(step.error())
+                     : common::Error{common::ErrorCode::database_error,
+                                     "schema migration did not complete"};
+    }
+    return common::Result<void>::success();
+}
+
+[[nodiscard]] common::Result<void> apply_version_four(sqlite3* database) {
+    constexpr std::pair<std::string_view, std::string_view> additions[]{
+        {"ALTER TABLE servers ADD COLUMN tls_server_name TEXT "
+         "CHECK(tls_server_name IS NULL OR (typeof(tls_server_name) = 'text' AND "
+         "length(CAST(tls_server_name AS BLOB)) BETWEEN 1 AND 253))",
+         "add per-server TLS name"},
+        {"ALTER TABLE servers ADD COLUMN ca_credential_ref TEXT "
+         "CHECK(ca_credential_ref IS NULL OR (typeof(ca_credential_ref) = 'text' AND "
+         "length(CAST(ca_credential_ref AS BLOB)) BETWEEN 1 AND 256))",
+         "add per-server CA reference"},
+        {"ALTER TABLE servers ADD COLUMN client_certificate_ref TEXT "
+         "CHECK(client_certificate_ref IS NULL OR (typeof(client_certificate_ref) = 'text' AND "
+         "length(CAST(client_certificate_ref AS BLOB)) BETWEEN 1 AND 256))",
+         "add per-server client certificate reference"},
+        {"ALTER TABLE servers ADD COLUMN client_private_key_ref TEXT "
+         "CHECK(client_private_key_ref IS NULL OR (typeof(client_private_key_ref) = 'text' AND "
+         "length(CAST(client_private_key_ref AS BLOB)) BETWEEN 1 AND 256))",
+         "add per-server client private-key reference"},
+        {"ALTER TABLE servers ADD COLUMN config_revision INTEGER NOT NULL DEFAULT 1 "
+         "CHECK(typeof(config_revision) = 'integer' AND "
+         "config_revision BETWEEN 1 AND 9223372036854775807)",
+         "add server configuration revision"},
+        {"ALTER TABLE servers ADD COLUMN managed_by_config INTEGER NOT NULL DEFAULT 0 "
+         "CHECK(typeof(managed_by_config) = 'integer' AND managed_by_config IN (0, 1))",
+         "add server configuration ownership"},
+        {"ALTER TABLE tunnels ADD COLUMN config_revision INTEGER NOT NULL DEFAULT 1 "
+         "CHECK(typeof(config_revision) = 'integer' AND "
+         "config_revision BETWEEN 1 AND 9223372036854775807)",
+         "add tunnel configuration revision"},
+        {"ALTER TABLE tunnels ADD COLUMN managed_by_config INTEGER NOT NULL DEFAULT 0 "
+         "CHECK(typeof(managed_by_config) = 'integer' AND managed_by_config IN (0, 1))",
+         "add tunnel configuration ownership"},
+    };
+
+    for (const auto& [sql, operation] : additions) {
+        const std::size_t table_end = sql.find(' ', std::string_view{"ALTER TABLE "}.size());
+        const std::size_t column_start = sql.find("ADD COLUMN ") + std::string_view{"ADD COLUMN "}.size();
+        const std::size_t column_end = sql.find(' ', column_start);
+        const std::string_view table = sql.substr(std::string_view{"ALTER TABLE "}.size(),
+                                                  table_end - std::string_view{"ALTER TABLE "}.size());
+        const std::string_view column = sql.substr(column_start, column_end - column_start);
+        auto exists = column_exists(database, table, column);
+        if (!exists) {
+            return migration_error(exists.error());
+        }
+        if (!*exists) {
+            auto added = internal::execute(database, sql, operation);
+            if (!added) {
+                return migration_error(added.error());
+            }
+        }
+    }
+
+    auto insert = internal::Statement::prepare(
+        database, "INSERT INTO schema_version(version, applied_at) VALUES(4, ?1)",
         "record schema migration");
     if (!insert) {
         return migration_error(insert.error());
@@ -954,6 +1078,12 @@ common::Result<void> Database::migrate() {
             return fail(applied.error());
         }
         version = 3;
+    }
+    if (version == 3) {
+        if (auto applied = apply_version_four(handle_); !applied) {
+            return fail(applied.error());
+        }
+        version = 4;
     }
     if (version != kCurrentSchemaVersion) {
         return fail(common::Error{

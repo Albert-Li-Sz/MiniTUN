@@ -52,35 +52,70 @@ inline constexpr unsigned int kHeartbeatTimeoutShift = 39U;
     return common::Result<void>::success();
 }
 
+[[nodiscard]] common::Result<void> validate_offered_capabilities(const CapabilitySet value) {
+    if ((value & kRequiredCapabilities) != kRequiredCapabilities) {
+        return common::Error{common::ErrorCode::protocol_error,
+                             "remote peer does not offer required protocol capabilities"};
+    }
+    return common::Result<void>::success();
+}
+
+[[nodiscard]] common::Result<void> validate_selected_capabilities(const CapabilitySet value) {
+    if ((value & kRequiredCapabilities) != kRequiredCapabilities ||
+        (value & ~kSupportedCapabilities) != 0U) {
+        return common::Error{common::ErrorCode::protocol_error,
+                             "remote peer selected invalid protocol capabilities"};
+    }
+    return common::Result<void>::success();
+}
+
+struct TunnelRevision final {
+    std::string tunnel_id;
+    std::uint64_t revision{0U};
+};
+
 [[nodiscard]] common::Result<std::vector<std::uint8_t>>
-encode_tunnel_id(const std::string_view tunnel_id) {
+encode_tunnel_revision(const std::string_view tunnel_id, const std::uint64_t revision) {
     auto valid = validate_tunnel_id(tunnel_id);
     if (!valid) {
         return common::Result<std::vector<std::uint8_t>>::failure(valid.error());
+    }
+    if (revision == 0U) {
+        return common::Error{common::ErrorCode::invalid_argument,
+                             "tunnel desired revision must not be zero"};
     }
     PayloadWriter writer;
     if (auto written = writer.write_string(tunnel_id); !written) {
         return common::Result<std::vector<std::uint8_t>>::failure(written.error());
     }
+    if (auto written = writer.write_u64(revision); !written) {
+        return common::Result<std::vector<std::uint8_t>>::failure(written.error());
+    }
     return std::move(writer).finish();
 }
 
-[[nodiscard]] common::Result<std::string>
-decode_tunnel_id(const std::vector<std::uint8_t>& payload) {
+[[nodiscard]] common::Result<TunnelRevision>
+decode_tunnel_revision(const std::vector<std::uint8_t>& payload) {
     PayloadReader reader{payload};
     auto tunnel_id = reader.read_string(kMaxProtocolIdentifierBytes);
     if (!tunnel_id) {
-        return common::Result<std::string>::failure(tunnel_id.error());
+        return common::Result<TunnelRevision>::failure(tunnel_id.error());
     }
     auto valid = validate_tunnel_id(*tunnel_id);
     if (!valid) {
-        return common::Result<std::string>::failure(valid.error());
+        return common::Result<TunnelRevision>::failure(valid.error());
+    }
+    auto revision = reader.read_u64();
+    if (!revision || *revision == 0U) {
+        return common::Result<TunnelRevision>::failure(
+            common::ErrorCode::protocol_error,
+            "remote message contains an invalid tunnel revision");
     }
     auto ended = reader.require_end();
     if (!ended) {
-        return common::Result<std::string>::failure(ended.error());
+        return common::Result<TunnelRevision>::failure(ended.error());
     }
-    return tunnel_id;
+    return TunnelRevision{std::move(*tunnel_id), *revision};
 }
 
 template <std::size_t Size>
@@ -158,6 +193,12 @@ common::Result<std::vector<std::uint8_t>> encode_hello(const HelloMessage& messa
     if (!written) {
         return common::Result<std::vector<std::uint8_t>>::failure(written.error());
     }
+    if (auto capabilities = validate_offered_capabilities(message.capabilities); !capabilities) {
+        return common::Result<std::vector<std::uint8_t>>::failure(capabilities.error());
+    }
+    if (auto result = writer.write_u64(message.capabilities); !result) {
+        return common::Result<std::vector<std::uint8_t>>::failure(result.error());
+    }
     return std::move(writer).finish();
 }
 
@@ -171,11 +212,18 @@ common::Result<HelloMessage> decode_hello(const std::vector<std::uint8_t>& paylo
     if (!valid) {
         return common::Result<HelloMessage>::failure(valid.error());
     }
+    auto capabilities = reader.read_u64();
+    if (!capabilities) {
+        return common::Result<HelloMessage>::failure(capabilities.error());
+    }
+    if (auto supported = validate_offered_capabilities(*capabilities); !supported) {
+        return common::Result<HelloMessage>::failure(supported.error());
+    }
     auto ended = reader.require_end();
     if (!ended) {
         return common::Result<HelloMessage>::failure(ended.error());
     }
-    return HelloMessage{std::move(*client_id)};
+    return HelloMessage{std::move(*client_id), *capabilities};
 }
 
 common::Result<std::vector<std::uint8_t>> encode_hello_ack(const HelloAckMessage& message) {
@@ -192,6 +240,12 @@ common::Result<std::vector<std::uint8_t>> encode_hello_ack(const HelloAckMessage
         return common::Result<std::vector<std::uint8_t>>::failure(result.error());
     }
     if (auto result = writer.write_bytes(message.nonce); !result) {
+        return common::Result<std::vector<std::uint8_t>>::failure(result.error());
+    }
+    if (auto selected = validate_selected_capabilities(message.selected_capabilities); !selected) {
+        return common::Result<std::vector<std::uint8_t>>::failure(selected.error());
+    }
+    if (auto result = writer.write_u64(message.selected_capabilities); !result) {
         return common::Result<std::vector<std::uint8_t>>::failure(result.error());
     }
     return std::move(writer).finish();
@@ -215,12 +269,19 @@ common::Result<HelloAckMessage> decode_hello_ack(const std::vector<std::uint8_t>
     if (!nonce) {
         return common::Result<HelloAckMessage>::failure(nonce.error());
     }
+    auto capabilities = reader.read_u64();
+    if (!capabilities) {
+        return common::Result<HelloAckMessage>::failure(capabilities.error());
+    }
+    if (auto selected = validate_selected_capabilities(*capabilities); !selected) {
+        return common::Result<HelloAckMessage>::failure(selected.error());
+    }
     auto ended = reader.require_end();
     if (!ended) {
         return common::Result<HelloAckMessage>::failure(ended.error());
     }
     return HelloAckMessage{std::move(*server_id), std::bit_cast<std::int64_t>(*timestamp),
-                           std::move(*nonce)};
+                           std::move(*nonce), *capabilities};
 }
 
 common::Result<std::vector<std::uint8_t>> encode_auth(const AuthMessage& message) {
@@ -240,6 +301,12 @@ common::Result<std::vector<std::uint8_t>> encode_auth(const AuthMessage& message
         return common::Result<std::vector<std::uint8_t>>::failure(result.error());
     }
     if (auto result = writer.write_bytes(message.authentication_data); !result) {
+        return common::Result<std::vector<std::uint8_t>>::failure(result.error());
+    }
+    if (auto selected = validate_selected_capabilities(message.selected_capabilities); !selected) {
+        return common::Result<std::vector<std::uint8_t>>::failure(selected.error());
+    }
+    if (auto result = writer.write_u64(message.selected_capabilities); !result) {
         return common::Result<std::vector<std::uint8_t>>::failure(result.error());
     }
     return std::move(writer).finish();
@@ -267,12 +334,19 @@ common::Result<AuthMessage> decode_auth(const std::vector<std::uint8_t>& payload
     if (!authentication_data) {
         return common::Result<AuthMessage>::failure(authentication_data.error());
     }
+    auto capabilities = reader.read_u64();
+    if (!capabilities) {
+        return common::Result<AuthMessage>::failure(capabilities.error());
+    }
+    if (auto selected = validate_selected_capabilities(*capabilities); !selected) {
+        return common::Result<AuthMessage>::failure(selected.error());
+    }
     auto ended = reader.require_end();
     if (!ended) {
         return common::Result<AuthMessage>::failure(ended.error());
     }
     return AuthMessage{std::move(*client_id), std::bit_cast<std::int64_t>(*timestamp),
-                       std::move(*nonce), std::move(*authentication_data)};
+                       std::move(*nonce), std::move(*authentication_data), *capabilities};
 }
 
 common::Result<std::vector<std::uint8_t>> encode_auth_ok(const AuthOkMessage& message) {
@@ -378,7 +452,7 @@ encode_register_tunnel(const RegisterTunnelMessage& message) {
         return common::Result<std::vector<std::uint8_t>>::failure(valid.error());
     }
     if (message.bind_host.empty() || message.bind_host.size() > kMaxTunnelBindHostBytes ||
-        message.bind_port == 0U) {
+        message.bind_port == 0U || message.desired_revision == 0U) {
         return common::Result<std::vector<std::uint8_t>>::failure(
             common::ErrorCode::invalid_argument, "remote tunnel binding is invalid");
     }
@@ -392,6 +466,9 @@ encode_register_tunnel(const RegisterTunnelMessage& message) {
     if (auto written = writer.write_u16(message.bind_port); !written) {
         return common::Result<std::vector<std::uint8_t>>::failure(written.error());
     }
+    if (auto written = writer.write_u64(message.desired_revision); !written) {
+        return common::Result<std::vector<std::uint8_t>>::failure(written.error());
+    }
     return std::move(writer).finish();
 }
 
@@ -401,7 +478,8 @@ decode_register_tunnel(const std::vector<std::uint8_t>& payload) {
     auto tunnel_id = reader.read_string(kMaxProtocolIdentifierBytes);
     auto bind_host = reader.read_string(kMaxTunnelBindHostBytes);
     auto bind_port = reader.read_u16();
-    if (!tunnel_id || !bind_host || !bind_port) {
+    auto revision = reader.read_u64();
+    if (!tunnel_id || !bind_host || !bind_port || !revision) {
         return common::Result<RegisterTunnelMessage>::failure(
             common::ErrorCode::protocol_error, "REGISTER_TUNNEL payload is truncated");
     }
@@ -409,7 +487,7 @@ decode_register_tunnel(const std::vector<std::uint8_t>& payload) {
     if (!valid) {
         return common::Result<RegisterTunnelMessage>::failure(valid.error());
     }
-    if (bind_host->empty() || *bind_port == 0U) {
+    if (bind_host->empty() || *bind_port == 0U || *revision == 0U) {
         return common::Result<RegisterTunnelMessage>::failure(common::ErrorCode::protocol_error,
                                                               "REGISTER_TUNNEL binding is invalid");
     }
@@ -417,21 +495,22 @@ decode_register_tunnel(const std::vector<std::uint8_t>& payload) {
     if (!ended) {
         return common::Result<RegisterTunnelMessage>::failure(ended.error());
     }
-    return RegisterTunnelMessage{std::move(*tunnel_id), std::move(*bind_host), *bind_port};
+    return RegisterTunnelMessage{std::move(*tunnel_id), std::move(*bind_host), *bind_port,
+                                 *revision};
 }
 
 common::Result<std::vector<std::uint8_t>>
 encode_register_tunnel_ok(const RegisterTunnelOkMessage& message) {
-    return encode_tunnel_id(message.tunnel_id);
+    return encode_tunnel_revision(message.tunnel_id, message.desired_revision);
 }
 
 common::Result<RegisterTunnelOkMessage>
 decode_register_tunnel_ok(const std::vector<std::uint8_t>& payload) {
-    auto tunnel_id = decode_tunnel_id(payload);
-    if (!tunnel_id) {
-        return common::Result<RegisterTunnelOkMessage>::failure(tunnel_id.error());
+    auto value = decode_tunnel_revision(payload);
+    if (!value) {
+        return common::Result<RegisterTunnelOkMessage>::failure(value.error());
     }
-    return RegisterTunnelOkMessage{std::move(*tunnel_id)};
+    return RegisterTunnelOkMessage{std::move(value->tunnel_id), value->revision};
 }
 
 common::Result<std::vector<std::uint8_t>>
@@ -440,7 +519,7 @@ encode_register_tunnel_error(const RegisterTunnelErrorMessage& message) {
     if (!valid) {
         return common::Result<std::vector<std::uint8_t>>::failure(valid.error());
     }
-    if (message.code == common::ErrorCode::ok) {
+    if (message.code == common::ErrorCode::ok || message.desired_revision == 0U) {
         return common::Result<std::vector<std::uint8_t>>::failure(
             common::ErrorCode::invalid_argument, "REGISTER_TUNNEL_ERROR requires a failure code");
     }
@@ -451,6 +530,9 @@ encode_register_tunnel_error(const RegisterTunnelErrorMessage& message) {
     if (auto written = writer.write_string(common::to_string(message.code)); !written) {
         return common::Result<std::vector<std::uint8_t>>::failure(written.error());
     }
+    if (auto written = writer.write_u64(message.desired_revision); !written) {
+        return common::Result<std::vector<std::uint8_t>>::failure(written.error());
+    }
     return std::move(writer).finish();
 }
 
@@ -459,13 +541,14 @@ decode_register_tunnel_error(const std::vector<std::uint8_t>& payload) {
     PayloadReader reader{payload};
     auto tunnel_id = reader.read_string(kMaxProtocolIdentifierBytes);
     auto code_text = reader.read_string(64U);
-    if (!tunnel_id || !code_text) {
+    auto revision = reader.read_u64();
+    if (!tunnel_id || !code_text || !revision) {
         return common::Result<RegisterTunnelErrorMessage>::failure(
             common::ErrorCode::protocol_error, "REGISTER_TUNNEL_ERROR payload is truncated");
     }
     auto valid = validate_tunnel_id(*tunnel_id);
     const auto code = common::error_code_from_string(*code_text);
-    if (!valid || !code.has_value() || *code == common::ErrorCode::ok) {
+    if (!valid || !code.has_value() || *code == common::ErrorCode::ok || *revision == 0U) {
         return common::Result<RegisterTunnelErrorMessage>::failure(
             common::ErrorCode::protocol_error, "REGISTER_TUNNEL_ERROR payload is invalid");
     }
@@ -473,26 +556,26 @@ decode_register_tunnel_error(const std::vector<std::uint8_t>& payload) {
     if (!ended) {
         return common::Result<RegisterTunnelErrorMessage>::failure(ended.error());
     }
-    return RegisterTunnelErrorMessage{std::move(*tunnel_id), *code};
+    return RegisterTunnelErrorMessage{std::move(*tunnel_id), *code, *revision};
 }
 
 common::Result<std::vector<std::uint8_t>>
 encode_unregister_tunnel(const UnregisterTunnelMessage& message) {
-    return encode_tunnel_id(message.tunnel_id);
+    return encode_tunnel_revision(message.tunnel_id, message.desired_revision);
 }
 
 common::Result<UnregisterTunnelMessage>
 decode_unregister_tunnel(const std::vector<std::uint8_t>& payload) {
-    auto tunnel_id = decode_tunnel_id(payload);
-    if (!tunnel_id) {
-        return common::Result<UnregisterTunnelMessage>::failure(tunnel_id.error());
+    auto value = decode_tunnel_revision(payload);
+    if (!value) {
+        return common::Result<UnregisterTunnelMessage>::failure(value.error());
     }
-    return UnregisterTunnelMessage{std::move(*tunnel_id)};
+    return UnregisterTunnelMessage{std::move(value->tunnel_id), value->revision};
 }
 
 common::Result<std::vector<std::uint8_t>>
 encode_unregister_tunnel_ok(const UnregisterTunnelOkMessage& message) {
-    return encode_tunnel_id(message.tunnel_id);
+    return encode_tunnel_revision(message.tunnel_id, message.desired_revision);
 }
 
 common::Result<UnregisterTunnelOkMessage>
@@ -541,6 +624,17 @@ common::Result<std::vector<std::uint8_t>> encode_worker_hello(const WorkerHelloM
     if (auto written = writer.write_string(message.worker_id); !written) {
         return common::Result<std::vector<std::uint8_t>>::failure(written.error());
     }
+    if (auto written =
+            writer.write_u64(std::bit_cast<std::uint64_t>(message.timestamp_seconds));
+        !written) {
+        return common::Result<std::vector<std::uint8_t>>::failure(written.error());
+    }
+    if (auto written = writer.write_bytes(message.nonce); !written) {
+        return common::Result<std::vector<std::uint8_t>>::failure(written.error());
+    }
+    if (auto written = writer.write_bytes(message.authentication_data); !written) {
+        return common::Result<std::vector<std::uint8_t>>::failure(written.error());
+    }
     return std::move(writer).finish();
 }
 
@@ -549,13 +643,19 @@ common::Result<WorkerHelloMessage> decode_worker_hello(const std::vector<std::ui
     auto client_id = reader.read_string(kMaxProtocolIdentifierBytes);
     auto generation = reader.read_u64();
     auto worker_id = reader.read_string(kMaxProtocolIdentifierBytes);
-    if (!client_id || !generation || !worker_id || *generation == 0U ||
+    auto timestamp = reader.read_u64();
+    auto nonce = read_fixed_bytes<kAuthenticationNonceSize>(reader);
+    auto authentication_data = read_fixed_bytes<kAuthenticationDataSize>(reader);
+    if (!client_id || !generation || !worker_id || !timestamp || !nonce ||
+        !authentication_data || *generation == 0U ||
         !validate_client_id(*client_id) || !validate_connection_id(*worker_id) ||
         !reader.require_end()) {
         return common::Result<WorkerHelloMessage>::failure(common::ErrorCode::protocol_error,
                                                            "WORKER_HELLO payload is invalid");
     }
-    return WorkerHelloMessage{std::move(*client_id), *generation, std::move(*worker_id)};
+    return WorkerHelloMessage{std::move(*client_id), *generation, std::move(*worker_id),
+                              std::bit_cast<std::int64_t>(*timestamp), *nonce,
+                              *authentication_data};
 }
 
 common::Result<std::vector<std::uint8_t>>

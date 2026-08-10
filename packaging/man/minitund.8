@@ -1,4 +1,4 @@
-.TH MINITUND 8 "2026-08-08" "MiniTun 0.4.1" "系统管理"
+.TH MINITUND 8 "2026-08-09" "MiniTun 1.0.0" "系统管理"
 .SH NAME
 minitund \- MiniTun 客户端守护进程
 .SH 用法
@@ -6,74 +6,87 @@ minitund \- MiniTun 客户端守护进程
 .RI [ options ]
 .SH 描述
 .B minitund
-为已配置的公网服务端维护相互隔离且经过认证的 TLS 会话与 Worker Pool。
-服务器和隧道的期望状态持久化在 SQLite 中，并在重启后恢复。进程保持
-前台运行，以便由服务管理器监督。
+持久化 schema v4 资源与凭据，
+维护相互隔离的 Protocol v2 server session、TunnelReconciler 和 Worker Pool，
+并把已认证 tunnel 连接到本地 TCP 目标。
 .SH 选项
 .TP
 .BI --socket " path"
-Unix 控制套接字。
-默认为 /run/minitun/minitun.sock。
+Unix 控制 socket；
+默认 /run/minitun/minitun.sock。
 .TP
 .BI --database " path"
-状态数据库。默认为 /var/lib/minitun/state.db。
+状态数据库；默认 /var/lib/minitun/state.db。
 .TP
 .BI --credentials " path"
-凭据数据库。默认为 /var/lib/minitun/credentials.db。
+凭据数据库；默认 /var/lib/minitun/credentials.db。
 .TP
-.BI --tls-ca " path"
-用于验证远程服务端证书的 PEM CA 文件。省略此选项时使用系统信任库。
+.BI --admin-listen " endpoint"
+可选数值 host:port 管理 listener；默认关闭。
+.TP
+.BI --admin-token-file " file"
+非 loopback 管理 listener 必需的 Bearer token 文件。
+.TP
+.BI --tls-ca " file"
+默认用于验证远程 server 的 PEM CA；单 server 保存的 CA 优先。省略时使用系统信任库。
 .TP
 .B --insecure-skip-verify
-禁用远程证书校验。该选项仅供开发使用，会输出警告，生产环境不得使用。
+禁用远程证书验证，仅供开发；生产不得使用。
 .TP
 .BI --relay-idle-timeout " seconds"
-关闭不活动的中继。默认为 300 秒。
+关闭不活动 relay；默认 300 秒。
 .TP
 .BI --shutdown-timeout " seconds"
-优雅排空中继的最长时间。默认为 10 秒。
+优雅排空 relay 的期限；默认 10 秒。
 .TP
 .BI --max-idle-workers-per-server " count"
-逐服务器空闲 Worker 上限。默认为 32。
+逐 server 空闲 Worker 上限；默认 32。
 .TP
 .BI --max-total-idle-workers " count"
-守护进程全局空闲 Worker 上限。默认为 128。
+daemon 全局空闲 Worker 上限；
+默认 128。
 .TP
 .BI --max-total-connections " count"
-守护进程全局 Worker 与中继上限。默认为 10000。
+daemon 全局 Worker/relay 连接上限；
+默认 10000。
 .TP
 .BI --io-threads " count"
-Asio 工作线程数，
-范围为 1 到 16。
+Asio I/O 线程数，范围 1 到 16。
 .TP
 .BI --log-level " level"
-结构化日志级别：trace、debug、info、warn、error、critical 或 off。
+trace、debug、info、warn、error、critical
+或 off。
 .TP
 .B --foreground
-在前台运行。软件包服务使用该模式。
+保持前台运行；软件包 unit 使用该模式。
 .TP
 .B --version
-打印版本信息后退出。
+打印版本、提交、构建和协议号。
+.SH 启动恢复
+首次打开 v0.4.1 schema v3 数据会在事务中迁移到 schema v4。
+启动时将残留 tunnel 状态收敛为 pending，
+验证所有凭据引用并清理崩溃留下的不可达轮换槽。
+旧程序不能打开迁移后数据库；回滚必须恢复升级前备份。
+.SH 管理端点
+提供 GET/HEAD /healthz、GET/HEAD /readyz 和 GET /metrics。readiness 要求状态库、
+凭据库和 IPC 正常，不要求所有远端在线。非 loopback 规则同 minitun-server。
 .SH 信号
 .TP
 .B SIGHUP
-热加载客户端远程会话。守护进程重新创建各服务器会话，在下一次握手时重新读取
---tls-ca 指定的 CA 和凭据；旧 Worker 按 --shutdown-timeout 优雅排空。Unix 套接字、
-数据库路径、I/O 线程数以及资源上限不会改变。也可以使用
-.BR "minitun reload" .
+重新创建受影响远程 session；也可执行 minitun reload。启动路径和资源上限不改变。
 .TP
 .B SIGINT, SIGTERM
-停止 IPC 和远程会话，并按 --shutdown-timeout 优雅排空活动中继。
+停止 IPC 和远程 session，并按 --shutdown-timeout 排空 relay。
 .SH 文件
 .TP
 .I /run/minitun/minitun.sock
-本地控制套接字，模式为 0660。
+本地控制 socket，默认模式 0660。
 .TP
 .I /var/lib/minitun/state.db
-持久化状态数据库，模式为 0600。
+schema v4 状态数据库，模式 0600。
 .TP
 .I /var/lib/minitun/credentials.db
-凭据数据库，模式为 0600。
+私有凭据数据库，模式 0600。
 .SH 另请参阅
 .BR minitun (1),
 .BR minitun-server (8),

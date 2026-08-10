@@ -7,6 +7,7 @@ server_bin=${3:?missing minitun-server binary}
 
 runtime_root=$(cd "${TMPDIR:-/tmp}" && pwd -P)
 runtime_dir=$(mktemp -d "$runtime_root/mt-cred.XXXXXX")
+integration_dir=$(cd "$(dirname "$0")" && pwd -P)
 socket_path="$runtime_dir/d.sock"
 state_path="$runtime_dir/state.db"
 credentials_path="$runtime_dir/credentials.db"
@@ -68,11 +69,14 @@ for _ in $(seq 1 100); do
 done
 [[ -S "$socket_path" ]]
 
+bash "$integration_dir/write_client_policy.sh" "$minitun_bin" "$socket_path" \
+    "$runtime_dir/clients.json" "$runtime_dir/token" >/dev/null
+
 "$server_bin" --foreground \
     --listen "127.0.0.1:$server_port" \
     --tls-cert "$runtime_dir/server.crt" \
     --tls-key "$runtime_dir/server.key" \
-    --token-file "$runtime_dir/token" \
+    --clients-config "$runtime_dir/clients.json" \
     --heartbeat-interval 1 \
     --heartbeat-timeout 3 \
     --min-idle-workers 0 \

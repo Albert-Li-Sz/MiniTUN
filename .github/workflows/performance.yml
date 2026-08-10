@@ -1,0 +1,250 @@
+name: Performance release gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Release-gate operation to run on the dedicated host
+        required: true
+        type: choice
+        default: benchmark
+        options:
+          - benchmark
+          - start-full-24h
+          - collect-full-24h
+          - start-mixed-7d
+          - collect-mixed-7d
+      session_id:
+        description: Numeric workflow run ID returned by the matching start operation
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: performance-release-gate
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  benchmark:
+    name: 100 clients / 2,000 tunnels / 10,000 relays
+    if: >-
+      inputs.operation == 'benchmark' &&
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on:
+      - self-hosted
+      - linux
+      - x64
+      - minitun-benchmark-4cpu-8gib
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install build and benchmark dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes \
+            cmake curl g++ ninja-build openssl python3 util-linux \
+            libssl-dev libsqlite3-dev libasio-dev libspdlog-dev \
+            nlohmann-json3-dev libcli11-dev pkg-config
+
+      - name: Validate dedicated host shape
+        run: |
+          test "$(nproc)" -eq 4
+          memory_kib=$(awk '$1 == "MemTotal:" {print $2}' /proc/meminfo)
+          test "${memory_kib}" -ge 7800000
+          test "${memory_kib}" -le 8600000
+          ulimit -n 65536
+
+      - name: Build release binaries
+        run: |
+          cmake -S . -B build/performance -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DMINITUN_USE_SYSTEM_DEPS=ON \
+            -DMINITUN_BUILD_TESTS=OFF \
+            -DMINITUN_ENABLE_LTO=ON \
+            -DMINITUN_WARNINGS_AS_ERRORS=ON
+          cmake --build build/performance --parallel 4
+
+      - name: Run three independent release-gate trials
+        env:
+          MINITUN_SOURCE_SHA: ${{ github.sha }}
+          RUNS: "3"
+          RESULT_DIR: benchmark-results
+        run: |
+          sudo touch /var/tmp/minitun-release-gate.lock
+          sudo chmod 0666 /var/tmp/minitun-release-gate.lock
+          exec 9<>/var/tmp/minitun-release-gate.lock
+          flock --nonblock 9 || {
+            echo "the dedicated runner is already executing a release gate" >&2
+            exit 1
+          }
+          ./benchmarks/run_gate.sh \
+            ./build/performance/minitun \
+            ./build/performance/minitund \
+            ./build/performance/minitun-server
+
+      - name: Validate benchmark evidence
+        run: |
+          ./benchmarks/verify_release_evidence.py performance \
+            benchmark-results/gate-summary.json \
+            --source-sha "${GITHUB_SHA}"
+
+      - name: Attest benchmark evidence
+        uses: actions/attest@v4
+        with:
+          subject-path: benchmark-results/gate-summary.json
+
+      - name: Upload benchmark evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: performance-release-gate-${{ github.sha }}-${{ github.run_id }}
+          if-no-files-found: warn
+          retention-days: 90
+          path: benchmark-results/
+
+  start-soak:
+    name: Start persistent ${{ inputs.operation }} session
+    if: >-
+      startsWith(inputs.operation, 'start-') &&
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on:
+      - self-hosted
+      - linux
+      - x64
+      - minitun-benchmark-4cpu-8gib
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install build and benchmark dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes \
+            cmake curl g++ ninja-build openssl python3 util-linux \
+            libssl-dev libsqlite3-dev libasio-dev libspdlog-dev \
+            nlohmann-json3-dev libcli11-dev pkg-config
+
+      - name: Validate dedicated host shape and system service support
+        run: |
+          test "$(nproc)" -eq 4
+          memory_kib=$(awk '$1 == "MemTotal:" {print $2}' /proc/meminfo)
+          test "${memory_kib}" -ge 7800000
+          test "${memory_kib}" -le 8600000
+          systemctl --version
+          command -v systemd-run
+          command -v flock
+          ulimit -n 65536
+
+      - name: Build immutable release binaries
+        run: |
+          cmake -S . -B build/performance -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DMINITUN_USE_SYSTEM_DEPS=ON \
+            -DMINITUN_BUILD_TESTS=OFF \
+            -DMINITUN_ENABLE_LTO=ON \
+            -DMINITUN_WARNINGS_AS_ERRORS=ON
+          cmake --build build/performance --parallel 4
+
+      - name: Launch detached systemd soak
+        id: launch
+        env:
+          OPERATION: ${{ inputs.operation }}
+        run: |
+          phase=${OPERATION#start-}
+          echo "phase=${phase}" >>"${GITHUB_OUTPUT}"
+          sudo ./benchmarks/soak_service.sh start \
+            "${phase}" "${GITHUB_SHA}" "${GITHUB_RUN_ID}" \
+            "${PWD}/build/performance/minitun" \
+            "${PWD}/build/performance/minitund" \
+            "${PWD}/build/performance/minitun-server"
+          session="/var/lib/minitun-release-gates/${phase}-${GITHUB_SHA}-${GITHUB_RUN_ID}"
+          install -d start-receipt
+          install -m 0644 "${session}/manifest.json" start-receipt/manifest.json
+          install -m 0644 "${session}/status.json" start-receipt/status.json
+          printf '%s\n' "${GITHUB_RUN_ID}" >start-receipt/session-id.txt
+          echo "Collect with operation collect-${phase} and session_id ${GITHUB_RUN_ID}"
+
+      - name: Upload start receipt
+        uses: actions/upload-artifact@v7
+        with:
+          name: soak-start-${{ steps.launch.outputs.phase }}-${{ github.sha }}-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 90
+          path: start-receipt/
+
+  collect-soak:
+    name: Collect persistent ${{ inputs.operation }} session
+    if: >-
+      startsWith(inputs.operation, 'collect-') &&
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on:
+      - self-hosted
+      - linux
+      - x64
+      - minitun-benchmark-4cpu-8gib
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Resolve and validate collection request
+        id: request
+        env:
+          OPERATION: ${{ inputs.operation }}
+          SESSION_ID: ${{ inputs.session_id }}
+        run: |
+          phase=${OPERATION#collect-}
+          [[ "${phase}" == full-24h || "${phase}" == mixed-7d ]]
+          [[ "${SESSION_ID}" =~ ^[0-9]+$ ]] || {
+            echo "session_id must be the run ID from start-${phase}" >&2
+            exit 2
+          }
+          echo "phase=${phase}" >>"${GITHUB_OUTPUT}"
+
+      - name: Collect and validate completed soak
+        env:
+          PHASE: ${{ steps.request.outputs.phase }}
+          SESSION_ID: ${{ inputs.session_id }}
+        run: |
+          ./benchmarks/soak_service.sh collect \
+            "${PHASE}" "${GITHUB_SHA}" "${SESSION_ID}" \
+            "${RUNNER_TEMP}/soak-evidence"
+
+      - name: Attest soak result
+        uses: actions/attest@v4
+        with:
+          subject-path: ${{ runner.temp }}/soak-evidence/${{ steps.request.outputs.phase }}.json
+
+      - name: Upload soak evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.request.outputs.phase }}-release-gate-${{ github.sha }}-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 90
+          path: ${{ runner.temp }}/soak-evidence/
+
+      - name: Show persistent service status on failure
+        if: failure()
+        env:
+          PHASE: ${{ steps.request.outputs.phase }}
+          SESSION_ID: ${{ inputs.session_id }}
+        run: |
+          if [[ -n "${PHASE}" && "${SESSION_ID}" =~ ^[0-9]+$ ]]; then
+            ./benchmarks/soak_service.sh status \
+              "${PHASE}" "${GITHUB_SHA}" "${SESSION_ID}" || true
+          fi

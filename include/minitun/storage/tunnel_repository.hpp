@@ -44,6 +44,16 @@ class TunnelRepository final {
                                   const std::optional<common::Error>& error,
                                   std::int64_t updated_at);
 
+    /// Applies a process-local runtime transition only while the persisted
+    /// desired revision still matches the network request that produced it.
+    /// A stale response is reported as false and leaves the row unchanged.
+    [[nodiscard]] common::Result<bool>
+    update_runtime_state_if_revision(const common::Id& id, const common::Id& server_id,
+                                     std::uint64_t expected_revision,
+                                     TunnelActualState actual_state,
+                                     const std::optional<common::Error>& error,
+                                     std::int64_t updated_at, bool synchronized);
+
     [[nodiscard]] common::Result<void> mark_removed(const common::Id& id, std::int64_t updated_at);
     [[nodiscard]] common::Result<void> mark_removed(const common::Id& id, std::int64_t updated_at,
                                                     Transaction& transaction);

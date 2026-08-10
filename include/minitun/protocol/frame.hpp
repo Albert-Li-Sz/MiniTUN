@@ -13,7 +13,7 @@
 namespace minitun::protocol {
 
 inline constexpr std::uint32_t kFrameMagic = 0x4D54554EU;
-inline constexpr std::uint16_t kProtocolVersion = 1U;
+inline constexpr std::uint16_t kProtocolVersion = 2U;
 inline constexpr std::size_t kFrameHeaderSize = 24U;
 inline constexpr std::size_t kMaxFrameSize = 64U * 1024U;
 inline constexpr std::size_t kMaxPayloadSize = kMaxFrameSize - kFrameHeaderSize;

@@ -33,15 +33,26 @@ class ControlService final {
 
   private:
     [[nodiscard]] common::Result<ipc::Json> daemon_status(const ipc::Request& request) const;
+    [[nodiscard]] common::Result<ipc::Json> daemon_identity(const ipc::Request& request);
     [[nodiscard]] common::Result<ipc::Json> server_add(const ipc::Request& request);
     [[nodiscard]] common::Result<ipc::Json> server_login(const ipc::Request& request);
+    [[nodiscard]] common::Result<ipc::Json> server_update(const ipc::Request& request);
+    [[nodiscard]] common::Result<ipc::Json> server_enable(const ipc::Request& request);
+    [[nodiscard]] common::Result<ipc::Json> server_disable(const ipc::Request& request);
+    [[nodiscard]] common::Result<ipc::Json> server_logout(const ipc::Request& request);
     [[nodiscard]] common::Result<ipc::Json> server_list(const ipc::Request& request) const;
     [[nodiscard]] common::Result<ipc::Json> server_inspect(const ipc::Request& request) const;
     [[nodiscard]] common::Result<ipc::Json> server_remove(const ipc::Request& request);
     [[nodiscard]] common::Result<ipc::Json> tunnel_add(const ipc::Request& request);
+    [[nodiscard]] common::Result<ipc::Json> tunnel_update(const ipc::Request& request);
+    [[nodiscard]] common::Result<ipc::Json> tunnel_enable(const ipc::Request& request);
+    [[nodiscard]] common::Result<ipc::Json> tunnel_disable(const ipc::Request& request);
     [[nodiscard]] common::Result<ipc::Json> tunnel_list(const ipc::Request& request) const;
     [[nodiscard]] common::Result<ipc::Json> tunnel_inspect(const ipc::Request& request) const;
     [[nodiscard]] common::Result<ipc::Json> tunnel_remove(const ipc::Request& request);
+    [[nodiscard]] common::Result<ipc::Json> config_export(const ipc::Request& request) const;
+    [[nodiscard]] common::Result<ipc::Json> config_plan(const ipc::Request& request) const;
+    [[nodiscard]] common::Result<ipc::Json> config_apply(const ipc::Request& request);
     [[nodiscard]] common::Result<ipc::Json> status(const ipc::Request& request) const;
     [[nodiscard]] common::Result<ipc::Json> doctor(const ipc::Request& request);
     [[nodiscard]] common::Result<ipc::Json> health(const ipc::Request& request) const;

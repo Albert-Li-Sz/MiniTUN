@@ -4,6 +4,7 @@
 #include <asio/signal_set.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <csignal>
 #include <cstdint>
@@ -13,11 +14,13 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <utility>
 #include <vector>
 
+#include <minitun/admin/server.hpp>
 #include <minitun/common/error.hpp>
 #include <minitun/common/logging.hpp>
 #include <minitun/common/version.hpp>
@@ -48,7 +51,67 @@ class LoggingLifetime final {
     return std::min<std::size_t>(std::max<std::size_t>(detected, 1U), 16U);
 }
 
+[[nodiscard]] std::string server_metrics_text(const minitun::server::Server& server) {
+    const auto metrics = server.metrics();
+    const auto version = minitun::common::version_info();
+    std::ostringstream output;
+    output << "# TYPE minitun_build_info gauge\n"
+           << "minitun_build_info{role=\"server\",version=\"" << version.version
+           << "\",protocol=\"" << version.protocol_version << "\"} 1\n"
+           << "# TYPE minitun_sessions gauge\nminitun_sessions " << metrics.active_sessions
+           << "\n# TYPE minitun_connections gauge\n"
+           << "minitun_connections{state=\"active\"} " << metrics.active_connections
+           << "\nminitun_connections{state=\"pending\"} " << metrics.pending_connections
+           << "\n# TYPE minitun_tunnels gauge\nminitun_tunnels " << metrics.active_tunnels
+           << "\n# TYPE minitun_workers gauge\nminitun_workers{state=\"idle\"} "
+           << metrics.idle_workers << "\n"
+           << "# TYPE minitun_relays gauge\nminitun_relays{state=\"active\"} "
+           << metrics.active_relays << "\n"
+           << "# TYPE minitun_connections_total counter\nminitun_connections_total "
+           << metrics.connections_total << "\n"
+           << "# TYPE minitun_tls_resumptions_total counter\nminitun_tls_resumptions_total "
+           << metrics.tls_resumptions_total << "\n"
+           << "# TYPE minitun_authentication_total counter\n"
+           << "minitun_authentication_total{result=\"success\"} "
+           << metrics.authentication_success_total << "\n"
+           << "minitun_authentication_total{result=\"failure\"} "
+           << metrics.authentication_failure_total << "\n"
+           << "# TYPE minitun_registrations_total counter\n"
+           << "minitun_registrations_total{result=\"success\"} "
+           << metrics.registration_success_total << "\n"
+           << "minitun_registrations_total{result=\"failure\"} "
+           << metrics.registration_failure_total << "\n"
+           << "# TYPE minitun_unregistrations_total counter\nminitun_unregistrations_total "
+           << metrics.unregistration_total << "\n"
+           << "# TYPE minitun_relays_total counter\nminitun_relays_total "
+           << metrics.relay_total << "\n"
+           << "# TYPE minitun_relay_bytes_total counter\n"
+           << "minitun_relay_bytes_total{direction=\"in\"} " << metrics.relay_bytes_in_total
+           << "\nminitun_relay_bytes_total{direction=\"out\"} "
+           << metrics.relay_bytes_out_total << "\n"
+           << "# TYPE minitun_acl_rejections_total counter\nminitun_acl_rejections_total "
+           << metrics.acl_rejections_total << "\n"
+           << "# TYPE minitun_quota_rejections_total counter\nminitun_quota_rejections_total "
+           << metrics.quota_rejections_total << "\n"
+           << "# TYPE minitun_errors_total counter\nminitun_errors_total "
+           << metrics.errors_total << "\n"
+           << "# TYPE minitun_policy_reloads_total counter\n"
+           << "minitun_policy_reloads_total{result=\"success\"} "
+           << metrics.policy_reloads_total << "\n"
+           << "minitun_policy_reloads_total{result=\"failure\"} "
+           << metrics.policy_reload_failures_total << "\n"
+           << "# TYPE minitun_registration_latency_seconds summary\n"
+           << "minitun_registration_latency_seconds_count "
+           << metrics.registration_success_total + metrics.registration_failure_total << "\n"
+           << "minitun_registration_latency_seconds_sum "
+           << static_cast<long double>(metrics.registration_latency_microseconds_total) /
+                  1'000'000.0L
+           << "\n";
+    return output.str();
+}
+
 int run_server(const minitun::server::ServerOptions& options,
+               const minitun::admin::ServerOptions& admin_options,
                const minitun::common::LogLevel log_level, const std::size_t io_threads) {
     auto logging = minitun::common::initialize_logging({
         .logger_name = "minitun-server",
@@ -70,10 +133,41 @@ int run_server(const minitun::server::ServerOptions& options,
                    ? kInvalidArgumentsExitCode
                    : kInternalErrorExitCode;
     }
+    const auto ready = std::make_shared<std::atomic_bool>(false);
+    std::unique_ptr<minitun::admin::Server> admin_server;
+    if (!admin_options.listen_endpoint.empty()) {
+        auto configured = minitun::admin::Server::create(
+            io_context, admin_options,
+            {
+                .healthy = [] { return true; },
+                .ready = [ready] { return ready->load(std::memory_order_relaxed); },
+                .metrics = [server = server->get()] { return server_metrics_text(*server); },
+            });
+        if (!configured) {
+            std::cerr << "minitun-server: invalid admin listener: " << configured.error() << '\n';
+            return configured.error().code() == minitun::common::ErrorCode::invalid_argument ||
+                           configured.error().code() == minitun::common::ErrorCode::permission_denied
+                       ? kInvalidArgumentsExitCode
+                       : kInternalErrorExitCode;
+        }
+        admin_server = std::move(*configured);
+    }
     auto started = (*server)->start();
     if (!started) {
         std::cerr << "minitun-server: failed to start listener: " << started.error() << '\n';
         return kInternalErrorExitCode;
+    }
+    ready->store(true, std::memory_order_relaxed);
+    if (admin_server != nullptr) {
+        started = admin_server->start();
+        if (!started) {
+            ready->store(false, std::memory_order_relaxed);
+            (*server)->stop();
+            io_context.poll();
+            std::cerr << "minitun-server: failed to start admin listener: " << started.error()
+                      << '\n';
+            return kInternalErrorExitCode;
+        }
     }
 
     minitun::common::log_info("TLS server started", {.component = "server",
@@ -83,8 +177,8 @@ int run_server(const minitun::server::ServerOptions& options,
     asio::signal_set signals{io_context, SIGINT, SIGTERM, SIGHUP};
     auto signal_handler = std::make_shared<std::function<void(const asio::error_code&, int)>>();
     const std::weak_ptr weak_signal_handler = signal_handler;
-    *signal_handler = [&server, &signals, weak_signal_handler](const asio::error_code& error,
-                                                               const int signal_number) {
+    *signal_handler = [&server, &admin_server, &signals, &ready, weak_signal_handler](
+                          const asio::error_code& error, const int signal_number) {
         if (error) {
             return;
         }
@@ -92,13 +186,17 @@ int run_server(const minitun::server::ServerOptions& options,
             auto reloaded = (*server)->reload();
             if (!reloaded) {
                 minitun::common::log_error(
-                    "TLS credential reload failed",
+                    "TLS credential or client policy reload failed",
                     {.component = "server", .error_code = reloaded.error().code()});
             }
             if (const auto handler = weak_signal_handler.lock()) {
                 signals.async_wait(*handler);
             }
             return;
+        }
+        ready->store(false, std::memory_order_relaxed);
+        if (admin_server != nullptr) {
+            admin_server->stop();
         }
         (*server)->stop();
     };
@@ -136,6 +234,10 @@ int run_server(const minitun::server::ServerOptions& options,
     for (auto& worker : workers) {
         worker.join();
     }
+    ready->store(false, std::memory_order_relaxed);
+    if (admin_server != nullptr) {
+        admin_server->stop();
+    }
     (*server)->stop();
     {
         const std::scoped_lock lock{failure_mutex};
@@ -172,6 +274,7 @@ int main(int argc, char** argv) {
     app.set_version_flag("--version", version_info, "Show version information");
 
     minitun::server::ServerOptions options;
+    minitun::admin::ServerOptions admin_options;
     app.add_option("--listen", options.listen_endpoint, "TLS control listener endpoint")
         ->capture_default_str();
     app.add_option("--tls-cert", options.tls_certificate_path, "PEM certificate chain")
@@ -180,12 +283,18 @@ int main(int argc, char** argv) {
     app.add_option("--tls-key", options.tls_private_key_path, "PEM private key")
         ->required()
         ->check(CLI::ExistingFile);
-    app.add_option("--token-file", options.token_file_path, "Private authentication Token file")
+    app.add_option("--clients-config", options.clients_config_path,
+                   "Strict JSON client policy configuration")
         ->required()
         ->check(CLI::ExistingFile);
-    app.add_option("--allow-ports", options.allowed_ports,
-                   "Allowed public tunnel port or inclusive range")
-        ->capture_default_str();
+    app.add_option("--client-ca", options.client_ca_path,
+                   "PEM CA used to verify policy-bound client certificates")
+        ->check(CLI::ExistingFile);
+    app.add_option("--admin-listen", admin_options.listen_endpoint,
+                   "Optional numeric management listener for health and metrics");
+    app.add_option("--admin-token-file", admin_options.token_file,
+                   "Private Bearer token file required for non-loopback management listeners")
+        ->check(CLI::ExistingFile);
     app.add_option("--max-clients", options.max_clients, "Maximum authenticated clients")
         ->check(CLI::Range(1U, 100'000U))
         ->capture_default_str();
@@ -293,5 +402,5 @@ int main(int argc, char** argv) {
     options.graceful_shutdown_timeout = std::chrono::seconds{shutdown_timeout_seconds};
     static_cast<void>(foreground);
 
-    return run_server(options, *log_level, io_threads);
+    return run_server(options, admin_options, *log_level, io_threads);
 }

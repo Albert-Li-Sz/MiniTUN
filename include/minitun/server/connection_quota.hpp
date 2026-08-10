@@ -43,6 +43,8 @@ class ConnectionQuota final {
     ConnectionQuota& operator=(const ConnectionQuota&) = delete;
 
     [[nodiscard]] common::Result<Lease> try_acquire(std::string_view client_id);
+    [[nodiscard]] common::Result<Lease> try_acquire(std::string_view client_id,
+                                                    std::size_t max_for_client);
     [[nodiscard]] std::size_t total_in_use() const noexcept;
     [[nodiscard]] std::size_t client_in_use(std::string_view client_id) const noexcept;
 
