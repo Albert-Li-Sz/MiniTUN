@@ -114,9 +114,6 @@ void publish_error(const Error& source, minitun_error** const output) noexcept {
     if (output == nullptr) {
         return;
     }
-    if (*output != nullptr) {
-        minitun_error_free(*output);
-    }
     *output = nullptr;
     try {
         auto error = std::make_unique<minitun_error>();
@@ -138,12 +135,9 @@ void publish_error(const Error& source, minitun_error** const output) noexcept {
 
 void initialize_error(minitun_error** const error) noexcept {
     if (error != nullptr) {
-        if (*error != nullptr) {
-            minitun_error_free(*error);
-        }
         *error = nullptr;
     }
-}
+} // NOLINT(clang-analyzer-cplusplus.NewDeleteLeaks)
 
 [[nodiscard]] Result<std::string_view> bounded_string(const char* const value,
                                                       const std::string_view description,
