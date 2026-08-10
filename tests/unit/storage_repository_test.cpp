@@ -1137,5 +1137,200 @@ TEST(StorageRepositoryInjectionTest, ReadAndCascadePrepareFailuresAreReported) {
     }
 }
 
+template <typename Record>
+void expect_per_field_inequalities(const Record& base,
+                                   const std::initializer_list<Record> mutated) {
+    EXPECT_EQ(base, base);
+    for (const auto& other : mutated) {
+        EXPECT_NE(base, other);
+    }
+}
+
+TEST(StorageRepositoryTest, PerFieldInequalityCoversEveryRecordComparison) {
+    const ServerRecord server = make_server(200, "base");
+    expect_per_field_inequalities(
+        server,
+        {[&] {
+             ServerRecord value = server;
+             value.id = make_id(common::IdKind::server, 201U);
+             return value;
+         }(),
+         [&] {
+             ServerRecord value = server;
+             value.name = "other";
+             return value;
+         }(),
+         [&] {
+             ServerRecord value = server;
+             value.endpoint = make_endpoint("other.example.com:2444");
+             return value;
+         }(),
+         [&] {
+             ServerRecord value = server;
+             value.credential_ref = "other-key";
+             return value;
+         }(),
+         [&] {
+             ServerRecord value = server;
+             value.remote_server_id = "other-remote";
+             return value;
+         }(),
+         [&] {
+             ServerRecord value = server;
+             value.desired_state = ServerDesiredState::disabled;
+             return value;
+         }(),
+         [&] {
+             ServerRecord value = server;
+             value.actual_state = ServerActualState::disconnected;
+             return value;
+         }(),
+         [&] {
+             ServerRecord value = server;
+             value.last_error_code = common::ErrorCode::not_found;
+             return value;
+         }(),
+         [&] {
+             ServerRecord value = server;
+             value.last_error_message = "other";
+             return value;
+         }(),
+         [&] {
+             ServerRecord value = server;
+             value.reconnect_attempt = 7U;
+             return value;
+         }(),
+         [&] {
+             ServerRecord value = server;
+             value.latency_ms = 99;
+             return value;
+         }(),
+         [&] {
+             ServerRecord value = server;
+             ++value.created_at_unix_ms;
+             return value;
+         }(),
+         [&] {
+             ServerRecord value = server;
+             ++value.updated_at_unix_ms;
+             return value;
+         }(),
+         [&] {
+             ServerRecord value = server;
+             value.tls_server_name = "other.test";
+             return value;
+         }(),
+         [&] {
+             ServerRecord value = server;
+             value.ca_credential_ref = "other-ca";
+             return value;
+         }(),
+         [&] {
+             ServerRecord value = server;
+             value.client_certificate_ref = "other-cert";
+             return value;
+         }(),
+         [&] {
+             ServerRecord value = server;
+             value.client_private_key_ref = "other-private-key";
+             return value;
+         }(),
+         [&] {
+             ServerRecord value = server;
+             value.config_revision = 2U;
+             return value;
+         }(),
+         [&] {
+             ServerRecord value = server;
+             value.managed_by_config = true;
+             return value;
+         }()});
+
+    const TunnelRecord tunnel = make_tunnel(200, server.id, 8'000U, "base");
+    expect_per_field_inequalities(
+        tunnel,
+        {[&] {
+             TunnelRecord value = tunnel;
+             value.id = make_id(common::IdKind::tunnel, 201U);
+             return value;
+         }(),
+         [&] {
+             TunnelRecord value = tunnel;
+             value.name = "other";
+             return value;
+         }(),
+         [&] {
+             TunnelRecord value = tunnel;
+             value.server_id = make_id(common::IdKind::server, 201U);
+             return value;
+         }(),
+         [&] {
+             TunnelRecord value = tunnel;
+             value.protocol = static_cast<TunnelProtocol>(255U);
+             return value;
+         }(),
+         [&] {
+             TunnelRecord value = tunnel;
+             value.local_endpoint = make_endpoint("127.0.0.1:2222");
+             return value;
+         }(),
+         [&] {
+             TunnelRecord value = tunnel;
+             value.remote_endpoint = make_endpoint("127.0.0.1:8001");
+             return value;
+         }(),
+         [&] {
+             TunnelRecord value = tunnel;
+             value.desired_state = TunnelDesiredState::disabled;
+             return value;
+         }(),
+         [&] {
+             TunnelRecord value = tunnel;
+             value.actual_state = TunnelActualState::pending;
+             return value;
+         }(),
+         [&] {
+             TunnelRecord value = tunnel;
+             value.last_error_code = common::ErrorCode::not_found;
+             return value;
+         }(),
+         [&] {
+             TunnelRecord value = tunnel;
+             value.last_error_message = "other";
+             return value;
+         }(),
+         [&] {
+             TunnelRecord value = tunnel;
+             ++value.created_at_unix_ms;
+             return value;
+         }(),
+         [&] {
+             TunnelRecord value = tunnel;
+             ++value.updated_at_unix_ms;
+             return value;
+         }(),
+         [&] {
+             TunnelRecord value = tunnel;
+             value.last_synced_at_unix_ms = 9'000;
+             return value;
+         }(),
+         [&] {
+             TunnelRecord value = tunnel;
+             value.config_revision = 2U;
+             return value;
+         }(),
+         [&] {
+             TunnelRecord value = tunnel;
+             value.managed_by_config = true;
+             return value;
+         }()});
+
+    const RecoverySnapshot snapshot{.servers = {server}, .tunnels = {tunnel}};
+    expect_per_field_inequalities(
+        snapshot,
+        {RecoverySnapshot{.servers = {}, .tunnels = {tunnel}},
+         RecoverySnapshot{.servers = {server}, .tunnels = {}}});
+}
+
 } // namespace
 } // namespace minitun::storage

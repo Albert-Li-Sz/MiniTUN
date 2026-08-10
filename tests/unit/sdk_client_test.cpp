@@ -882,5 +882,49 @@ TEST_F(SdkClientTest, SupportsConcurrentCallsThroughOneHandle) {
     EXPECT_EQ(failures.load(std::memory_order_relaxed), 0U);
 }
 
+TEST_F(SdkClientTest, CppWrapperAccessorsAndClearedUpdateFields) {
+    auto created = Client::create(daemon_.socket_path());
+    ASSERT_TRUE(created) << created.error().message;
+    Client client = std::move(created).value();
+
+    minitun::Result<int> value{42};
+    EXPECT_TRUE(value.has_value());
+    EXPECT_TRUE(static_cast<bool>(value));
+    EXPECT_EQ(value.value(), 42);
+    const auto& const_value = value;
+    EXPECT_EQ(const_value.value(), 42);
+    EXPECT_EQ(std::move(value).value(), 42);
+
+    minitun::Result<int> failure{
+        minitun::ClientError{minitun::ClientErrorCode::not_found, "gone"}};
+    EXPECT_FALSE(failure.has_value());
+    EXPECT_FALSE(static_cast<bool>(failure));
+    EXPECT_EQ(failure.error().code, minitun::ClientErrorCode::not_found);
+    const auto& const_failure = failure;
+    EXPECT_EQ(const_failure.error().code, minitun::ClientErrorCode::not_found);
+    EXPECT_EQ(std::move(failure).error().code, minitun::ClientErrorCode::not_found);
+
+    auto set = minitun::UpdateField<std::string>::set("value");
+    EXPECT_TRUE(set.specified);
+    ASSERT_TRUE(set.value.has_value());
+    EXPECT_EQ(*set.value, "value");
+    auto cleared = minitun::UpdateField<std::string>::clear();
+    EXPECT_TRUE(cleared.specified);
+    EXPECT_FALSE(cleared.value.has_value());
+
+    ServerUpdate server_update{
+        .identifier = std::string{kServerId},
+        .name = minitun::UpdateField<std::string>::clear(),
+        .endpoint = minitun::UpdateField<std::string>::set("127.0.0.1:2444"),
+        .tls_server_name = minitun::UpdateField<std::string>::clear(),
+        .ca_file = minitun::UpdateField<std::string>::clear(),
+        .client_certificate_file = minitun::UpdateField<std::string>::clear(),
+        .client_private_key_file = minitun::UpdateField<std::string>::clear(),
+    };
+    const auto updated = client.update_server(server_update);
+    ASSERT_TRUE(updated) << updated.error().message;
+    EXPECT_EQ(updated.value().endpoint, "127.0.0.1:2333");
+}
+
 } // namespace
 } // namespace minitun::sdk

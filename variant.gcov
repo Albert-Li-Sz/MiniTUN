@@ -1,0 +1,2376 @@
+        -:    0:Source:/usr/include/c++/13/variant
+        -:    0:Graph:build/coverage-fault/CMakeFiles/minitun_storage.dir/src/storage/models.cpp.gcno
+        -:    0:Data:build/coverage-fault/CMakeFiles/minitun_storage.dir/src/storage/models.cpp.gcda
+        -:    0:Runs:0
+        -:    1:// <variant> -*- C++ -*-
+        -:    2:
+        -:    3:// Copyright (C) 2016-2023 Free Software Foundation, Inc.
+        -:    4://
+        -:    5:// This file is part of the GNU ISO C++ Library.  This library is free
+        -:    6:// software; you can redistribute it and/or modify it under the
+        -:    7:// terms of the GNU General Public License as published by the
+        -:    8:// Free Software Foundation; either version 3, or (at your option)
+        -:    9:// any later version.
+        -:   10:
+        -:   11:// This library is distributed in the hope that it will be useful,
+        -:   12:// but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   13:// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+        -:   14:// GNU General Public License for more details.
+        -:   15:
+        -:   16:// Under Section 7 of GPL version 3, you are granted additional
+        -:   17:// permissions described in the GCC Runtime Library Exception, version
+        -:   18:// 3.1, as published by the Free Software Foundation.
+        -:   19:
+        -:   20:// You should have received a copy of the GNU General Public License and
+        -:   21:// a copy of the GCC Runtime Library Exception along with this program;
+        -:   22:// see the files COPYING3 and COPYING.RUNTIME respectively.  If not, see
+        -:   23:// <http://www.gnu.org/licenses/>.
+        -:   24:
+        -:   25:/** @file variant
+        -:   26: *  This is the `<variant>` C++ Library header.
+        -:   27: */
+        -:   28:
+        -:   29:#ifndef _GLIBCXX_VARIANT
+        -:   30:#define _GLIBCXX_VARIANT 1
+        -:   31:
+        -:   32:#pragma GCC system_header
+        -:   33:
+        -:   34:#if __cplusplus >= 201703L
+        -:   35:
+        -:   36:#include <initializer_list>
+        -:   37:#include <type_traits>
+        -:   38:#include <bits/enable_special_members.h>
+        -:   39:#include <bits/exception_defines.h>
+        -:   40:#include <bits/functional_hash.h>
+        -:   41:#include <bits/invoke.h>
+        -:   42:#include <bits/parse_numbers.h>
+        -:   43:#include <bits/stl_iterator_base_funcs.h>
+        -:   44:#include <bits/stl_construct.h>
+        -:   45:#include <bits/utility.h> // in_place_index_t
+        -:   46:#if __cplusplus >= 202002L
+        -:   47:# include <compare>
+        -:   48:#endif
+        -:   49:
+        -:   50:#if __cpp_concepts >= 202002L && __cpp_constexpr >= 201811L
+        -:   51:// P2231R1 constexpr needs constexpr unions and constrained destructors.
+        -:   52:# define __cpp_lib_variant 202106L
+        -:   53:#else
+        -:   54:# include <ext/aligned_buffer.h> // Use __aligned_membuf instead of union.
+        -:   55:# define __cpp_lib_variant 202102L
+        -:   56:#endif
+        -:   57:
+        -:   58:namespace std _GLIBCXX_VISIBILITY(default)
+        -:   59:{
+        -:   60:_GLIBCXX_BEGIN_NAMESPACE_VERSION
+        -:   61:
+        -:   62:  template<typename... _Types> class tuple;
+        -:   63:  template<typename... _Types> class variant;
+        -:   64:  template <typename> struct hash;
+        -:   65:
+        -:   66:  template<typename _Variant>
+        -:   67:    struct variant_size;
+        -:   68:
+        -:   69:  template<typename _Variant>
+        -:   70:    struct variant_size<const _Variant> : variant_size<_Variant> {};
+        -:   71:
+        -:   72:  template<typename _Variant>
+        -:   73:    struct variant_size<volatile _Variant> : variant_size<_Variant> {};
+        -:   74:
+        -:   75:  template<typename _Variant>
+        -:   76:    struct variant_size<const volatile _Variant> : variant_size<_Variant> {};
+        -:   77:
+        -:   78:  template<typename... _Types>
+        -:   79:    struct variant_size<variant<_Types...>>
+        -:   80:    : std::integral_constant<size_t, sizeof...(_Types)> {};
+        -:   81:
+        -:   82:  template<typename _Variant>
+        -:   83:    inline constexpr size_t variant_size_v = variant_size<_Variant>::value;
+        -:   84:
+        -:   85:  template<typename... _Types>
+        -:   86:    inline constexpr size_t
+        -:   87:    variant_size_v<variant<_Types...>> = sizeof...(_Types);
+        -:   88:
+        -:   89:  template<typename... _Types>
+        -:   90:    inline constexpr size_t
+        -:   91:    variant_size_v<const variant<_Types...>> = sizeof...(_Types);
+        -:   92:
+        -:   93:  template<size_t _Np, typename _Variant>
+        -:   94:    struct variant_alternative;
+        -:   95:
+        -:   96:  template<size_t _Np, typename... _Types>
+        -:   97:    struct variant_alternative<_Np, variant<_Types...>>
+        -:   98:    {
+        -:   99:      static_assert(_Np < sizeof...(_Types));
+        -:  100:
+        -:  101:      using type = typename _Nth_type<_Np, _Types...>::type;
+        -:  102:    };
+        -:  103:
+        -:  104:  template<size_t _Np, typename _Variant>
+        -:  105:    using variant_alternative_t =
+        -:  106:      typename variant_alternative<_Np, _Variant>::type;
+        -:  107:
+        -:  108:  template<size_t _Np, typename _Variant>
+        -:  109:    struct variant_alternative<_Np, const _Variant>
+        -:  110:    { using type = const variant_alternative_t<_Np, _Variant>; };
+        -:  111:
+        -:  112:  template<size_t _Np, typename _Variant>
+        -:  113:    struct variant_alternative<_Np, volatile _Variant>
+        -:  114:    { using type = volatile variant_alternative_t<_Np, _Variant>; };
+        -:  115:
+        -:  116:  template<size_t _Np, typename _Variant>
+        -:  117:    struct variant_alternative<_Np, const volatile _Variant>
+        -:  118:    { using type = const volatile variant_alternative_t<_Np, _Variant>; };
+        -:  119:
+        -:  120:  inline constexpr size_t variant_npos = -1;
+        -:  121:
+        -:  122:  template<size_t _Np, typename... _Types>
+        -:  123:    constexpr variant_alternative_t<_Np, variant<_Types...>>&
+        -:  124:    get(variant<_Types...>&);
+        -:  125:
+        -:  126:  template<size_t _Np, typename... _Types>
+        -:  127:    constexpr variant_alternative_t<_Np, variant<_Types...>>&&
+        -:  128:    get(variant<_Types...>&&);
+        -:  129:
+        -:  130:  template<size_t _Np, typename... _Types>
+        -:  131:    constexpr variant_alternative_t<_Np, variant<_Types...>> const&
+        -:  132:    get(const variant<_Types...>&);
+        -:  133:
+        -:  134:  template<size_t _Np, typename... _Types>
+        -:  135:    constexpr variant_alternative_t<_Np, variant<_Types...>> const&&
+        -:  136:    get(const variant<_Types...>&&);
+        -:  137:
+        -:  138:  template<typename _Result_type, typename _Visitor, typename... _Variants>
+        -:  139:    constexpr decltype(auto)
+        -:  140:    __do_visit(_Visitor&& __visitor, _Variants&&... __variants);
+        -:  141:
+        -:  142:  template <typename... _Types, typename _Tp>
+        -:  143:    _GLIBCXX20_CONSTEXPR
+        -:  144:    decltype(auto)
+        -:  145:    __variant_cast(_Tp&& __rhs)
+        -:  146:    {
+        -:  147:      if constexpr (is_lvalue_reference_v<_Tp>)
+        -:  148:	{
+        -:  149:	  if constexpr (is_const_v<remove_reference_t<_Tp>>)
+        -:  150:	    return static_cast<const variant<_Types...>&>(__rhs);
+        -:  151:	  else
+        -:  152:	    return static_cast<variant<_Types...>&>(__rhs);
+        -:  153:	}
+        -:  154:      else
+        -:  155:        return static_cast<variant<_Types...>&&>(__rhs);
+        -:  156:    }
+        -:  157:
+        -:  158:namespace __detail
+        -:  159:{
+        -:  160:namespace __variant
+        -:  161:{
+        -:  162:  // used for raw visitation
+        -:  163:  struct __variant_cookie {};
+        -:  164:  // used for raw visitation with indices passed in
+        -:  165:  struct __variant_idx_cookie { using type = __variant_idx_cookie; };
+        -:  166:  // Used to enable deduction (and same-type checking) for std::visit:
+        -:  167:  template<typename _Tp> struct __deduce_visit_result { using type = _Tp; };
+        -:  168:
+        -:  169:  // Visit variants that might be valueless.
+        -:  170:  template<typename _Visitor, typename... _Variants>
+        -:  171:    constexpr void
+        -:  172:    __raw_visit(_Visitor&& __visitor, _Variants&&... __variants)
+        -:  173:    {
+        -:  174:      std::__do_visit<__variant_cookie>(std::forward<_Visitor>(__visitor),
+        -:  175:				        std::forward<_Variants>(__variants)...);
+        -:  176:    }
+        -:  177:
+        -:  178:  // Visit variants that might be valueless, passing indices to the visitor.
+        -:  179:  template<typename _Visitor, typename... _Variants>
+        -:  180:    constexpr void
+        -:  181:    __raw_idx_visit(_Visitor&& __visitor, _Variants&&... __variants)
+        -:  182:    {
+        -:  183:      std::__do_visit<__variant_idx_cookie>(std::forward<_Visitor>(__visitor),
+        -:  184:	  std::forward<_Variants>(__variants)...);
+        -:  185:    }
+        -:  186:
+        -:  187:  // The __as function templates implement the exposition-only "as-variant"
+        -:  188:
+        -:  189:  template<typename... _Types>
+        -:  190:    constexpr std::variant<_Types...>&
+        -:  191:    __as(std::variant<_Types...>& __v) noexcept
+        -:  192:    { return __v; }
+        -:  193:
+        -:  194:  template<typename... _Types>
+        -:  195:    constexpr const std::variant<_Types...>&
+        -:  196:    __as(const std::variant<_Types...>& __v) noexcept
+        -:  197:    { return __v; }
+        -:  198:
+        -:  199:  template<typename... _Types>
+        -:  200:    constexpr std::variant<_Types...>&&
+        -:  201:    __as(std::variant<_Types...>&& __v) noexcept
+        -:  202:    { return std::move(__v); }
+        -:  203:
+        -:  204:  template<typename... _Types>
+        -:  205:    constexpr const std::variant<_Types...>&&
+        -:  206:    __as(const std::variant<_Types...>&& __v) noexcept
+        -:  207:    { return std::move(__v); }
+        -:  208:
+        -:  209:  // For C++17:
+        -:  210:  // _Uninitialized<T> is guaranteed to be a trivially destructible type,
+        -:  211:  // even if T is not.
+        -:  212:  // For C++20:
+        -:  213:  // _Uninitialized<T> is trivially destructible iff T is, so _Variant_union
+        -:  214:  // needs a constrained non-trivial destructor.
+        -:  215:  template<typename _Type, bool = std::is_trivially_destructible_v<_Type>>
+        -:  216:    struct _Uninitialized;
+        -:  217:
+        -:  218:  template<typename _Type>
+        -:  219:    struct _Uninitialized<_Type, true>
+        -:  220:    {
+        -:  221:      template<typename... _Args>
+        -:  222:	constexpr
+    #####:  223:	_Uninitialized(in_place_index_t<0>, _Args&&... __args)
+    #####:  224:	: _M_storage(std::forward<_Args>(__args)...)
+    #####:  225:	{ }
+------------------
+_ZNSt8__detail9__variant14_UninitializedIN7minitun7storage17TunnelActualStateELb1EEC2IJRKS4_EEESt16in_place_index_tILm0EEDpOT_:
+function _ZNSt8__detail9__variant14_UninitializedIN7minitun7storage17TunnelActualStateELb1EEC2IJRKS4_EEESt16in_place_index_tILm0EEDpOT_ called 0 returned 0% blocks executed 0%
+    #####:  223:	_Uninitialized(in_place_index_t<0>, _Args&&... __args)
+    #####:  224:	: _M_storage(std::forward<_Args>(__args)...)
+call    0 never executed
+    #####:  225:	{ }
+------------------
+_ZNSt8__detail9__variant14_UninitializedIN7minitun7storage18TunnelDesiredStateELb1EEC2IJRKS4_EEESt16in_place_index_tILm0EEDpOT_:
+function _ZNSt8__detail9__variant14_UninitializedIN7minitun7storage18TunnelDesiredStateELb1EEC2IJRKS4_EEESt16in_place_index_tILm0EEDpOT_ called 0 returned 0% blocks executed 0%
+    #####:  223:	_Uninitialized(in_place_index_t<0>, _Args&&... __args)
+    #####:  224:	: _M_storage(std::forward<_Args>(__args)...)
+call    0 never executed
+    #####:  225:	{ }
+------------------
+_ZNSt8__detail9__variant14_UninitializedIN7minitun7storage17ServerActualStateELb1EEC2IJRKS4_EEESt16in_place_index_tILm0EEDpOT_:
+function _ZNSt8__detail9__variant14_UninitializedIN7minitun7storage17ServerActualStateELb1EEC2IJRKS4_EEESt16in_place_index_tILm0EEDpOT_ called 0 returned 0% blocks executed 0%
+    #####:  223:	_Uninitialized(in_place_index_t<0>, _Args&&... __args)
+    #####:  224:	: _M_storage(std::forward<_Args>(__args)...)
+call    0 never executed
+    #####:  225:	{ }
+------------------
+_ZNSt8__detail9__variant14_UninitializedIN7minitun7storage18ServerDesiredStateELb1EEC2IJRKS4_EEESt16in_place_index_tILm0EEDpOT_:
+function _ZNSt8__detail9__variant14_UninitializedIN7minitun7storage18ServerDesiredStateELb1EEC2IJRKS4_EEESt16in_place_index_tILm0EEDpOT_ called 0 returned 0% blocks executed 0%
+    #####:  223:	_Uninitialized(in_place_index_t<0>, _Args&&... __args)
+    #####:  224:	: _M_storage(std::forward<_Args>(__args)...)
+call    0 never executed
+    #####:  225:	{ }
+------------------
+_ZNSt8__detail9__variant14_UninitializedIN7minitun7storage14TunnelProtocolELb1EEC2IJRKS4_EEESt16in_place_index_tILm0EEDpOT_:
+function _ZNSt8__detail9__variant14_UninitializedIN7minitun7storage14TunnelProtocolELb1EEC2IJRKS4_EEESt16in_place_index_tILm0EEDpOT_ called 0 returned 0% blocks executed 0%
+    #####:  223:	_Uninitialized(in_place_index_t<0>, _Args&&... __args)
+    #####:  224:	: _M_storage(std::forward<_Args>(__args)...)
+call    0 never executed
+    #####:  225:	{ }
+------------------
+        -:  226:
+        -:  227:      constexpr const _Type& _M_get() const & noexcept
+        -:  228:      { return _M_storage; }
+        -:  229:
+        -:  230:      constexpr _Type& _M_get() & noexcept
+        -:  231:      { return _M_storage; }
+        -:  232:
+        -:  233:      constexpr const _Type&& _M_get() const && noexcept
+        -:  234:      { return std::move(_M_storage); }
+        -:  235:
+        -:  236:      constexpr _Type&& _M_get() && noexcept
+        -:  237:      { return std::move(_M_storage); }
+        -:  238:
+        -:  239:      _Type _M_storage;
+        -:  240:    };
+        -:  241:
+        -:  242:  template<typename _Type>
+        -:  243:    struct _Uninitialized<_Type, false>
+        -:  244:    {
+        -:  245:#if __cpp_lib_variant >= 202106L
+        -:  246:      template<typename... _Args>
+        -:  247:	constexpr
+function _ZNSt8__detail9__variant14_UninitializedIN7minitun6common5ErrorELb0EEC2IJS4_EEESt16in_place_index_tILm0EEDpOT_ called 0 returned 0% blocks executed 0%
+    #####:  248:	_Uninitialized(in_place_index_t<0>, _Args&&... __args)
+    #####:  249:	: _M_storage(std::forward<_Args>(__args)...)
+call    0 never executed
+call    1 never executed
+    #####:  250:	{ }
+        -:  251:
+        -:  252:      constexpr ~_Uninitialized() { }
+        -:  253:
+        -:  254:      _Uninitialized(const _Uninitialized&) = default;
+        -:  255:      _Uninitialized(_Uninitialized&&) = default;
+        -:  256:      _Uninitialized& operator=(const _Uninitialized&) = default;
+        -:  257:      _Uninitialized& operator=(_Uninitialized&&) = default;
+        -:  258:
+        -:  259:      constexpr const _Type& _M_get() const & noexcept
+        -:  260:      { return _M_storage; }
+        -:  261:
+        -:  262:      constexpr _Type& _M_get() & noexcept
+        -:  263:      { return _M_storage; }
+        -:  264:
+        -:  265:      constexpr const _Type&& _M_get() const && noexcept
+        -:  266:      { return std::move(_M_storage); }
+        -:  267:
+        -:  268:      constexpr _Type&& _M_get() && noexcept
+        -:  269:      { return std::move(_M_storage); }
+        -:  270:
+        -:  271:      struct _Empty_byte { };
+        -:  272:
+        -:  273:      union {
+        -:  274:	_Empty_byte _M_empty;
+        -:  275:	_Type _M_storage;
+        -:  276:      };
+        -:  277:#else
+        -:  278:      template<typename... _Args>
+        -:  279:	constexpr
+        -:  280:	_Uninitialized(in_place_index_t<0>, _Args&&... __args)
+        -:  281:	{
+        -:  282:	  ::new ((void*)std::addressof(_M_storage))
+        -:  283:	    _Type(std::forward<_Args>(__args)...);
+        -:  284:	}
+        -:  285:
+        -:  286:      const _Type& _M_get() const & noexcept
+        -:  287:      { return *_M_storage._M_ptr(); }
+        -:  288:
+        -:  289:      _Type& _M_get() & noexcept
+        -:  290:      { return *_M_storage._M_ptr(); }
+        -:  291:
+        -:  292:      const _Type&& _M_get() const && noexcept
+        -:  293:      { return std::move(*_M_storage._M_ptr()); }
+        -:  294:
+        -:  295:      _Type&& _M_get() && noexcept
+        -:  296:      { return std::move(*_M_storage._M_ptr()); }
+        -:  297:
+        -:  298:      __gnu_cxx::__aligned_membuf<_Type> _M_storage;
+        -:  299:#endif
+        -:  300:    };
+        -:  301:
+        -:  302:  template<size_t _Np, typename _Union>
+        -:  303:    constexpr decltype(auto)
+        -:  304:    __get_n(_Union&& __u) noexcept
+        -:  305:    {
+        -:  306:      if constexpr (_Np == 0)
+        -:  307:	return std::forward<_Union>(__u)._M_first._M_get();
+        -:  308:      else if constexpr (_Np == 1)
+        -:  309:	return std::forward<_Union>(__u)._M_rest._M_first._M_get();
+        -:  310:      else if constexpr (_Np == 2)
+        -:  311:	return std::forward<_Union>(__u)._M_rest._M_rest._M_first._M_get();
+        -:  312:      else
+        -:  313:	return __variant::__get_n<_Np - 3>(
+        -:  314:		 std::forward<_Union>(__u)._M_rest._M_rest._M_rest);
+        -:  315:    }
+        -:  316:
+        -:  317:  // Returns the typed storage for __v.
+        -:  318:  template<size_t _Np, typename _Variant>
+        -:  319:    constexpr decltype(auto)
+        -:  320:    __get(_Variant&& __v) noexcept
+        -:  321:    { return __variant::__get_n<_Np>(std::forward<_Variant>(__v)._M_u); }
+        -:  322:
+        -:  323:  // Gets the _Uninitialized to construct into for __u.
+        -:  324:  template<size_t _Np, typename _Union>
+        -:  325:    constexpr decltype(auto)
+        -:  326:    __construct_n(_Union& __u) noexcept
+        -:  327:    {
+        -:  328:      if constexpr (_Np == 0)
+        -:  329:	return &__u._M_first;
+        -:  330:      else if constexpr (_Np == 1)
+        -:  331:	{
+        -:  332:	  std::_Construct(&__u._M_rest);
+        -:  333:	  return &__u._M_rest._M_first;
+        -:  334:	}
+        -:  335:      else if constexpr (_Np == 2)
+        -:  336:	{
+        -:  337:	  std::_Construct(&__u._M_rest);
+        -:  338:	  std::_Construct(&__u._M_rest._M_rest);
+        -:  339:	  return &__u._M_rest._M_rest._M_first;
+        -:  340:	}
+        -:  341:      else
+        -:  342:	{
+        -:  343:	  std::_Construct(&__u._M_rest);
+        -:  344:	  std::_Construct(&__u._M_rest._M_rest);
+        -:  345:	  std::_Construct(&__u._M_rest._M_rest._M_rest);
+        -:  346:	  return __variant::__construct_n<_Np - 3>(__u._M_rest._M_rest._M_rest);
+        -:  347:	}
+        -:  348:    }
+        -:  349:
+        -:  350:  template<typename... _Types>
+        -:  351:    struct _Traits
+        -:  352:    {
+        -:  353:      static constexpr bool _S_default_ctor =
+        -:  354:	  is_default_constructible_v<typename _Nth_type<0, _Types...>::type>;
+        -:  355:      static constexpr bool _S_copy_ctor =
+        -:  356:	  (is_copy_constructible_v<_Types> && ...);
+        -:  357:      static constexpr bool _S_move_ctor =
+        -:  358:	  (is_move_constructible_v<_Types> && ...);
+        -:  359:      static constexpr bool _S_copy_assign =
+        -:  360:	  _S_copy_ctor
+        -:  361:	  && (is_copy_assignable_v<_Types> && ...);
+        -:  362:      static constexpr bool _S_move_assign =
+        -:  363:	  _S_move_ctor
+        -:  364:	  && (is_move_assignable_v<_Types> && ...);
+        -:  365:
+        -:  366:      static constexpr bool _S_trivial_dtor =
+        -:  367:	  (is_trivially_destructible_v<_Types> && ...);
+        -:  368:      static constexpr bool _S_trivial_copy_ctor =
+        -:  369:	  (is_trivially_copy_constructible_v<_Types> && ...);
+        -:  370:      static constexpr bool _S_trivial_move_ctor =
+        -:  371:	  (is_trivially_move_constructible_v<_Types> && ...);
+        -:  372:      static constexpr bool _S_trivial_copy_assign =
+        -:  373:	  _S_trivial_dtor && _S_trivial_copy_ctor
+        -:  374:	  && (is_trivially_copy_assignable_v<_Types> && ...);
+        -:  375:      static constexpr bool _S_trivial_move_assign =
+        -:  376:	  _S_trivial_dtor && _S_trivial_move_ctor
+        -:  377:	  && (is_trivially_move_assignable_v<_Types> && ...);
+        -:  378:
+        -:  379:      // The following nothrow traits are for non-trivial SMFs. Trivial SMFs
+        -:  380:      // are always nothrow.
+        -:  381:      static constexpr bool _S_nothrow_default_ctor =
+        -:  382:	  is_nothrow_default_constructible_v<
+        -:  383:	      typename _Nth_type<0, _Types...>::type>;
+        -:  384:      static constexpr bool _S_nothrow_copy_ctor = false;
+        -:  385:      static constexpr bool _S_nothrow_move_ctor =
+        -:  386:	  (is_nothrow_move_constructible_v<_Types> && ...);
+        -:  387:      static constexpr bool _S_nothrow_copy_assign = false;
+        -:  388:      static constexpr bool _S_nothrow_move_assign =
+        -:  389:	  _S_nothrow_move_ctor
+        -:  390:	  && (is_nothrow_move_assignable_v<_Types> && ...);
+        -:  391:    };
+        -:  392:
+        -:  393:  // Defines members and ctors.
+        -:  394:  template<typename... _Types>
+        -:  395:    union _Variadic_union
+        -:  396:    {
+        -:  397:      _Variadic_union() = default;
+        -:  398:
+        -:  399:      template<size_t _Np, typename... _Args>
+        -:  400:	_Variadic_union(in_place_index_t<_Np>, _Args&&...) = delete;
+        -:  401:    };
+        -:  402:
+        -:  403:  template<typename _First, typename... _Rest>
+        -:  404:    union _Variadic_union<_First, _Rest...>
+        -:  405:    {
+        -:  406:      constexpr _Variadic_union() : _M_rest() { }
+        -:  407:
+        -:  408:      template<typename... _Args>
+        -:  409:	constexpr
+    #####:  410:	_Variadic_union(in_place_index_t<0>, _Args&&... __args)
+    #####:  411:	: _M_first(in_place_index<0>, std::forward<_Args>(__args)...)
+    #####:  412:	{ }
+------------------
+_ZNSt8__detail9__variant15_Variadic_unionIJN7minitun6common5ErrorEEEC2IJS4_EEESt16in_place_index_tILm0EEDpOT_:
+function _ZNSt8__detail9__variant15_Variadic_unionIJN7minitun6common5ErrorEEEC2IJS4_EEESt16in_place_index_tILm0EEDpOT_ called 0 returned 0% blocks executed 0%
+    #####:  410:	_Variadic_union(in_place_index_t<0>, _Args&&... __args)
+    #####:  411:	: _M_first(in_place_index<0>, std::forward<_Args>(__args)...)
+call    0 never executed
+call    1 never executed
+    #####:  412:	{ }
+------------------
+_ZNSt8__detail9__variant15_Variadic_unionIJN7minitun7storage17TunnelActualStateENS2_6common5ErrorEEEC2IJRKS4_EEESt16in_place_index_tILm0EEDpOT_:
+function _ZNSt8__detail9__variant15_Variadic_unionIJN7minitun7storage17TunnelActualStateENS2_6common5ErrorEEEC2IJRKS4_EEESt16in_place_index_tILm0EEDpOT_ called 0 returned 0% blocks executed 0%
+    #####:  410:	_Variadic_union(in_place_index_t<0>, _Args&&... __args)
+    #####:  411:	: _M_first(in_place_index<0>, std::forward<_Args>(__args)...)
+call    0 never executed
+call    1 never executed
+    #####:  412:	{ }
+------------------
+_ZNSt8__detail9__variant15_Variadic_unionIJN7minitun7storage18TunnelDesiredStateENS2_6common5ErrorEEEC2IJRKS4_EEESt16in_place_index_tILm0EEDpOT_:
+function _ZNSt8__detail9__variant15_Variadic_unionIJN7minitun7storage18TunnelDesiredStateENS2_6common5ErrorEEEC2IJRKS4_EEESt16in_place_index_tILm0EEDpOT_ called 0 returned 0% blocks executed 0%
+    #####:  410:	_Variadic_union(in_place_index_t<0>, _Args&&... __args)
+    #####:  411:	: _M_first(in_place_index<0>, std::forward<_Args>(__args)...)
+call    0 never executed
+call    1 never executed
+    #####:  412:	{ }
+------------------
+_ZNSt8__detail9__variant15_Variadic_unionIJN7minitun7storage17ServerActualStateENS2_6common5ErrorEEEC2IJRKS4_EEESt16in_place_index_tILm0EEDpOT_:
+function _ZNSt8__detail9__variant15_Variadic_unionIJN7minitun7storage17ServerActualStateENS2_6common5ErrorEEEC2IJRKS4_EEESt16in_place_index_tILm0EEDpOT_ called 0 returned 0% blocks executed 0%
+    #####:  410:	_Variadic_union(in_place_index_t<0>, _Args&&... __args)
+    #####:  411:	: _M_first(in_place_index<0>, std::forward<_Args>(__args)...)
+call    0 never executed
+call    1 never executed
+    #####:  412:	{ }
+------------------
+_ZNSt8__detail9__variant15_Variadic_unionIJN7minitun7storage18ServerDesiredStateENS2_6common5ErrorEEEC2IJRKS4_EEESt16in_place_index_tILm0EEDpOT_:
+function _ZNSt8__detail9__variant15_Variadic_unionIJN7minitun7storage18ServerDesiredStateENS2_6common5ErrorEEEC2IJRKS4_EEESt16in_place_index_tILm0EEDpOT_ called 0 returned 0% blocks executed 0%
+    #####:  410:	_Variadic_union(in_place_index_t<0>, _Args&&... __args)
+    #####:  411:	: _M_first(in_place_index<0>, std::forward<_Args>(__args)...)
+call    0 never executed
+call    1 never executed
+    #####:  412:	{ }
+------------------
+_ZNSt8__detail9__variant15_Variadic_unionIJN7minitun7storage14TunnelProtocolENS2_6common5ErrorEEEC2IJRKS4_EEESt16in_place_index_tILm0EEDpOT_:
+function _ZNSt8__detail9__variant15_Variadic_unionIJN7minitun7storage14TunnelProtocolENS2_6common5ErrorEEEC2IJRKS4_EEESt16in_place_index_tILm0EEDpOT_ called 0 returned 0% blocks executed 0%
+    #####:  410:	_Variadic_union(in_place_index_t<0>, _Args&&... __args)
+    #####:  411:	: _M_first(in_place_index<0>, std::forward<_Args>(__args)...)
+call    0 never executed
+call    1 never executed
+    #####:  412:	{ }
+------------------
+        -:  413:
+        -:  414:      template<size_t _Np, typename... _Args>
+        -:  415:	constexpr
+    #####:  416:	_Variadic_union(in_place_index_t<_Np>, _Args&&... __args)
+    #####:  417:	: _M_rest(in_place_index<_Np-1>, std::forward<_Args>(__args)...)
+    #####:  418:	{ }
+------------------
+_ZNSt8__detail9__variant15_Variadic_unionIJN7minitun7storage17TunnelActualStateENS2_6common5ErrorEEEC2ILm1EJS6_EEESt16in_place_index_tIXT_EEDpOT0_:
+function _ZNSt8__detail9__variant15_Variadic_unionIJN7minitun7storage17TunnelActualStateENS2_6common5ErrorEEEC2ILm1EJS6_EEESt16in_place_index_tIXT_EEDpOT0_ called 0 returned 0% blocks executed 0%
+    #####:  416:	_Variadic_union(in_place_index_t<_Np>, _Args&&... __args)
+    #####:  417:	: _M_rest(in_place_index<_Np-1>, std::forward<_Args>(__args)...)
+call    0 never executed
+call    1 never executed
+    #####:  418:	{ }
+------------------
+_ZNSt8__detail9__variant15_Variadic_unionIJN7minitun7storage18TunnelDesiredStateENS2_6common5ErrorEEEC2ILm1EJS6_EEESt16in_place_index_tIXT_EEDpOT0_:
+function _ZNSt8__detail9__variant15_Variadic_unionIJN7minitun7storage18TunnelDesiredStateENS2_6common5ErrorEEEC2ILm1EJS6_EEESt16in_place_index_tIXT_EEDpOT0_ called 0 returned 0% blocks executed 0%
+    #####:  416:	_Variadic_union(in_place_index_t<_Np>, _Args&&... __args)
+    #####:  417:	: _M_rest(in_place_index<_Np-1>, std::forward<_Args>(__args)...)
+call    0 never executed
+call    1 never executed
+    #####:  418:	{ }
+------------------
+_ZNSt8__detail9__variant15_Variadic_unionIJN7minitun7storage17ServerActualStateENS2_6common5ErrorEEEC2ILm1EJS6_EEESt16in_place_index_tIXT_EEDpOT0_:
+function _ZNSt8__detail9__variant15_Variadic_unionIJN7minitun7storage17ServerActualStateENS2_6common5ErrorEEEC2ILm1EJS6_EEESt16in_place_index_tIXT_EEDpOT0_ called 0 returned 0% blocks executed 0%
+    #####:  416:	_Variadic_union(in_place_index_t<_Np>, _Args&&... __args)
+    #####:  417:	: _M_rest(in_place_index<_Np-1>, std::forward<_Args>(__args)...)
+call    0 never executed
+call    1 never executed
+    #####:  418:	{ }
+------------------
+_ZNSt8__detail9__variant15_Variadic_unionIJN7minitun7storage18ServerDesiredStateENS2_6common5ErrorEEEC2ILm1EJS6_EEESt16in_place_index_tIXT_EEDpOT0_:
+function _ZNSt8__detail9__variant15_Variadic_unionIJN7minitun7storage18ServerDesiredStateENS2_6common5ErrorEEEC2ILm1EJS6_EEESt16in_place_index_tIXT_EEDpOT0_ called 0 returned 0% blocks executed 0%
+    #####:  416:	_Variadic_union(in_place_index_t<_Np>, _Args&&... __args)
+    #####:  417:	: _M_rest(in_place_index<_Np-1>, std::forward<_Args>(__args)...)
+call    0 never executed
+call    1 never executed
+    #####:  418:	{ }
+------------------
+_ZNSt8__detail9__variant15_Variadic_unionIJN7minitun7storage14TunnelProtocolENS2_6common5ErrorEEEC2ILm1EJS6_EEESt16in_place_index_tIXT_EEDpOT0_:
+function _ZNSt8__detail9__variant15_Variadic_unionIJN7minitun7storage14TunnelProtocolENS2_6common5ErrorEEEC2ILm1EJS6_EEESt16in_place_index_tIXT_EEDpOT0_ called 0 returned 0% blocks executed 0%
+    #####:  416:	_Variadic_union(in_place_index_t<_Np>, _Args&&... __args)
+    #####:  417:	: _M_rest(in_place_index<_Np-1>, std::forward<_Args>(__args)...)
+call    0 never executed
+call    1 never executed
+    #####:  418:	{ }
+------------------
+        -:  419:
+        -:  420:#if __cpp_lib_variant >= 202106L
+        -:  421:      _Variadic_union(const _Variadic_union&) = default;
+        -:  422:      _Variadic_union(_Variadic_union&&) = default;
+        -:  423:      _Variadic_union& operator=(const _Variadic_union&) = default;
+        -:  424:      _Variadic_union& operator=(_Variadic_union&&) = default;
+        -:  425:
+        -:  426:      ~_Variadic_union() = default;
+        -:  427:
+        -:  428:      constexpr ~_Variadic_union()
+        -:  429:	requires (!__has_trivial_destructor(_First))
+        -:  430:	      || (!__has_trivial_destructor(_Variadic_union<_Rest...>))
+        -:  431:      { }
+        -:  432:#endif
+        -:  433:
+        -:  434:      _Uninitialized<_First> _M_first;
+        -:  435:      _Variadic_union<_Rest...> _M_rest;
+        -:  436:    };
+        -:  437:
+        -:  438:  // _Never_valueless_alt is true for variant alternatives that can
+        -:  439:  // always be placed in a variant without it becoming valueless.
+        -:  440:
+        -:  441:  // For suitably-small, trivially copyable types we can create temporaries
+        -:  442:  // on the stack and then memcpy them into place.
+        -:  443:  template<typename _Tp>
+        -:  444:    struct _Never_valueless_alt
+        -:  445:    : __and_<bool_constant<sizeof(_Tp) <= 256>, is_trivially_copyable<_Tp>>
+        -:  446:    { };
+        -:  447:
+        -:  448:  // Specialize _Never_valueless_alt for other types which have a
+        -:  449:  // non-throwing and cheap move construction and move assignment operator,
+        -:  450:  // so that emplacing the type will provide the strong exception-safety
+        -:  451:  // guarantee, by creating and moving a temporary.
+        -:  452:  // Whether _Never_valueless_alt<T> is true or not affects the ABI of a
+        -:  453:  // variant using that alternative, so we can't change the value later!
+        -:  454:
+        -:  455:  // True if every alternative in _Types... can be emplaced in a variant
+        -:  456:  // without it becoming valueless. If this is true, variant<_Types...>
+        -:  457:  // can never be valueless, which enables some minor optimizations.
+        -:  458:  template <typename... _Types>
+        -:  459:    constexpr bool __never_valueless()
+        -:  460:    {
+        -:  461:      return _Traits<_Types...>::_S_move_assign
+        -:  462:	&& (_Never_valueless_alt<_Types>::value && ...);
+        -:  463:    }
+        -:  464:
+        -:  465:  // Defines index and the dtor, possibly trivial.
+        -:  466:  template<bool __trivially_destructible, typename... _Types>
+        -:  467:    struct _Variant_storage;
+        -:  468:
+        -:  469:  template <typename... _Types>
+        -:  470:    using __select_index =
+        -:  471:      typename __select_int::_Select_int_base<sizeof...(_Types),
+        -:  472:					      unsigned char,
+        -:  473:					      unsigned short>::type::value_type;
+        -:  474:
+        -:  475:  template<typename... _Types>
+        -:  476:    struct _Variant_storage<false, _Types...>
+        -:  477:    {
+        -:  478:      constexpr
+        -:  479:      _Variant_storage()
+        -:  480:      : _M_index(static_cast<__index_type>(variant_npos))
+        -:  481:      { }
+        -:  482:
+        -:  483:      template<size_t _Np, typename... _Args>
+        -:  484:	constexpr
+    #####:  485:	_Variant_storage(in_place_index_t<_Np>, _Args&&... __args)
+    #####:  486:	: _M_u(in_place_index<_Np>, std::forward<_Args>(__args)...),
+    #####:  487:	_M_index{_Np}
+    #####:  488:	{ }
+------------------
+_ZNSt8__detail9__variant16_Variant_storageILb0EJN7minitun7storage17TunnelActualStateENS2_6common5ErrorEEEC2ILm1EJS6_EEESt16in_place_index_tIXT_EEDpOT0_:
+function _ZNSt8__detail9__variant16_Variant_storageILb0EJN7minitun7storage17TunnelActualStateENS2_6common5ErrorEEEC2ILm1EJS6_EEESt16in_place_index_tIXT_EEDpOT0_ called 0 returned 0% blocks executed 0%
+    #####:  485:	_Variant_storage(in_place_index_t<_Np>, _Args&&... __args)
+    #####:  486:	: _M_u(in_place_index<_Np>, std::forward<_Args>(__args)...),
+call    0 never executed
+call    1 never executed
+    #####:  487:	_M_index{_Np}
+    #####:  488:	{ }
+------------------
+_ZNSt8__detail9__variant16_Variant_storageILb0EJN7minitun7storage18TunnelDesiredStateENS2_6common5ErrorEEEC2ILm1EJS6_EEESt16in_place_index_tIXT_EEDpOT0_:
+function _ZNSt8__detail9__variant16_Variant_storageILb0EJN7minitun7storage18TunnelDesiredStateENS2_6common5ErrorEEEC2ILm1EJS6_EEESt16in_place_index_tIXT_EEDpOT0_ called 0 returned 0% blocks executed 0%
+    #####:  485:	_Variant_storage(in_place_index_t<_Np>, _Args&&... __args)
+    #####:  486:	: _M_u(in_place_index<_Np>, std::forward<_Args>(__args)...),
+call    0 never executed
+call    1 never executed
+    #####:  487:	_M_index{_Np}
+    #####:  488:	{ }
+------------------
+_ZNSt8__detail9__variant16_Variant_storageILb0EJN7minitun7storage17ServerActualStateENS2_6common5ErrorEEEC2ILm1EJS6_EEESt16in_place_index_tIXT_EEDpOT0_:
+function _ZNSt8__detail9__variant16_Variant_storageILb0EJN7minitun7storage17ServerActualStateENS2_6common5ErrorEEEC2ILm1EJS6_EEESt16in_place_index_tIXT_EEDpOT0_ called 0 returned 0% blocks executed 0%
+    #####:  485:	_Variant_storage(in_place_index_t<_Np>, _Args&&... __args)
+    #####:  486:	: _M_u(in_place_index<_Np>, std::forward<_Args>(__args)...),
+call    0 never executed
+call    1 never executed
+    #####:  487:	_M_index{_Np}
+    #####:  488:	{ }
+------------------
+_ZNSt8__detail9__variant16_Variant_storageILb0EJN7minitun7storage18ServerDesiredStateENS2_6common5ErrorEEEC2ILm1EJS6_EEESt16in_place_index_tIXT_EEDpOT0_:
+function _ZNSt8__detail9__variant16_Variant_storageILb0EJN7minitun7storage18ServerDesiredStateENS2_6common5ErrorEEEC2ILm1EJS6_EEESt16in_place_index_tIXT_EEDpOT0_ called 0 returned 0% blocks executed 0%
+    #####:  485:	_Variant_storage(in_place_index_t<_Np>, _Args&&... __args)
+    #####:  486:	: _M_u(in_place_index<_Np>, std::forward<_Args>(__args)...),
+call    0 never executed
+call    1 never executed
+    #####:  487:	_M_index{_Np}
+    #####:  488:	{ }
+------------------
+_ZNSt8__detail9__variant16_Variant_storageILb0EJN7minitun7storage14TunnelProtocolENS2_6common5ErrorEEEC2ILm1EJS6_EEESt16in_place_index_tIXT_EEDpOT0_:
+function _ZNSt8__detail9__variant16_Variant_storageILb0EJN7minitun7storage14TunnelProtocolENS2_6common5ErrorEEEC2ILm1EJS6_EEESt16in_place_index_tIXT_EEDpOT0_ called 0 returned 0% blocks executed 0%
+    #####:  485:	_Variant_storage(in_place_index_t<_Np>, _Args&&... __args)
+    #####:  486:	: _M_u(in_place_index<_Np>, std::forward<_Args>(__args)...),
+call    0 never executed
+call    1 never executed
+    #####:  487:	_M_index{_Np}
+    #####:  488:	{ }
+------------------
+_ZNSt8__detail9__variant16_Variant_storageILb0EJN7minitun7storage17TunnelActualStateENS2_6common5ErrorEEEC2ILm0EJRKS4_EEESt16in_place_index_tIXT_EEDpOT0_:
+function _ZNSt8__detail9__variant16_Variant_storageILb0EJN7minitun7storage17TunnelActualStateENS2_6common5ErrorEEEC2ILm0EJRKS4_EEESt16in_place_index_tIXT_EEDpOT0_ called 0 returned 0% blocks executed 0%
+    #####:  485:	_Variant_storage(in_place_index_t<_Np>, _Args&&... __args)
+    #####:  486:	: _M_u(in_place_index<_Np>, std::forward<_Args>(__args)...),
+call    0 never executed
+call    1 never executed
+    #####:  487:	_M_index{_Np}
+    #####:  488:	{ }
+------------------
+_ZNSt8__detail9__variant16_Variant_storageILb0EJN7minitun7storage18TunnelDesiredStateENS2_6common5ErrorEEEC2ILm0EJRKS4_EEESt16in_place_index_tIXT_EEDpOT0_:
+function _ZNSt8__detail9__variant16_Variant_storageILb0EJN7minitun7storage18TunnelDesiredStateENS2_6common5ErrorEEEC2ILm0EJRKS4_EEESt16in_place_index_tIXT_EEDpOT0_ called 0 returned 0% blocks executed 0%
+    #####:  485:	_Variant_storage(in_place_index_t<_Np>, _Args&&... __args)
+    #####:  486:	: _M_u(in_place_index<_Np>, std::forward<_Args>(__args)...),
+call    0 never executed
+call    1 never executed
+    #####:  487:	_M_index{_Np}
+    #####:  488:	{ }
+------------------
+_ZNSt8__detail9__variant16_Variant_storageILb0EJN7minitun7storage17ServerActualStateENS2_6common5ErrorEEEC2ILm0EJRKS4_EEESt16in_place_index_tIXT_EEDpOT0_:
+function _ZNSt8__detail9__variant16_Variant_storageILb0EJN7minitun7storage17ServerActualStateENS2_6common5ErrorEEEC2ILm0EJRKS4_EEESt16in_place_index_tIXT_EEDpOT0_ called 0 returned 0% blocks executed 0%
+    #####:  485:	_Variant_storage(in_place_index_t<_Np>, _Args&&... __args)
+    #####:  486:	: _M_u(in_place_index<_Np>, std::forward<_Args>(__args)...),
+call    0 never executed
+call    1 never executed
+    #####:  487:	_M_index{_Np}
+    #####:  488:	{ }
+------------------
+_ZNSt8__detail9__variant16_Variant_storageILb0EJN7minitun7storage18ServerDesiredStateENS2_6common5ErrorEEEC2ILm0EJRKS4_EEESt16in_place_index_tIXT_EEDpOT0_:
+function _ZNSt8__detail9__variant16_Variant_storageILb0EJN7minitun7storage18ServerDesiredStateENS2_6common5ErrorEEEC2ILm0EJRKS4_EEESt16in_place_index_tIXT_EEDpOT0_ called 0 returned 0% blocks executed 0%
+    #####:  485:	_Variant_storage(in_place_index_t<_Np>, _Args&&... __args)
+    #####:  486:	: _M_u(in_place_index<_Np>, std::forward<_Args>(__args)...),
+call    0 never executed
+call    1 never executed
+    #####:  487:	_M_index{_Np}
+    #####:  488:	{ }
+------------------
+_ZNSt8__detail9__variant16_Variant_storageILb0EJN7minitun7storage14TunnelProtocolENS2_6common5ErrorEEEC2ILm0EJRKS4_EEESt16in_place_index_tIXT_EEDpOT0_:
+function _ZNSt8__detail9__variant16_Variant_storageILb0EJN7minitun7storage14TunnelProtocolENS2_6common5ErrorEEEC2ILm0EJRKS4_EEESt16in_place_index_tIXT_EEDpOT0_ called 0 returned 0% blocks executed 0%
+    #####:  485:	_Variant_storage(in_place_index_t<_Np>, _Args&&... __args)
+    #####:  486:	: _M_u(in_place_index<_Np>, std::forward<_Args>(__args)...),
+call    0 never executed
+call    1 never executed
+    #####:  487:	_M_index{_Np}
+    #####:  488:	{ }
+------------------
+        -:  489:
+        -:  490:      constexpr void
+        -:  491:      _M_reset()
+        -:  492:      {
+        -:  493:	if (!_M_valid()) [[unlikely]]
+        -:  494:	  return;
+        -:  495:
+        -:  496:	std::__do_visit<void>([](auto&& __this_mem) mutable
+        -:  497:	  {
+        -:  498:	    std::_Destroy(std::__addressof(__this_mem));
+        -:  499:	  }, __variant_cast<_Types...>(*this));
+        -:  500:
+        -:  501:	_M_index = static_cast<__index_type>(variant_npos);
+        -:  502:      }
+        -:  503:
+        -:  504:      _GLIBCXX20_CONSTEXPR
+        -:  505:      ~_Variant_storage()
+        -:  506:      { _M_reset(); }
+        -:  507:
+        -:  508:      constexpr bool
+        -:  509:      _M_valid() const noexcept
+        -:  510:      {
+        -:  511:	if constexpr (__variant::__never_valueless<_Types...>())
+        -:  512:	  return true;
+        -:  513:	return this->_M_index != __index_type(variant_npos);
+        -:  514:      }
+        -:  515:
+        -:  516:      _Variadic_union<_Types...> _M_u;
+        -:  517:      using __index_type = __select_index<_Types...>;
+        -:  518:      __index_type _M_index;
+        -:  519:    };
+        -:  520:
+        -:  521:  template<typename... _Types>
+        -:  522:    struct _Variant_storage<true, _Types...>
+        -:  523:    {
+        -:  524:      constexpr
+        -:  525:      _Variant_storage()
+        -:  526:      : _M_index(static_cast<__index_type>(variant_npos))
+        -:  527:      { }
+        -:  528:
+        -:  529:      template<size_t _Np, typename... _Args>
+        -:  530:	constexpr
+        -:  531:	_Variant_storage(in_place_index_t<_Np>, _Args&&... __args)
+        -:  532:	: _M_u(in_place_index<_Np>, std::forward<_Args>(__args)...),
+        -:  533:	_M_index{_Np}
+        -:  534:	{ }
+        -:  535:
+        -:  536:      constexpr void
+        -:  537:      _M_reset() noexcept
+        -:  538:      { _M_index = static_cast<__index_type>(variant_npos); }
+        -:  539:
+        -:  540:      constexpr bool
+        -:  541:      _M_valid() const noexcept
+        -:  542:      {
+        -:  543:	if constexpr (__variant::__never_valueless<_Types...>())
+        -:  544:	  return true;
+        -:  545:	// It would be nice if we could just return true for -fno-exceptions.
+        -:  546:	// It's possible (but inadvisable) that a std::variant could become
+        -:  547:	// valueless in a translation unit compiled with -fexceptions and then
+        -:  548:	// be passed to functions compiled with -fno-exceptions. We would need
+        -:  549:	// some #ifdef _GLIBCXX_NO_EXCEPTIONS_GLOBALLY property to elide all
+        -:  550:	// checks for valueless_by_exception().
+        -:  551:	return this->_M_index != static_cast<__index_type>(variant_npos);
+        -:  552:      }
+        -:  553:
+        -:  554:      _Variadic_union<_Types...> _M_u;
+        -:  555:      using __index_type = __select_index<_Types...>;
+        -:  556:      __index_type _M_index;
+        -:  557:    };
+        -:  558:
+        -:  559:  // Implementation of v.emplace<N>(args...).
+        -:  560:  template<size_t _Np, bool _Triv, typename... _Types, typename... _Args>
+        -:  561:    _GLIBCXX20_CONSTEXPR
+        -:  562:    inline void
+        -:  563:    __emplace(_Variant_storage<_Triv, _Types...>& __v, _Args&&... __args)
+        -:  564:    {
+        -:  565:      __v._M_reset();
+        -:  566:      auto* __addr = __variant::__construct_n<_Np>(__v._M_u);
+        -:  567:      std::_Construct(__addr, in_place_index<0>,
+        -:  568:		      std::forward<_Args>(__args)...);
+        -:  569:      // Construction didn't throw, so can set the new index now:
+        -:  570:      __v._M_index = _Np;
+        -:  571:    }
+        -:  572:
+        -:  573:  template<typename... _Types>
+        -:  574:    using _Variant_storage_alias =
+        -:  575:	_Variant_storage<_Traits<_Types...>::_S_trivial_dtor, _Types...>;
+        -:  576:
+        -:  577:  // The following are (Copy|Move) (ctor|assign) layers for forwarding
+        -:  578:  // triviality and handling non-trivial SMF behaviors.
+        -:  579:
+        -:  580:  template<bool, typename... _Types>
+        -:  581:    struct _Copy_ctor_base : _Variant_storage_alias<_Types...>
+        -:  582:    {
+        -:  583:      using _Base = _Variant_storage_alias<_Types...>;
+        -:  584:      using _Base::_Base;
+        -:  585:
+        -:  586:      _GLIBCXX20_CONSTEXPR
+        -:  587:      _Copy_ctor_base(const _Copy_ctor_base& __rhs)
+        -:  588:	  noexcept(_Traits<_Types...>::_S_nothrow_copy_ctor)
+        -:  589:      {
+        -:  590:	__variant::__raw_idx_visit(
+        -:  591:	  [this](auto&& __rhs_mem, auto __rhs_index) mutable
+        -:  592:	  {
+        -:  593:	    constexpr size_t __j = __rhs_index;
+        -:  594:	    if constexpr (__j != variant_npos)
+        -:  595:	      std::_Construct(std::__addressof(this->_M_u),
+        -:  596:			      in_place_index<__j>, __rhs_mem);
+        -:  597:	  }, __variant_cast<_Types...>(__rhs));
+        -:  598:	this->_M_index = __rhs._M_index;
+        -:  599:      }
+        -:  600:
+        -:  601:      _Copy_ctor_base(_Copy_ctor_base&&) = default;
+        -:  602:      _Copy_ctor_base& operator=(const _Copy_ctor_base&) = default;
+        -:  603:      _Copy_ctor_base& operator=(_Copy_ctor_base&&) = default;
+        -:  604:    };
+        -:  605:
+        -:  606:  template<typename... _Types>
+        -:  607:    struct _Copy_ctor_base<true, _Types...> : _Variant_storage_alias<_Types...>
+        -:  608:    {
+        -:  609:      using _Base = _Variant_storage_alias<_Types...>;
+        -:  610:      using _Base::_Base;
+        -:  611:    };
+        -:  612:
+        -:  613:  template<typename... _Types>
+        -:  614:    using _Copy_ctor_alias =
+        -:  615:	_Copy_ctor_base<_Traits<_Types...>::_S_trivial_copy_ctor, _Types...>;
+        -:  616:
+        -:  617:  template<bool, typename... _Types>
+        -:  618:    struct _Move_ctor_base : _Copy_ctor_alias<_Types...>
+        -:  619:    {
+        -:  620:      using _Base = _Copy_ctor_alias<_Types...>;
+        -:  621:      using _Base::_Base;
+        -:  622:
+        -:  623:      _GLIBCXX20_CONSTEXPR
+        -:  624:      _Move_ctor_base(_Move_ctor_base&& __rhs)
+        -:  625:	  noexcept(_Traits<_Types...>::_S_nothrow_move_ctor)
+        -:  626:      {
+        -:  627:	__variant::__raw_idx_visit(
+        -:  628:	  [this](auto&& __rhs_mem, auto __rhs_index) mutable
+        -:  629:	  {
+        -:  630:	    constexpr size_t __j = __rhs_index;
+        -:  631:	    if constexpr (__j != variant_npos)
+        -:  632:	      std::_Construct(std::__addressof(this->_M_u),
+        -:  633:			      in_place_index<__j>,
+        -:  634:			      std::forward<decltype(__rhs_mem)>(__rhs_mem));
+        -:  635:	  }, __variant_cast<_Types...>(std::move(__rhs)));
+        -:  636:	this->_M_index = __rhs._M_index;
+        -:  637:      }
+        -:  638:
+        -:  639:      _Move_ctor_base(const _Move_ctor_base&) = default;
+        -:  640:      _Move_ctor_base& operator=(const _Move_ctor_base&) = default;
+        -:  641:      _Move_ctor_base& operator=(_Move_ctor_base&&) = default;
+        -:  642:    };
+        -:  643:
+        -:  644:  template<typename... _Types>
+        -:  645:    struct _Move_ctor_base<true, _Types...> : _Copy_ctor_alias<_Types...>
+        -:  646:    {
+        -:  647:      using _Base = _Copy_ctor_alias<_Types...>;
+        -:  648:      using _Base::_Base;
+        -:  649:    };
+        -:  650:
+        -:  651:  template<typename... _Types>
+        -:  652:    using _Move_ctor_alias =
+        -:  653:	_Move_ctor_base<_Traits<_Types...>::_S_trivial_move_ctor, _Types...>;
+        -:  654:
+        -:  655:  template<bool, typename... _Types>
+        -:  656:    struct _Copy_assign_base : _Move_ctor_alias<_Types...>
+        -:  657:    {
+        -:  658:      using _Base = _Move_ctor_alias<_Types...>;
+        -:  659:      using _Base::_Base;
+        -:  660:
+        -:  661:      _GLIBCXX20_CONSTEXPR
+        -:  662:      _Copy_assign_base&
+        -:  663:      operator=(const _Copy_assign_base& __rhs)
+        -:  664:	  noexcept(_Traits<_Types...>::_S_nothrow_copy_assign)
+        -:  665:      {
+        -:  666:	__variant::__raw_idx_visit(
+        -:  667:	  [this](auto&& __rhs_mem, auto __rhs_index) mutable
+        -:  668:	  {
+        -:  669:	    constexpr size_t __j = __rhs_index;
+        -:  670:	    if constexpr (__j == variant_npos)
+        -:  671:	      this->_M_reset(); // Make *this valueless.
+        -:  672:	    else if (this->_M_index == __j)
+        -:  673:	      __variant::__get<__j>(*this) = __rhs_mem;
+        -:  674:	    else
+        -:  675:	      {
+        -:  676:		using _Tj = typename _Nth_type<__j, _Types...>::type;
+        -:  677:		if constexpr (is_nothrow_copy_constructible_v<_Tj>
+        -:  678:			      || !is_nothrow_move_constructible_v<_Tj>)
+        -:  679:		  __variant::__emplace<__j>(*this, __rhs_mem);
+        -:  680:		else
+        -:  681:		  {
+        -:  682:		    using _Variant = variant<_Types...>;
+        -:  683:		    _Variant& __self = __variant_cast<_Types...>(*this);
+        -:  684:		    __self = _Variant(in_place_index<__j>, __rhs_mem);
+        -:  685:		  }
+        -:  686:	      }
+        -:  687:	  }, __variant_cast<_Types...>(__rhs));
+        -:  688:	return *this;
+        -:  689:      }
+        -:  690:
+        -:  691:      _Copy_assign_base(const _Copy_assign_base&) = default;
+        -:  692:      _Copy_assign_base(_Copy_assign_base&&) = default;
+        -:  693:      _Copy_assign_base& operator=(_Copy_assign_base&&) = default;
+        -:  694:    };
+        -:  695:
+        -:  696:  template<typename... _Types>
+        -:  697:    struct _Copy_assign_base<true, _Types...> : _Move_ctor_alias<_Types...>
+        -:  698:    {
+        -:  699:      using _Base = _Move_ctor_alias<_Types...>;
+        -:  700:      using _Base::_Base;
+        -:  701:    };
+        -:  702:
+        -:  703:  template<typename... _Types>
+        -:  704:    using _Copy_assign_alias =
+        -:  705:      _Copy_assign_base<_Traits<_Types...>::_S_trivial_copy_assign, _Types...>;
+        -:  706:
+        -:  707:  template<bool, typename... _Types>
+        -:  708:    struct _Move_assign_base : _Copy_assign_alias<_Types...>
+        -:  709:    {
+        -:  710:      using _Base = _Copy_assign_alias<_Types...>;
+        -:  711:      using _Base::_Base;
+        -:  712:
+        -:  713:      _GLIBCXX20_CONSTEXPR
+        -:  714:      _Move_assign_base&
+        -:  715:      operator=(_Move_assign_base&& __rhs)
+        -:  716:	  noexcept(_Traits<_Types...>::_S_nothrow_move_assign)
+        -:  717:      {
+        -:  718:	__variant::__raw_idx_visit(
+        -:  719:	  [this](auto&& __rhs_mem, auto __rhs_index) mutable
+        -:  720:	  {
+        -:  721:	    constexpr size_t __j = __rhs_index;
+        -:  722:	    if constexpr (__j != variant_npos)
+        -:  723:	      {
+        -:  724:		if (this->_M_index == __j)
+        -:  725:		  __variant::__get<__j>(*this) = std::move(__rhs_mem);
+        -:  726:		else
+        -:  727:		  {
+        -:  728:		    using _Tj = typename _Nth_type<__j, _Types...>::type;
+        -:  729:		    if constexpr (is_nothrow_move_constructible_v<_Tj>)
+        -:  730:		      __variant::__emplace<__j>(*this, std::move(__rhs_mem));
+        -:  731:		    else
+        -:  732:		      {
+        -:  733:			using _Variant = variant<_Types...>;
+        -:  734:			_Variant& __self = __variant_cast<_Types...>(*this);
+        -:  735:			__self.template emplace<__j>(std::move(__rhs_mem));
+        -:  736:		      }
+        -:  737:		  }
+        -:  738:	      }
+        -:  739:	    else
+        -:  740:	      this->_M_reset();
+        -:  741:	  }, __variant_cast<_Types...>(__rhs));
+        -:  742:	return *this;
+        -:  743:      }
+        -:  744:
+        -:  745:      _Move_assign_base(const _Move_assign_base&) = default;
+        -:  746:      _Move_assign_base(_Move_assign_base&&) = default;
+        -:  747:      _Move_assign_base& operator=(const _Move_assign_base&) = default;
+        -:  748:    };
+        -:  749:
+        -:  750:  template<typename... _Types>
+        -:  751:    struct _Move_assign_base<true, _Types...> : _Copy_assign_alias<_Types...>
+        -:  752:    {
+        -:  753:      using _Base = _Copy_assign_alias<_Types...>;
+        -:  754:      using _Base::_Base;
+        -:  755:    };
+        -:  756:
+        -:  757:  template<typename... _Types>
+        -:  758:    using _Move_assign_alias =
+        -:  759:      _Move_assign_base<_Traits<_Types...>::_S_trivial_move_assign, _Types...>;
+        -:  760:
+        -:  761:  template<typename... _Types>
+        -:  762:    struct _Variant_base : _Move_assign_alias<_Types...>
+        -:  763:    {
+        -:  764:      using _Base = _Move_assign_alias<_Types...>;
+        -:  765:
+        -:  766:      constexpr
+        -:  767:      _Variant_base() noexcept(_Traits<_Types...>::_S_nothrow_default_ctor)
+        -:  768:      : _Variant_base(in_place_index<0>) { }
+        -:  769:
+        -:  770:      template<size_t _Np, typename... _Args>
+        -:  771:	constexpr explicit
+    #####:  772:	_Variant_base(in_place_index_t<_Np> __i, _Args&&... __args)
+    #####:  773:	: _Base(__i, std::forward<_Args>(__args)...)
+    #####:  774:	{ }
+------------------
+_ZNSt8__detail9__variant13_Variant_baseIJN7minitun7storage17TunnelActualStateENS2_6common5ErrorEEEC2ILm1EJS6_EEESt16in_place_index_tIXT_EEDpOT0_:
+function _ZNSt8__detail9__variant13_Variant_baseIJN7minitun7storage17TunnelActualStateENS2_6common5ErrorEEEC2ILm1EJS6_EEESt16in_place_index_tIXT_EEDpOT0_ called 0 returned 0% blocks executed 0%
+    #####:  772:	_Variant_base(in_place_index_t<_Np> __i, _Args&&... __args)
+    #####:  773:	: _Base(__i, std::forward<_Args>(__args)...)
+call    0 never executed
+call    1 never executed
+    #####:  774:	{ }
+------------------
+_ZNSt8__detail9__variant13_Variant_baseIJN7minitun7storage18TunnelDesiredStateENS2_6common5ErrorEEEC2ILm1EJS6_EEESt16in_place_index_tIXT_EEDpOT0_:
+function _ZNSt8__detail9__variant13_Variant_baseIJN7minitun7storage18TunnelDesiredStateENS2_6common5ErrorEEEC2ILm1EJS6_EEESt16in_place_index_tIXT_EEDpOT0_ called 0 returned 0% blocks executed 0%
+    #####:  772:	_Variant_base(in_place_index_t<_Np> __i, _Args&&... __args)
+    #####:  773:	: _Base(__i, std::forward<_Args>(__args)...)
+call    0 never executed
+call    1 never executed
+    #####:  774:	{ }
+------------------
+_ZNSt8__detail9__variant13_Variant_baseIJN7minitun7storage17ServerActualStateENS2_6common5ErrorEEEC2ILm1EJS6_EEESt16in_place_index_tIXT_EEDpOT0_:
+function _ZNSt8__detail9__variant13_Variant_baseIJN7minitun7storage17ServerActualStateENS2_6common5ErrorEEEC2ILm1EJS6_EEESt16in_place_index_tIXT_EEDpOT0_ called 0 returned 0% blocks executed 0%
+    #####:  772:	_Variant_base(in_place_index_t<_Np> __i, _Args&&... __args)
+    #####:  773:	: _Base(__i, std::forward<_Args>(__args)...)
+call    0 never executed
+call    1 never executed
+    #####:  774:	{ }
+------------------
+_ZNSt8__detail9__variant13_Variant_baseIJN7minitun7storage18ServerDesiredStateENS2_6common5ErrorEEEC2ILm1EJS6_EEESt16in_place_index_tIXT_EEDpOT0_:
+function _ZNSt8__detail9__variant13_Variant_baseIJN7minitun7storage18ServerDesiredStateENS2_6common5ErrorEEEC2ILm1EJS6_EEESt16in_place_index_tIXT_EEDpOT0_ called 0 returned 0% blocks executed 0%
+    #####:  772:	_Variant_base(in_place_index_t<_Np> __i, _Args&&... __args)
+    #####:  773:	: _Base(__i, std::forward<_Args>(__args)...)
+call    0 never executed
+call    1 never executed
+    #####:  774:	{ }
+------------------
+_ZNSt8__detail9__variant13_Variant_baseIJN7minitun7storage14TunnelProtocolENS2_6common5ErrorEEEC2ILm1EJS6_EEESt16in_place_index_tIXT_EEDpOT0_:
+function _ZNSt8__detail9__variant13_Variant_baseIJN7minitun7storage14TunnelProtocolENS2_6common5ErrorEEEC2ILm1EJS6_EEESt16in_place_index_tIXT_EEDpOT0_ called 0 returned 0% blocks executed 0%
+    #####:  772:	_Variant_base(in_place_index_t<_Np> __i, _Args&&... __args)
+    #####:  773:	: _Base(__i, std::forward<_Args>(__args)...)
+call    0 never executed
+call    1 never executed
+    #####:  774:	{ }
+------------------
+_ZNSt8__detail9__variant13_Variant_baseIJN7minitun7storage17TunnelActualStateENS2_6common5ErrorEEEC2ILm0EJRKS4_EEESt16in_place_index_tIXT_EEDpOT0_:
+function _ZNSt8__detail9__variant13_Variant_baseIJN7minitun7storage17TunnelActualStateENS2_6common5ErrorEEEC2ILm0EJRKS4_EEESt16in_place_index_tIXT_EEDpOT0_ called 0 returned 0% blocks executed 0%
+    #####:  772:	_Variant_base(in_place_index_t<_Np> __i, _Args&&... __args)
+    #####:  773:	: _Base(__i, std::forward<_Args>(__args)...)
+call    0 never executed
+call    1 never executed
+    #####:  774:	{ }
+------------------
+_ZNSt8__detail9__variant13_Variant_baseIJN7minitun7storage18TunnelDesiredStateENS2_6common5ErrorEEEC2ILm0EJRKS4_EEESt16in_place_index_tIXT_EEDpOT0_:
+function _ZNSt8__detail9__variant13_Variant_baseIJN7minitun7storage18TunnelDesiredStateENS2_6common5ErrorEEEC2ILm0EJRKS4_EEESt16in_place_index_tIXT_EEDpOT0_ called 0 returned 0% blocks executed 0%
+    #####:  772:	_Variant_base(in_place_index_t<_Np> __i, _Args&&... __args)
+    #####:  773:	: _Base(__i, std::forward<_Args>(__args)...)
+call    0 never executed
+call    1 never executed
+    #####:  774:	{ }
+------------------
+_ZNSt8__detail9__variant13_Variant_baseIJN7minitun7storage17ServerActualStateENS2_6common5ErrorEEEC2ILm0EJRKS4_EEESt16in_place_index_tIXT_EEDpOT0_:
+function _ZNSt8__detail9__variant13_Variant_baseIJN7minitun7storage17ServerActualStateENS2_6common5ErrorEEEC2ILm0EJRKS4_EEESt16in_place_index_tIXT_EEDpOT0_ called 0 returned 0% blocks executed 0%
+    #####:  772:	_Variant_base(in_place_index_t<_Np> __i, _Args&&... __args)
+    #####:  773:	: _Base(__i, std::forward<_Args>(__args)...)
+call    0 never executed
+call    1 never executed
+    #####:  774:	{ }
+------------------
+_ZNSt8__detail9__variant13_Variant_baseIJN7minitun7storage18ServerDesiredStateENS2_6common5ErrorEEEC2ILm0EJRKS4_EEESt16in_place_index_tIXT_EEDpOT0_:
+function _ZNSt8__detail9__variant13_Variant_baseIJN7minitun7storage18ServerDesiredStateENS2_6common5ErrorEEEC2ILm0EJRKS4_EEESt16in_place_index_tIXT_EEDpOT0_ called 0 returned 0% blocks executed 0%
+    #####:  772:	_Variant_base(in_place_index_t<_Np> __i, _Args&&... __args)
+    #####:  773:	: _Base(__i, std::forward<_Args>(__args)...)
+call    0 never executed
+call    1 never executed
+    #####:  774:	{ }
+------------------
+_ZNSt8__detail9__variant13_Variant_baseIJN7minitun7storage14TunnelProtocolENS2_6common5ErrorEEEC2ILm0EJRKS4_EEESt16in_place_index_tIXT_EEDpOT0_:
+function _ZNSt8__detail9__variant13_Variant_baseIJN7minitun7storage14TunnelProtocolENS2_6common5ErrorEEEC2ILm0EJRKS4_EEESt16in_place_index_tIXT_EEDpOT0_ called 0 returned 0% blocks executed 0%
+    #####:  772:	_Variant_base(in_place_index_t<_Np> __i, _Args&&... __args)
+    #####:  773:	: _Base(__i, std::forward<_Args>(__args)...)
+call    0 never executed
+call    1 never executed
+    #####:  774:	{ }
+------------------
+        -:  775:
+        -:  776:      _Variant_base(const _Variant_base&) = default;
+        -:  777:      _Variant_base(_Variant_base&&) = default;
+        -:  778:      _Variant_base& operator=(const _Variant_base&) = default;
+        -:  779:      _Variant_base& operator=(_Variant_base&&) = default;
+        -:  780:    };
+        -:  781:
+        -:  782:  template<typename _Tp, typename... _Types>
+        -:  783:    inline constexpr bool __exactly_once
+        -:  784:      = std::__find_uniq_type_in_pack<_Tp, _Types...>() < sizeof...(_Types);
+        -:  785:
+        -:  786:  // Helper used to check for valid conversions that don't involve narrowing.
+        -:  787:  template<typename _Ti> struct _Arr { _Ti _M_x[1]; };
+        -:  788:
+        -:  789:  // "Build an imaginary function FUN(Ti) for each alternative type Ti"
+        -:  790:  template<size_t _Ind, typename _Tp, typename _Ti, typename = void>
+        -:  791:    struct _Build_FUN
+        -:  792:    {
+        -:  793:      // This function means 'using _Build_FUN<I, T, Ti>::_S_fun;' is valid,
+        -:  794:      // but only static functions will be considered in the call below.
+        -:  795:      void _S_fun() = delete;
+        -:  796:    };
+        -:  797:
+        -:  798:  // "... for which Ti x[] = {std::forward<T>(t)}; is well-formed."
+        -:  799:  template<size_t _Ind, typename _Tp, typename _Ti>
+        -:  800:    struct _Build_FUN<_Ind, _Tp, _Ti,
+        -:  801:		      void_t<decltype(_Arr<_Ti>{{std::declval<_Tp>()}})>>
+        -:  802:    {
+        -:  803:      // This is the FUN function for type _Ti, with index _Ind
+        -:  804:      static integral_constant<size_t, _Ind> _S_fun(_Ti);
+        -:  805:    };
+        -:  806:
+        -:  807:  template<typename _Tp, typename _Variant,
+        -:  808:	   typename = make_index_sequence<variant_size_v<_Variant>>>
+        -:  809:    struct _Build_FUNs;
+        -:  810:
+        -:  811:  template<typename _Tp, typename... _Ti, size_t... _Ind>
+        -:  812:    struct _Build_FUNs<_Tp, variant<_Ti...>, index_sequence<_Ind...>>
+        -:  813:    : _Build_FUN<_Ind, _Tp, _Ti>...
+        -:  814:    {
+        -:  815:      using _Build_FUN<_Ind, _Tp, _Ti>::_S_fun...;
+        -:  816:    };
+        -:  817:
+        -:  818:  // The index j of the overload FUN(Tj) selected by overload resolution
+        -:  819:  // for FUN(std::forward<_Tp>(t))
+        -:  820:  template<typename _Tp, typename _Variant>
+        -:  821:    using _FUN_type
+        -:  822:      = decltype(_Build_FUNs<_Tp, _Variant>::_S_fun(std::declval<_Tp>()));
+        -:  823:
+        -:  824:  // The index selected for FUN(std::forward<T>(t)), or variant_npos if none.
+        -:  825:  template<typename _Tp, typename _Variant, typename = void>
+        -:  826:    inline constexpr size_t
+        -:  827:    __accepted_index = variant_npos;
+        -:  828:
+        -:  829:  template<typename _Tp, typename _Variant>
+        -:  830:    inline constexpr size_t
+        -:  831:    __accepted_index<_Tp, _Variant, void_t<_FUN_type<_Tp, _Variant>>>
+        -:  832:      = _FUN_type<_Tp, _Variant>::value;
+        -:  833:
+        -:  834:  template<typename _Maybe_variant_cookie, typename _Variant,
+        -:  835:	   typename = __remove_cvref_t<_Variant>>
+        -:  836:    inline constexpr bool
+        -:  837:    __extra_visit_slot_needed = false;
+        -:  838:
+        -:  839:  template<typename _Var, typename... _Types>
+        -:  840:    inline constexpr bool
+        -:  841:    __extra_visit_slot_needed<__variant_cookie, _Var, variant<_Types...>>
+        -:  842:      = !__variant::__never_valueless<_Types...>();
+        -:  843:
+        -:  844:  template<typename _Var, typename... _Types>
+        -:  845:    inline constexpr bool
+        -:  846:    __extra_visit_slot_needed<__variant_idx_cookie, _Var, variant<_Types...>>
+        -:  847:      = !__variant::__never_valueless<_Types...>();
+        -:  848:
+        -:  849:  // Used for storing a multi-dimensional vtable.
+        -:  850:  template<typename _Tp, size_t... _Dimensions>
+        -:  851:    struct _Multi_array;
+        -:  852:
+        -:  853:  // Partial specialization with rank zero, stores a single _Tp element.
+        -:  854:  template<typename _Tp>
+        -:  855:    struct _Multi_array<_Tp>
+        -:  856:    {
+        -:  857:      template<typename>
+        -:  858:	struct __untag_result
+        -:  859:	: false_type
+        -:  860:	{ using element_type = _Tp; };
+        -:  861:
+        -:  862:#pragma GCC diagnostic push
+        -:  863:#pragma GCC diagnostic ignored "-Wignored-qualifiers"
+        -:  864:      template <typename... _Args>
+        -:  865:	struct __untag_result<const void(*)(_Args...)>
+        -:  866:	: false_type
+        -:  867:	{ using element_type = void(*)(_Args...); };
+        -:  868:#pragma GCC diagnostic pop
+        -:  869:
+        -:  870:      template <typename... _Args>
+        -:  871:	struct __untag_result<__variant_cookie(*)(_Args...)>
+        -:  872:	: false_type
+        -:  873:	{ using element_type = void(*)(_Args...); };
+        -:  874:
+        -:  875:      template <typename... _Args>
+        -:  876:	struct __untag_result<__variant_idx_cookie(*)(_Args...)>
+        -:  877:	: false_type
+        -:  878:	{ using element_type = void(*)(_Args...); };
+        -:  879:
+        -:  880:      template <typename _Res, typename... _Args>
+        -:  881:	struct __untag_result<__deduce_visit_result<_Res>(*)(_Args...)>
+        -:  882:	: true_type
+        -:  883:	{ using element_type = _Res(*)(_Args...); };
+        -:  884:
+        -:  885:      using __result_is_deduced = __untag_result<_Tp>;
+        -:  886:
+        -:  887:      constexpr const typename __untag_result<_Tp>::element_type&
+        -:  888:      _M_access() const
+        -:  889:      { return _M_data; }
+        -:  890:
+        -:  891:      typename __untag_result<_Tp>::element_type _M_data;
+        -:  892:    };
+        -:  893:
+        -:  894:  // Partial specialization with rank >= 1.
+        -:  895:  template<typename _Ret,
+        -:  896:	   typename _Visitor,
+        -:  897:	   typename... _Variants,
+        -:  898:	   size_t __first, size_t... __rest>
+        -:  899:    struct _Multi_array<_Ret(*)(_Visitor, _Variants...), __first, __rest...>
+        -:  900:    {
+        -:  901:      static constexpr size_t __index =
+        -:  902:	sizeof...(_Variants) - sizeof...(__rest) - 1;
+        -:  903:
+        -:  904:      using _Variant = typename _Nth_type<__index, _Variants...>::type;
+        -:  905:
+        -:  906:      static constexpr int __do_cookie =
+        -:  907:	__extra_visit_slot_needed<_Ret, _Variant> ? 1 : 0;
+        -:  908:
+        -:  909:      using _Tp = _Ret(*)(_Visitor, _Variants...);
+        -:  910:
+        -:  911:      template<typename... _Args>
+        -:  912:	constexpr decltype(auto)
+        -:  913:	_M_access(size_t __first_index, _Args... __rest_indices) const
+        -:  914:        {
+        -:  915:	  return _M_arr[__first_index + __do_cookie]
+        -:  916:	    ._M_access(__rest_indices...);
+        -:  917:	}
+        -:  918:
+        -:  919:      _Multi_array<_Tp, __rest...> _M_arr[__first + __do_cookie];
+        -:  920:    };
+        -:  921:
+        -:  922:  // Creates a multi-dimensional vtable recursively.
+        -:  923:  //
+        -:  924:  // For example,
+        -:  925:  // visit([](auto, auto){},
+        -:  926:  //       variant<int, char>(),  // typedef'ed as V1
+        -:  927:  //       variant<float, double, long double>())  // typedef'ed as V2
+        -:  928:  // will trigger instantiations of:
+        -:  929:  // __gen_vtable_impl<_Multi_array<void(*)(V1&&, V2&&), 2, 3>,
+        -:  930:  //                   tuple<V1&&, V2&&>, std::index_sequence<>>
+        -:  931:  //   __gen_vtable_impl<_Multi_array<void(*)(V1&&, V2&&), 3>,
+        -:  932:  //                     tuple<V1&&, V2&&>, std::index_sequence<0>>
+        -:  933:  //     __gen_vtable_impl<_Multi_array<void(*)(V1&&, V2&&)>,
+        -:  934:  //                       tuple<V1&&, V2&&>, std::index_sequence<0, 0>>
+        -:  935:  //     __gen_vtable_impl<_Multi_array<void(*)(V1&&, V2&&)>,
+        -:  936:  //                       tuple<V1&&, V2&&>, std::index_sequence<0, 1>>
+        -:  937:  //     __gen_vtable_impl<_Multi_array<void(*)(V1&&, V2&&)>,
+        -:  938:  //                       tuple<V1&&, V2&&>, std::index_sequence<0, 2>>
+        -:  939:  //   __gen_vtable_impl<_Multi_array<void(*)(V1&&, V2&&), 3>,
+        -:  940:  //                     tuple<V1&&, V2&&>, std::index_sequence<1>>
+        -:  941:  //     __gen_vtable_impl<_Multi_array<void(*)(V1&&, V2&&)>,
+        -:  942:  //                       tuple<V1&&, V2&&>, std::index_sequence<1, 0>>
+        -:  943:  //     __gen_vtable_impl<_Multi_array<void(*)(V1&&, V2&&)>,
+        -:  944:  //                       tuple<V1&&, V2&&>, std::index_sequence<1, 1>>
+        -:  945:  //     __gen_vtable_impl<_Multi_array<void(*)(V1&&, V2&&)>,
+        -:  946:  //                       tuple<V1&&, V2&&>, std::index_sequence<1, 2>>
+        -:  947:  // The returned multi-dimensional vtable can be fast accessed by the visitor
+        -:  948:  // using index calculation.
+        -:  949:  template<typename _Array_type, typename _Index_seq>
+        -:  950:    struct __gen_vtable_impl;
+        -:  951:
+        -:  952:  // Defines the _S_apply() member that returns a _Multi_array populated
+        -:  953:  // with function pointers that perform the visitation expressions e(m)
+        -:  954:  // for each valid pack of indexes into the variant types _Variants.
+        -:  955:  //
+        -:  956:  // This partial specialization builds up the index sequences by recursively
+        -:  957:  // calling _S_apply() on the next specialization of __gen_vtable_impl.
+        -:  958:  // The base case of the recursion defines the actual function pointers.
+        -:  959:  template<typename _Result_type, typename _Visitor, size_t... __dimensions,
+        -:  960:	   typename... _Variants, size_t... __indices>
+        -:  961:    struct __gen_vtable_impl<
+        -:  962:	_Multi_array<_Result_type (*)(_Visitor, _Variants...), __dimensions...>,
+        -:  963:	std::index_sequence<__indices...>>
+        -:  964:    {
+        -:  965:      using _Next =
+        -:  966:	  remove_reference_t<typename _Nth_type<sizeof...(__indices),
+        -:  967:			     _Variants...>::type>;
+        -:  968:      using _Array_type =
+        -:  969:	  _Multi_array<_Result_type (*)(_Visitor, _Variants...),
+        -:  970:		       __dimensions...>;
+        -:  971:
+        -:  972:      static constexpr _Array_type
+        -:  973:      _S_apply()
+        -:  974:      {
+        -:  975:	_Array_type __vtable{};
+        -:  976:	_S_apply_all_alts(
+        -:  977:	  __vtable, make_index_sequence<variant_size_v<_Next>>());
+        -:  978:	return __vtable;
+        -:  979:      }
+        -:  980:
+        -:  981:      template<size_t... __var_indices>
+        -:  982:	static constexpr void
+        -:  983:	_S_apply_all_alts(_Array_type& __vtable,
+        -:  984:			  std::index_sequence<__var_indices...>)
+        -:  985:	{
+        -:  986:	  if constexpr (__extra_visit_slot_needed<_Result_type, _Next>)
+        -:  987:	    (_S_apply_single_alt<true, __var_indices>(
+        -:  988:	      __vtable._M_arr[__var_indices + 1],
+        -:  989:	      &(__vtable._M_arr[0])), ...);
+        -:  990:	  else
+        -:  991:	    (_S_apply_single_alt<false, __var_indices>(
+        -:  992:	      __vtable._M_arr[__var_indices]), ...);
+        -:  993:	}
+        -:  994:
+        -:  995:      template<bool __do_cookie, size_t __index, typename _Tp>
+        -:  996:	static constexpr void
+        -:  997:	_S_apply_single_alt(_Tp& __element, _Tp* __cookie_element = nullptr)
+        -:  998:	{
+        -:  999:	  if constexpr (__do_cookie)
+        -: 1000:	    {
+        -: 1001:	      __element = __gen_vtable_impl<
+        -: 1002:		_Tp,
+        -: 1003:		std::index_sequence<__indices..., __index>>::_S_apply();
+        -: 1004:	      *__cookie_element = __gen_vtable_impl<
+        -: 1005:		_Tp,
+        -: 1006:		std::index_sequence<__indices..., variant_npos>>::_S_apply();
+        -: 1007:	    }
+        -: 1008:	  else
+        -: 1009:	    {
+        -: 1010:	      auto __tmp_element = __gen_vtable_impl<
+        -: 1011:		remove_reference_t<decltype(__element)>,
+        -: 1012:		std::index_sequence<__indices..., __index>>::_S_apply();
+        -: 1013:	      static_assert(is_same_v<_Tp, decltype(__tmp_element)>,
+        -: 1014:			    "std::visit requires the visitor to have the same "
+        -: 1015:			    "return type for all alternatives of a variant");
+        -: 1016:	      __element = __tmp_element;
+        -: 1017:	    }
+        -: 1018:	}
+        -: 1019:    };
+        -: 1020:
+        -: 1021:  // This partial specialization is the base case for the recursion.
+        -: 1022:  // It populates a _Multi_array element with the address of a function
+        -: 1023:  // that invokes the visitor with the alternatives specified by __indices.
+        -: 1024:  template<typename _Result_type, typename _Visitor, typename... _Variants,
+        -: 1025:	   size_t... __indices>
+        -: 1026:    struct __gen_vtable_impl<
+        -: 1027:      _Multi_array<_Result_type (*)(_Visitor, _Variants...)>,
+        -: 1028:		   std::index_sequence<__indices...>>
+        -: 1029:    {
+        -: 1030:      using _Array_type =
+        -: 1031:	  _Multi_array<_Result_type (*)(_Visitor, _Variants...)>;
+        -: 1032:
+        -: 1033:      template<size_t __index, typename _Variant>
+        -: 1034:	static constexpr decltype(auto)
+        -: 1035:	__element_by_index_or_cookie(_Variant&& __var) noexcept
+        -: 1036:        {
+        -: 1037:	  if constexpr (__index != variant_npos)
+        -: 1038:	    return __variant::__get<__index>(std::forward<_Variant>(__var));
+        -: 1039:	  else
+        -: 1040:	    return __variant_cookie{};
+        -: 1041:	}
+        -: 1042:
+        -: 1043:      static constexpr decltype(auto)
+        -: 1044:      __visit_invoke(_Visitor&& __visitor, _Variants... __vars)
+        -: 1045:      {
+        -: 1046:	if constexpr (is_same_v<_Result_type, __variant_idx_cookie>)
+        -: 1047:	  // For raw visitation using indices, pass the indices to the visitor
+        -: 1048:	  // and discard the return value:
+        -: 1049:	  std::__invoke(std::forward<_Visitor>(__visitor),
+        -: 1050:	      __element_by_index_or_cookie<__indices>(
+        -: 1051:		std::forward<_Variants>(__vars))...,
+        -: 1052:	      integral_constant<size_t, __indices>()...);
+        -: 1053:	else if constexpr (is_same_v<_Result_type, __variant_cookie>)
+        -: 1054:	  // For raw visitation without indices, and discard the return value:
+        -: 1055:	  std::__invoke(std::forward<_Visitor>(__visitor),
+        -: 1056:	      __element_by_index_or_cookie<__indices>(
+        -: 1057:		std::forward<_Variants>(__vars))...);
+        -: 1058:	else if constexpr (_Array_type::__result_is_deduced::value)
+        -: 1059:	  // For the usual std::visit case deduce the return value:
+        -: 1060:	  return std::__invoke(std::forward<_Visitor>(__visitor),
+        -: 1061:	      __element_by_index_or_cookie<__indices>(
+        -: 1062:		std::forward<_Variants>(__vars))...);
+        -: 1063:	else // for std::visit<R> use INVOKE<R>
+        -: 1064:	  return std::__invoke_r<_Result_type>(
+        -: 1065:	      std::forward<_Visitor>(__visitor),
+        -: 1066:	      __variant::__get<__indices>(std::forward<_Variants>(__vars))...);
+        -: 1067:      }
+        -: 1068:
+        -: 1069:      static constexpr auto
+        -: 1070:      _S_apply()
+        -: 1071:      {
+        -: 1072:	if constexpr (_Array_type::__result_is_deduced::value)
+        -: 1073:	  {
+        -: 1074:	    constexpr bool __visit_ret_type_mismatch =
+        -: 1075:	      !is_same_v<typename _Result_type::type,
+        -: 1076:			 decltype(__visit_invoke(std::declval<_Visitor>(),
+        -: 1077:				    std::declval<_Variants>()...))>;
+        -: 1078:	    if constexpr (__visit_ret_type_mismatch)
+        -: 1079:	      {
+        -: 1080:		struct __cannot_match {};
+        -: 1081:		return __cannot_match{};
+        -: 1082:	      }
+        -: 1083:	    else
+        -: 1084:	      return _Array_type{&__visit_invoke};
+        -: 1085:	  }
+        -: 1086:	else
+        -: 1087:	  return _Array_type{&__visit_invoke};
+        -: 1088:      }
+        -: 1089:    };
+        -: 1090:
+        -: 1091:  template<typename _Result_type, typename _Visitor, typename... _Variants>
+        -: 1092:    struct __gen_vtable
+        -: 1093:    {
+        -: 1094:      using _Array_type =
+        -: 1095:	  _Multi_array<_Result_type (*)(_Visitor, _Variants...),
+        -: 1096:		       variant_size_v<remove_reference_t<_Variants>>...>;
+        -: 1097:
+        -: 1098:      static constexpr _Array_type _S_vtable
+        -: 1099:	= __gen_vtable_impl<_Array_type, std::index_sequence<>>::_S_apply();
+        -: 1100:    };
+        -: 1101:
+        -: 1102:  template<size_t _Np, typename _Tp>
+        -: 1103:    struct _Base_dedup : public _Tp { };
+        -: 1104:
+        -: 1105:  template<typename _Variant, typename __indices>
+        -: 1106:    struct _Variant_hash_base;
+        -: 1107:
+        -: 1108:  template<typename... _Types, size_t... __indices>
+        -: 1109:    struct _Variant_hash_base<variant<_Types...>,
+        -: 1110:			      std::index_sequence<__indices...>>
+        -: 1111:    : _Base_dedup<__indices, __poison_hash<remove_const_t<_Types>>>... { };
+        -: 1112:
+        -: 1113:  // Equivalent to decltype(get<_Np>(as-variant(declval<_Variant>())))
+        -: 1114:  template<size_t _Np, typename _Variant,
+        -: 1115:      typename _AsV = decltype(__variant::__as(std::declval<_Variant>())),
+        -: 1116:      typename _Tp = variant_alternative_t<_Np, remove_reference_t<_AsV>>>
+        -: 1117:    using __get_t
+        -: 1118:      = __conditional_t<is_lvalue_reference_v<_Variant>, _Tp&, _Tp&&>;
+        -: 1119:
+        -: 1120:  // Return type of std::visit.
+        -: 1121:  template<typename _Visitor, typename... _Variants>
+        -: 1122:    using __visit_result_t
+        -: 1123:      = invoke_result_t<_Visitor, __get_t<0, _Variants>...>;
+        -: 1124:
+        -: 1125:  template<typename _Tp, typename... _Types>
+        -: 1126:    constexpr inline bool __same_types = (is_same_v<_Tp, _Types> && ...);
+        -: 1127:
+        -: 1128:  template <typename _Visitor, typename _Variant, size_t... _Idxs>
+        -: 1129:    constexpr bool __check_visitor_results(std::index_sequence<_Idxs...>)
+        -: 1130:    {
+        -: 1131:      return __same_types<
+        -: 1132:	invoke_result_t<_Visitor, __get_t<_Idxs, _Variant>>...
+        -: 1133:	>;
+        -: 1134:    }
+        -: 1135:
+        -: 1136:} // namespace __variant
+        -: 1137:} // namespace __detail
+        -: 1138:
+        -: 1139:  template<typename _Tp, typename... _Types>
+        -: 1140:    constexpr bool
+        -: 1141:    holds_alternative(const variant<_Types...>& __v) noexcept
+        -: 1142:    {
+        -: 1143:      static_assert(__detail::__variant::__exactly_once<_Tp, _Types...>,
+        -: 1144:		    "T must occur exactly once in alternatives");
+        -: 1145:      return __v.index() == std::__find_uniq_type_in_pack<_Tp, _Types...>();
+        -: 1146:    }
+        -: 1147:
+        -: 1148:  template<typename _Tp, typename... _Types>
+        -: 1149:    constexpr _Tp&
+        -: 1150:    get(variant<_Types...>& __v)
+        -: 1151:    {
+        -: 1152:      static_assert(__detail::__variant::__exactly_once<_Tp, _Types...>,
+        -: 1153:		    "T must occur exactly once in alternatives");
+        -: 1154:      constexpr size_t __n = std::__find_uniq_type_in_pack<_Tp, _Types...>();
+        -: 1155:      return std::get<__n>(__v);
+        -: 1156:    }
+        -: 1157:
+        -: 1158:  template<typename _Tp, typename... _Types>
+        -: 1159:    constexpr _Tp&&
+        -: 1160:    get(variant<_Types...>&& __v)
+        -: 1161:    {
+        -: 1162:      static_assert(__detail::__variant::__exactly_once<_Tp, _Types...>,
+        -: 1163:		    "T must occur exactly once in alternatives");
+        -: 1164:      constexpr size_t __n = std::__find_uniq_type_in_pack<_Tp, _Types...>();
+        -: 1165:      return std::get<__n>(std::move(__v));
+        -: 1166:    }
+        -: 1167:
+        -: 1168:  template<typename _Tp, typename... _Types>
+        -: 1169:    constexpr const _Tp&
+        -: 1170:    get(const variant<_Types...>& __v)
+        -: 1171:    {
+        -: 1172:      static_assert(__detail::__variant::__exactly_once<_Tp, _Types...>,
+        -: 1173:		    "T must occur exactly once in alternatives");
+        -: 1174:      constexpr size_t __n = std::__find_uniq_type_in_pack<_Tp, _Types...>();
+        -: 1175:      return std::get<__n>(__v);
+        -: 1176:    }
+        -: 1177:
+        -: 1178:  template<typename _Tp, typename... _Types>
+        -: 1179:    constexpr const _Tp&&
+        -: 1180:    get(const variant<_Types...>&& __v)
+        -: 1181:    {
+        -: 1182:      static_assert(__detail::__variant::__exactly_once<_Tp, _Types...>,
+        -: 1183:		    "T must occur exactly once in alternatives");
+        -: 1184:      constexpr size_t __n = std::__find_uniq_type_in_pack<_Tp, _Types...>();
+        -: 1185:      return std::get<__n>(std::move(__v));
+        -: 1186:    }
+        -: 1187:
+        -: 1188:  template<size_t _Np, typename... _Types>
+        -: 1189:    constexpr add_pointer_t<variant_alternative_t<_Np, variant<_Types...>>>
+        -: 1190:    get_if(variant<_Types...>* __ptr) noexcept
+        -: 1191:    {
+        -: 1192:      using _Alternative_type = variant_alternative_t<_Np, variant<_Types...>>;
+        -: 1193:      static_assert(_Np < sizeof...(_Types),
+        -: 1194:		    "The index must be in [0, number of alternatives)");
+        -: 1195:      static_assert(!is_void_v<_Alternative_type>, "_Tp must not be void");
+        -: 1196:      if (__ptr && __ptr->index() == _Np)
+        -: 1197:	return std::addressof(__detail::__variant::__get<_Np>(*__ptr));
+        -: 1198:      return nullptr;
+        -: 1199:    }
+        -: 1200:
+        -: 1201:  template<size_t _Np, typename... _Types>
+        -: 1202:    constexpr
+        -: 1203:    add_pointer_t<const variant_alternative_t<_Np, variant<_Types...>>>
+        -: 1204:    get_if(const variant<_Types...>* __ptr) noexcept
+        -: 1205:    {
+        -: 1206:      using _Alternative_type = variant_alternative_t<_Np, variant<_Types...>>;
+        -: 1207:      static_assert(_Np < sizeof...(_Types),
+        -: 1208:		    "The index must be in [0, number of alternatives)");
+        -: 1209:      static_assert(!is_void_v<_Alternative_type>, "_Tp must not be void");
+        -: 1210:      if (__ptr && __ptr->index() == _Np)
+        -: 1211:	return std::addressof(__detail::__variant::__get<_Np>(*__ptr));
+        -: 1212:      return nullptr;
+        -: 1213:    }
+        -: 1214:
+        -: 1215:  template<typename _Tp, typename... _Types>
+        -: 1216:    constexpr add_pointer_t<_Tp>
+        -: 1217:    get_if(variant<_Types...>* __ptr) noexcept
+        -: 1218:    {
+        -: 1219:      static_assert(__detail::__variant::__exactly_once<_Tp, _Types...>,
+        -: 1220:		    "T must occur exactly once in alternatives");
+        -: 1221:      static_assert(!is_void_v<_Tp>, "_Tp must not be void");
+        -: 1222:      constexpr size_t __n = std::__find_uniq_type_in_pack<_Tp, _Types...>();
+        -: 1223:      return std::get_if<__n>(__ptr);
+        -: 1224:    }
+        -: 1225:
+        -: 1226:  template<typename _Tp, typename... _Types>
+        -: 1227:    constexpr add_pointer_t<const _Tp>
+        -: 1228:    get_if(const variant<_Types...>* __ptr) noexcept
+        -: 1229:    {
+        -: 1230:      static_assert(__detail::__variant::__exactly_once<_Tp, _Types...>,
+        -: 1231:		    "T must occur exactly once in alternatives");
+        -: 1232:      static_assert(!is_void_v<_Tp>, "_Tp must not be void");
+        -: 1233:      constexpr size_t __n = std::__find_uniq_type_in_pack<_Tp, _Types...>();
+        -: 1234:      return std::get_if<__n>(__ptr);
+        -: 1235:    }
+        -: 1236:
+        -: 1237:  struct monostate { };
+        -: 1238:
+        -: 1239:#define _VARIANT_RELATION_FUNCTION_TEMPLATE(__OP, __NAME) \
+        -: 1240:  template<typename... _Types> \
+        -: 1241:    constexpr bool operator __OP(const variant<_Types...>& __lhs, \
+        -: 1242:				 const variant<_Types...>& __rhs) \
+        -: 1243:    { \
+        -: 1244:      bool __ret = true; \
+        -: 1245:      __detail::__variant::__raw_idx_visit( \
+        -: 1246:        [&__ret, &__lhs] (auto&& __rhs_mem, auto __rhs_index) mutable \
+        -: 1247:        { \
+        -: 1248:	  if constexpr (__rhs_index != variant_npos) \
+        -: 1249:	    { \
+        -: 1250:	      if (__lhs.index() == __rhs_index) \
+        -: 1251:	        { \
+        -: 1252:		  auto& __this_mem = std::get<__rhs_index>(__lhs);	\
+        -: 1253:                  __ret = __this_mem __OP __rhs_mem; \
+        -: 1254:                } \
+        -: 1255:	      else \
+        -: 1256:		__ret = (__lhs.index() + 1) __OP (__rhs_index + 1); \
+        -: 1257:            } \
+        -: 1258:          else \
+        -: 1259:            __ret = (__lhs.index() + 1) __OP (__rhs_index + 1); \
+        -: 1260:	}, __rhs); \
+        -: 1261:      return __ret; \
+        -: 1262:    }
+        -: 1263:
+        -: 1264:  _VARIANT_RELATION_FUNCTION_TEMPLATE(<, less)
+        -: 1265:  _VARIANT_RELATION_FUNCTION_TEMPLATE(<=, less_equal)
+        -: 1266:  _VARIANT_RELATION_FUNCTION_TEMPLATE(==, equal)
+        -: 1267:  _VARIANT_RELATION_FUNCTION_TEMPLATE(!=, not_equal)
+        -: 1268:  _VARIANT_RELATION_FUNCTION_TEMPLATE(>=, greater_equal)
+        -: 1269:  _VARIANT_RELATION_FUNCTION_TEMPLATE(>, greater)
+        -: 1270:
+        -: 1271:#undef _VARIANT_RELATION_FUNCTION_TEMPLATE
+        -: 1272:
+        -: 1273:  constexpr bool operator==(monostate, monostate) noexcept { return true; }
+        -: 1274:
+        -: 1275:#ifdef __cpp_lib_three_way_comparison
+        -: 1276:  template<typename... _Types>
+        -: 1277:    requires (three_way_comparable<_Types> && ...)
+        -: 1278:    constexpr
+        -: 1279:    common_comparison_category_t<compare_three_way_result_t<_Types>...>
+        -: 1280:    operator<=>(const variant<_Types...>& __v, const variant<_Types...>& __w)
+        -: 1281:    {
+        -: 1282:      common_comparison_category_t<compare_three_way_result_t<_Types>...> __ret
+        -: 1283:	= strong_ordering::equal;
+        -: 1284:
+        -: 1285:      __detail::__variant::__raw_idx_visit(
+        -: 1286:	[&__ret, &__v] (auto&& __w_mem, auto __w_index) mutable
+        -: 1287:	{
+        -: 1288:	  if constexpr (__w_index != variant_npos)
+        -: 1289:	    {
+        -: 1290:	      if (__v.index() == __w_index)
+        -: 1291:		{
+        -: 1292:		  auto& __this_mem = std::get<__w_index>(__v);
+        -: 1293:		  __ret = __this_mem <=> __w_mem;
+        -: 1294:		  return;
+        -: 1295:		}
+        -: 1296:	    }
+        -: 1297:	  __ret = (__v.index() + 1) <=> (__w_index + 1);
+        -: 1298:	}, __w);
+        -: 1299:      return __ret;
+        -: 1300:    }
+        -: 1301:
+        -: 1302:  constexpr strong_ordering
+        -: 1303:  operator<=>(monostate, monostate) noexcept { return strong_ordering::equal; }
+        -: 1304:#else
+        -: 1305:  constexpr bool operator!=(monostate, monostate) noexcept { return false; }
+        -: 1306:  constexpr bool operator<(monostate, monostate) noexcept { return false; }
+        -: 1307:  constexpr bool operator>(monostate, monostate) noexcept { return false; }
+        -: 1308:  constexpr bool operator<=(monostate, monostate) noexcept { return true; }
+        -: 1309:  constexpr bool operator>=(monostate, monostate) noexcept { return true; }
+        -: 1310:#endif
+        -: 1311:
+        -: 1312:  template<typename _Visitor, typename... _Variants>
+        -: 1313:    constexpr __detail::__variant::__visit_result_t<_Visitor, _Variants...>
+        -: 1314:    visit(_Visitor&&, _Variants&&...);
+        -: 1315:
+        -: 1316:  template<typename... _Types>
+        -: 1317:    _GLIBCXX20_CONSTEXPR
+        -: 1318:    inline enable_if_t<(is_move_constructible_v<_Types> && ...)
+        -: 1319:			&& (is_swappable_v<_Types> && ...)>
+        -: 1320:    swap(variant<_Types...>& __lhs, variant<_Types...>& __rhs)
+        -: 1321:    noexcept(noexcept(__lhs.swap(__rhs)))
+        -: 1322:    { __lhs.swap(__rhs); }
+        -: 1323:
+        -: 1324:  template<typename... _Types>
+        -: 1325:    enable_if_t<!((is_move_constructible_v<_Types> && ...)
+        -: 1326:		   && (is_swappable_v<_Types> && ...))>
+        -: 1327:    swap(variant<_Types...>&, variant<_Types...>&) = delete;
+        -: 1328:
+        -: 1329:  class bad_variant_access : public exception
+        -: 1330:  {
+        -: 1331:  public:
+        -: 1332:    bad_variant_access() noexcept { }
+        -: 1333:
+        -: 1334:    const char* what() const noexcept override
+        -: 1335:    { return _M_reason; }
+        -: 1336:
+        -: 1337:  private:
+        -: 1338:    bad_variant_access(const char* __reason) noexcept : _M_reason(__reason) { }
+        -: 1339:
+        -: 1340:    // Must point to a string with static storage duration:
+        -: 1341:    const char* _M_reason = "bad variant access";
+        -: 1342:
+        -: 1343:    friend void __throw_bad_variant_access(const char* __what);
+        -: 1344:  };
+        -: 1345:
+        -: 1346:  // Must only be called with a string literal
+        -: 1347:  inline void
+        -: 1348:  __throw_bad_variant_access(const char* __what)
+        -: 1349:  { _GLIBCXX_THROW_OR_ABORT(bad_variant_access(__what)); }
+        -: 1350:
+        -: 1351:  inline void
+        -: 1352:  __throw_bad_variant_access(bool __valueless)
+        -: 1353:  {
+        -: 1354:    if (__valueless) [[__unlikely__]]
+        -: 1355:      __throw_bad_variant_access("std::get: variant is valueless");
+        -: 1356:    else
+        -: 1357:      __throw_bad_variant_access("std::get: wrong index for variant");
+        -: 1358:  }
+        -: 1359:
+        -: 1360:  template<typename... _Types>
+        -: 1361:    class variant
+        -: 1362:    : private __detail::__variant::_Variant_base<_Types...>,
+        -: 1363:      private _Enable_default_constructor<
+        -: 1364:	__detail::__variant::_Traits<_Types...>::_S_default_ctor,
+        -: 1365:	  variant<_Types...>>,
+        -: 1366:      private _Enable_copy_move<
+        -: 1367:	__detail::__variant::_Traits<_Types...>::_S_copy_ctor,
+        -: 1368:	__detail::__variant::_Traits<_Types...>::_S_copy_assign,
+        -: 1369:	__detail::__variant::_Traits<_Types...>::_S_move_ctor,
+        -: 1370:	__detail::__variant::_Traits<_Types...>::_S_move_assign,
+        -: 1371:	variant<_Types...>>
+        -: 1372:    {
+        -: 1373:    private:
+        -: 1374:      template <typename... _UTypes, typename _Tp>
+        -: 1375:	friend _GLIBCXX20_CONSTEXPR decltype(auto)
+        -: 1376:	__variant_cast(_Tp&&);
+        -: 1377:
+        -: 1378:      static_assert(sizeof...(_Types) > 0,
+        -: 1379:		    "variant must have at least one alternative");
+        -: 1380:      static_assert(!(std::is_reference_v<_Types> || ...),
+        -: 1381:		    "variant must have no reference alternative");
+        -: 1382:      static_assert(!(std::is_void_v<_Types> || ...),
+        -: 1383:		    "variant must have no void alternative");
+        -: 1384:
+        -: 1385:      using _Base = __detail::__variant::_Variant_base<_Types...>;
+        -: 1386:      using _Default_ctor_enabler =
+        -: 1387:	_Enable_default_constructor<
+        -: 1388:	  __detail::__variant::_Traits<_Types...>::_S_default_ctor,
+        -: 1389:	    variant<_Types...>>;
+        -: 1390:
+        -: 1391:      template<typename _Tp>
+        -: 1392:	static constexpr bool __not_self
+        -: 1393:	  = !is_same_v<__remove_cvref_t<_Tp>, variant>;
+        -: 1394:
+        -: 1395:      template<typename _Tp>
+        -: 1396:	static constexpr bool
+        -: 1397:	__exactly_once = __detail::__variant::__exactly_once<_Tp, _Types...>;
+        -: 1398:
+        -: 1399:      template<typename _Tp>
+        -: 1400:	static constexpr size_t __accepted_index
+        -: 1401:	  = __detail::__variant::__accepted_index<_Tp, variant>;
+        -: 1402:
+        -: 1403:      template<size_t _Np, typename = enable_if_t<(_Np < sizeof...(_Types))>>
+        -: 1404:	using __to_type = typename _Nth_type<_Np, _Types...>::type;
+        -: 1405:
+        -: 1406:      template<typename _Tp, typename = enable_if_t<__not_self<_Tp>>>
+        -: 1407:	using __accepted_type = __to_type<__accepted_index<_Tp>>;
+        -: 1408:
+        -: 1409:      template<typename _Tp>
+        -: 1410:	static constexpr size_t __index_of
+        -: 1411:	  = std::__find_uniq_type_in_pack<_Tp, _Types...>();
+        -: 1412:
+        -: 1413:      using _Traits = __detail::__variant::_Traits<_Types...>;
+        -: 1414:
+        -: 1415:      template<typename _Tp>
+        -: 1416:	struct __is_in_place_tag : false_type { };
+        -: 1417:      template<typename _Tp>
+        -: 1418:	struct __is_in_place_tag<in_place_type_t<_Tp>> : true_type { };
+        -: 1419:      template<size_t _Np>
+        -: 1420:	struct __is_in_place_tag<in_place_index_t<_Np>> : true_type { };
+        -: 1421:
+        -: 1422:      template<typename _Tp>
+        -: 1423:	static constexpr bool __not_in_place_tag
+        -: 1424:	  = !__is_in_place_tag<__remove_cvref_t<_Tp>>::value;
+        -: 1425:
+        -: 1426:    public:
+        -: 1427:      variant() = default;
+        -: 1428:      variant(const variant& __rhs) = default;
+        -: 1429:      variant(variant&&) = default;
+        -: 1430:      variant& operator=(const variant&) = default;
+        -: 1431:      variant& operator=(variant&&) = default;
+        -: 1432:      _GLIBCXX20_CONSTEXPR ~variant() = default;
+        -: 1433:
+        -: 1434:      template<typename _Tp,
+        -: 1435:	       typename = enable_if_t<sizeof...(_Types) != 0>,
+        -: 1436:	       typename = enable_if_t<__not_in_place_tag<_Tp>>,
+        -: 1437:	       typename _Tj = __accepted_type<_Tp&&>,
+        -: 1438:	       typename = enable_if_t<__exactly_once<_Tj>
+        -: 1439:				      && is_constructible_v<_Tj, _Tp>>>
+        -: 1440:	constexpr
+        -: 1441:	variant(_Tp&& __t)
+        -: 1442:	noexcept(is_nothrow_constructible_v<_Tj, _Tp>)
+        -: 1443:	: variant(in_place_index<__accepted_index<_Tp>>,
+        -: 1444:		  std::forward<_Tp>(__t))
+        -: 1445:	{ }
+        -: 1446:
+        -: 1447:      template<typename _Tp, typename... _Args,
+        -: 1448:	       typename = enable_if_t<__exactly_once<_Tp>
+        -: 1449:				      && is_constructible_v<_Tp, _Args...>>>
+        -: 1450:	constexpr explicit
+        -: 1451:	variant(in_place_type_t<_Tp>, _Args&&... __args)
+        -: 1452:	: variant(in_place_index<__index_of<_Tp>>,
+        -: 1453:		  std::forward<_Args>(__args)...)
+        -: 1454:	{ }
+        -: 1455:
+        -: 1456:      template<typename _Tp, typename _Up, typename... _Args,
+        -: 1457:	       typename = enable_if_t<__exactly_once<_Tp>
+        -: 1458:				      && is_constructible_v<_Tp,
+        -: 1459:					   initializer_list<_Up>&, _Args...>>>
+        -: 1460:	constexpr explicit
+        -: 1461:	variant(in_place_type_t<_Tp>, initializer_list<_Up> __il,
+        -: 1462:		_Args&&... __args)
+        -: 1463:	: variant(in_place_index<__index_of<_Tp>>, __il,
+        -: 1464:		  std::forward<_Args>(__args)...)
+        -: 1465:	{ }
+        -: 1466:
+        -: 1467:      template<size_t _Np, typename... _Args,
+        -: 1468:	       typename _Tp = __to_type<_Np>,
+        -: 1469:	       typename = enable_if_t<is_constructible_v<_Tp, _Args...>>>
+        -: 1470:	constexpr explicit
+    #####: 1471:	variant(in_place_index_t<_Np>, _Args&&... __args)
+        -: 1472:	: _Base(in_place_index<_Np>, std::forward<_Args>(__args)...),
+    #####: 1473:	_Default_ctor_enabler(_Enable_default_constructor_tag{})
+    #####: 1474:	{ }
+------------------
+_ZNSt7variantIJN7minitun7storage17TunnelActualStateENS0_6common5ErrorEEEC2ILm1EJS4_ES4_vEESt16in_place_index_tIXT_EEDpOT0_:
+function _ZNSt7variantIJN7minitun7storage17TunnelActualStateENS0_6common5ErrorEEEC2ILm1EJS4_ES4_vEESt16in_place_index_tIXT_EEDpOT0_ called 0 returned 0% blocks executed 0%
+    #####: 1471:	variant(in_place_index_t<_Np>, _Args&&... __args)
+        -: 1472:	: _Base(in_place_index<_Np>, std::forward<_Args>(__args)...),
+    #####: 1473:	_Default_ctor_enabler(_Enable_default_constructor_tag{})
+call    0 never executed
+call    1 never executed
+call    2 never executed
+    #####: 1474:	{ }
+------------------
+_ZNSt7variantIJN7minitun7storage18TunnelDesiredStateENS0_6common5ErrorEEEC2ILm1EJS4_ES4_vEESt16in_place_index_tIXT_EEDpOT0_:
+function _ZNSt7variantIJN7minitun7storage18TunnelDesiredStateENS0_6common5ErrorEEEC2ILm1EJS4_ES4_vEESt16in_place_index_tIXT_EEDpOT0_ called 0 returned 0% blocks executed 0%
+    #####: 1471:	variant(in_place_index_t<_Np>, _Args&&... __args)
+        -: 1472:	: _Base(in_place_index<_Np>, std::forward<_Args>(__args)...),
+    #####: 1473:	_Default_ctor_enabler(_Enable_default_constructor_tag{})
+call    0 never executed
+call    1 never executed
+call    2 never executed
+    #####: 1474:	{ }
+------------------
+_ZNSt7variantIJN7minitun7storage17ServerActualStateENS0_6common5ErrorEEEC2ILm1EJS4_ES4_vEESt16in_place_index_tIXT_EEDpOT0_:
+function _ZNSt7variantIJN7minitun7storage17ServerActualStateENS0_6common5ErrorEEEC2ILm1EJS4_ES4_vEESt16in_place_index_tIXT_EEDpOT0_ called 0 returned 0% blocks executed 0%
+    #####: 1471:	variant(in_place_index_t<_Np>, _Args&&... __args)
+        -: 1472:	: _Base(in_place_index<_Np>, std::forward<_Args>(__args)...),
+    #####: 1473:	_Default_ctor_enabler(_Enable_default_constructor_tag{})
+call    0 never executed
+call    1 never executed
+call    2 never executed
+    #####: 1474:	{ }
+------------------
+_ZNSt7variantIJN7minitun7storage18ServerDesiredStateENS0_6common5ErrorEEEC2ILm1EJS4_ES4_vEESt16in_place_index_tIXT_EEDpOT0_:
+function _ZNSt7variantIJN7minitun7storage18ServerDesiredStateENS0_6common5ErrorEEEC2ILm1EJS4_ES4_vEESt16in_place_index_tIXT_EEDpOT0_ called 0 returned 0% blocks executed 0%
+    #####: 1471:	variant(in_place_index_t<_Np>, _Args&&... __args)
+        -: 1472:	: _Base(in_place_index<_Np>, std::forward<_Args>(__args)...),
+    #####: 1473:	_Default_ctor_enabler(_Enable_default_constructor_tag{})
+call    0 never executed
+call    1 never executed
+call    2 never executed
+    #####: 1474:	{ }
+------------------
+_ZNSt7variantIJN7minitun7storage14TunnelProtocolENS0_6common5ErrorEEEC2ILm1EJS4_ES4_vEESt16in_place_index_tIXT_EEDpOT0_:
+function _ZNSt7variantIJN7minitun7storage14TunnelProtocolENS0_6common5ErrorEEEC2ILm1EJS4_ES4_vEESt16in_place_index_tIXT_EEDpOT0_ called 0 returned 0% blocks executed 0%
+    #####: 1471:	variant(in_place_index_t<_Np>, _Args&&... __args)
+        -: 1472:	: _Base(in_place_index<_Np>, std::forward<_Args>(__args)...),
+    #####: 1473:	_Default_ctor_enabler(_Enable_default_constructor_tag{})
+call    0 never executed
+call    1 never executed
+call    2 never executed
+    #####: 1474:	{ }
+------------------
+_ZNSt7variantIJN7minitun7storage17TunnelActualStateENS0_6common5ErrorEEEC2ILm0EJRKS2_ES2_vEESt16in_place_index_tIXT_EEDpOT0_:
+function _ZNSt7variantIJN7minitun7storage17TunnelActualStateENS0_6common5ErrorEEEC2ILm0EJRKS2_ES2_vEESt16in_place_index_tIXT_EEDpOT0_ called 0 returned 0% blocks executed 0%
+    #####: 1471:	variant(in_place_index_t<_Np>, _Args&&... __args)
+        -: 1472:	: _Base(in_place_index<_Np>, std::forward<_Args>(__args)...),
+    #####: 1473:	_Default_ctor_enabler(_Enable_default_constructor_tag{})
+call    0 never executed
+call    1 never executed
+call    2 never executed
+    #####: 1474:	{ }
+------------------
+_ZNSt7variantIJN7minitun7storage18TunnelDesiredStateENS0_6common5ErrorEEEC2ILm0EJRKS2_ES2_vEESt16in_place_index_tIXT_EEDpOT0_:
+function _ZNSt7variantIJN7minitun7storage18TunnelDesiredStateENS0_6common5ErrorEEEC2ILm0EJRKS2_ES2_vEESt16in_place_index_tIXT_EEDpOT0_ called 0 returned 0% blocks executed 0%
+    #####: 1471:	variant(in_place_index_t<_Np>, _Args&&... __args)
+        -: 1472:	: _Base(in_place_index<_Np>, std::forward<_Args>(__args)...),
+    #####: 1473:	_Default_ctor_enabler(_Enable_default_constructor_tag{})
+call    0 never executed
+call    1 never executed
+call    2 never executed
+    #####: 1474:	{ }
+------------------
+_ZNSt7variantIJN7minitun7storage17ServerActualStateENS0_6common5ErrorEEEC2ILm0EJRKS2_ES2_vEESt16in_place_index_tIXT_EEDpOT0_:
+function _ZNSt7variantIJN7minitun7storage17ServerActualStateENS0_6common5ErrorEEEC2ILm0EJRKS2_ES2_vEESt16in_place_index_tIXT_EEDpOT0_ called 0 returned 0% blocks executed 0%
+    #####: 1471:	variant(in_place_index_t<_Np>, _Args&&... __args)
+        -: 1472:	: _Base(in_place_index<_Np>, std::forward<_Args>(__args)...),
+    #####: 1473:	_Default_ctor_enabler(_Enable_default_constructor_tag{})
+call    0 never executed
+call    1 never executed
+call    2 never executed
+    #####: 1474:	{ }
+------------------
+_ZNSt7variantIJN7minitun7storage18ServerDesiredStateENS0_6common5ErrorEEEC2ILm0EJRKS2_ES2_vEESt16in_place_index_tIXT_EEDpOT0_:
+function _ZNSt7variantIJN7minitun7storage18ServerDesiredStateENS0_6common5ErrorEEEC2ILm0EJRKS2_ES2_vEESt16in_place_index_tIXT_EEDpOT0_ called 0 returned 0% blocks executed 0%
+    #####: 1471:	variant(in_place_index_t<_Np>, _Args&&... __args)
+        -: 1472:	: _Base(in_place_index<_Np>, std::forward<_Args>(__args)...),
+    #####: 1473:	_Default_ctor_enabler(_Enable_default_constructor_tag{})
+call    0 never executed
+call    1 never executed
+call    2 never executed
+    #####: 1474:	{ }
+------------------
+_ZNSt7variantIJN7minitun7storage14TunnelProtocolENS0_6common5ErrorEEEC2ILm0EJRKS2_ES2_vEESt16in_place_index_tIXT_EEDpOT0_:
+function _ZNSt7variantIJN7minitun7storage14TunnelProtocolENS0_6common5ErrorEEEC2ILm0EJRKS2_ES2_vEESt16in_place_index_tIXT_EEDpOT0_ called 0 returned 0% blocks executed 0%
+    #####: 1471:	variant(in_place_index_t<_Np>, _Args&&... __args)
+        -: 1472:	: _Base(in_place_index<_Np>, std::forward<_Args>(__args)...),
+    #####: 1473:	_Default_ctor_enabler(_Enable_default_constructor_tag{})
+call    0 never executed
+call    1 never executed
+call    2 never executed
+    #####: 1474:	{ }
+------------------
+        -: 1475:
+        -: 1476:      template<size_t _Np, typename _Up, typename... _Args,
+        -: 1477:	       typename _Tp = __to_type<_Np>,
+        -: 1478:	       typename = enable_if_t<is_constructible_v<_Tp,
+        -: 1479:							 initializer_list<_Up>&,
+        -: 1480:							 _Args...>>>
+        -: 1481:	constexpr explicit
+        -: 1482:	variant(in_place_index_t<_Np>, initializer_list<_Up> __il,
+        -: 1483:		_Args&&... __args)
+        -: 1484:	: _Base(in_place_index<_Np>, __il, std::forward<_Args>(__args)...),
+        -: 1485:	_Default_ctor_enabler(_Enable_default_constructor_tag{})
+        -: 1486:	{ }
+        -: 1487:
+        -: 1488:      template<typename _Tp>
+        -: 1489:	_GLIBCXX20_CONSTEXPR
+        -: 1490:	enable_if_t<__exactly_once<__accepted_type<_Tp&&>>
+        -: 1491:		    && is_constructible_v<__accepted_type<_Tp&&>, _Tp>
+        -: 1492:		    && is_assignable_v<__accepted_type<_Tp&&>&, _Tp>,
+        -: 1493:		    variant&>
+        -: 1494:	operator=(_Tp&& __rhs)
+        -: 1495:	noexcept(is_nothrow_assignable_v<__accepted_type<_Tp&&>&, _Tp>
+        -: 1496:		 && is_nothrow_constructible_v<__accepted_type<_Tp&&>, _Tp>)
+        -: 1497:	{
+        -: 1498:	  constexpr auto __index = __accepted_index<_Tp>;
+        -: 1499:	  if (index() == __index)
+        -: 1500:	    std::get<__index>(*this) = std::forward<_Tp>(__rhs);
+        -: 1501:	  else
+        -: 1502:	    {
+        -: 1503:	      using _Tj = __accepted_type<_Tp&&>;
+        -: 1504:	      if constexpr (is_nothrow_constructible_v<_Tj, _Tp>
+        -: 1505:			    || !is_nothrow_move_constructible_v<_Tj>)
+        -: 1506:		this->emplace<__index>(std::forward<_Tp>(__rhs));
+        -: 1507:	      else
+        -: 1508:		// _GLIBCXX_RESOLVE_LIB_DEFECTS
+        -: 1509:		// 3585. converting assignment with immovable alternative
+        -: 1510:		this->emplace<__index>(_Tj(std::forward<_Tp>(__rhs)));
+        -: 1511:	    }
+        -: 1512:	  return *this;
+        -: 1513:	}
+        -: 1514:
+        -: 1515:      template<typename _Tp, typename... _Args>
+        -: 1516:	_GLIBCXX20_CONSTEXPR
+        -: 1517:	enable_if_t<is_constructible_v<_Tp, _Args...> && __exactly_once<_Tp>,
+        -: 1518:		    _Tp&>
+        -: 1519:	emplace(_Args&&... __args)
+        -: 1520:	{
+        -: 1521:	  constexpr size_t __index = __index_of<_Tp>;
+        -: 1522:	  return this->emplace<__index>(std::forward<_Args>(__args)...);
+        -: 1523:	}
+        -: 1524:
+        -: 1525:      template<typename _Tp, typename _Up, typename... _Args>
+        -: 1526:	_GLIBCXX20_CONSTEXPR
+        -: 1527:	enable_if_t<is_constructible_v<_Tp, initializer_list<_Up>&, _Args...>
+        -: 1528:		    && __exactly_once<_Tp>,
+        -: 1529:		    _Tp&>
+        -: 1530:	emplace(initializer_list<_Up> __il, _Args&&... __args)
+        -: 1531:	{
+        -: 1532:	  constexpr size_t __index = __index_of<_Tp>;
+        -: 1533:	  return this->emplace<__index>(__il, std::forward<_Args>(__args)...);
+        -: 1534:	}
+        -: 1535:
+        -: 1536:      template<size_t _Np, typename... _Args>
+        -: 1537:	_GLIBCXX20_CONSTEXPR
+        -: 1538:	enable_if_t<is_constructible_v<__to_type<_Np>, _Args...>,
+        -: 1539:		    __to_type<_Np>&>
+        -: 1540:	emplace(_Args&&... __args)
+        -: 1541:	{
+        -: 1542:	  namespace __variant = std::__detail::__variant;
+        -: 1543:	  using type = typename _Nth_type<_Np, _Types...>::type;
+        -: 1544:	  // Provide the strong exception-safety guarantee when possible,
+        -: 1545:	  // to avoid becoming valueless.
+        -: 1546:	  if constexpr (is_nothrow_constructible_v<type, _Args...>)
+        -: 1547:	    {
+        -: 1548:	      __variant::__emplace<_Np>(*this, std::forward<_Args>(__args)...);
+        -: 1549:	    }
+        -: 1550:	  else if constexpr (is_scalar_v<type>)
+        -: 1551:	    {
+        -: 1552:	      // This might invoke a potentially-throwing conversion operator:
+        -: 1553:	      const type __tmp(std::forward<_Args>(__args)...);
+        -: 1554:	      // But this won't throw:
+        -: 1555:	      __variant::__emplace<_Np>(*this, __tmp);
+        -: 1556:	    }
+        -: 1557:	  else if constexpr (__variant::_Never_valueless_alt<type>()
+        -: 1558:	      && _Traits::_S_move_assign)
+        -: 1559:	    {
+        -: 1560:	      // This construction might throw:
+        -: 1561:	      variant __tmp(in_place_index<_Np>,
+        -: 1562:			    std::forward<_Args>(__args)...);
+        -: 1563:	      // But _Never_valueless_alt<type> means this won't:
+        -: 1564:	      *this = std::move(__tmp);
+        -: 1565:	    }
+        -: 1566:	  else
+        -: 1567:	    {
+        -: 1568:	      // This case only provides the basic exception-safety guarantee,
+        -: 1569:	      // i.e. the variant can become valueless.
+        -: 1570:	      __variant::__emplace<_Np>(*this, std::forward<_Args>(__args)...);
+        -: 1571:	    }
+        -: 1572:	  return std::get<_Np>(*this);
+        -: 1573:	}
+        -: 1574:
+        -: 1575:      template<size_t _Np, typename _Up, typename... _Args>
+        -: 1576:	_GLIBCXX20_CONSTEXPR
+        -: 1577:	enable_if_t<is_constructible_v<__to_type<_Np>,
+        -: 1578:				       initializer_list<_Up>&, _Args...>,
+        -: 1579:		    __to_type<_Np>&>
+        -: 1580:	emplace(initializer_list<_Up> __il, _Args&&... __args)
+        -: 1581:	{
+        -: 1582:	  namespace __variant = std::__detail::__variant;
+        -: 1583:	  using type = typename _Nth_type<_Np, _Types...>::type;
+        -: 1584:	  // Provide the strong exception-safety guarantee when possible,
+        -: 1585:	  // to avoid becoming valueless.
+        -: 1586:	  if constexpr (is_nothrow_constructible_v<type,
+        -: 1587:						   initializer_list<_Up>&,
+        -: 1588:						   _Args...>)
+        -: 1589:	    {
+        -: 1590:	      __variant::__emplace<_Np>(*this, __il,
+        -: 1591:					std::forward<_Args>(__args)...);
+        -: 1592:	    }
+        -: 1593:	  else if constexpr (__variant::_Never_valueless_alt<type>()
+        -: 1594:	      && _Traits::_S_move_assign)
+        -: 1595:	    {
+        -: 1596:	      // This construction might throw:
+        -: 1597:	      variant __tmp(in_place_index<_Np>, __il,
+        -: 1598:			    std::forward<_Args>(__args)...);
+        -: 1599:	      // But _Never_valueless_alt<type> means this won't:
+        -: 1600:	      *this = std::move(__tmp);
+        -: 1601:	    }
+        -: 1602:	  else
+        -: 1603:	    {
+        -: 1604:	      // This case only provides the basic exception-safety guarantee,
+        -: 1605:	      // i.e. the variant can become valueless.
+        -: 1606:	      __variant::__emplace<_Np>(*this, __il,
+        -: 1607:					std::forward<_Args>(__args)...);
+        -: 1608:	    }
+        -: 1609:	  return std::get<_Np>(*this);
+        -: 1610:	}
+        -: 1611:
+        -: 1612:      template<size_t _Np, typename... _Args>
+        -: 1613:	enable_if_t<!(_Np < sizeof...(_Types))> emplace(_Args&&...) = delete;
+        -: 1614:
+        -: 1615:      template<typename _Tp, typename... _Args>
+        -: 1616:	enable_if_t<!__exactly_once<_Tp>> emplace(_Args&&...) = delete;
+        -: 1617:
+        -: 1618:      constexpr bool valueless_by_exception() const noexcept
+        -: 1619:      { return !this->_M_valid(); }
+        -: 1620:
+        -: 1621:      constexpr size_t index() const noexcept
+        -: 1622:      {
+        -: 1623:	using __index_type = typename _Base::__index_type;
+        -: 1624:	if constexpr (__detail::__variant::__never_valueless<_Types...>())
+        -: 1625:	  return this->_M_index;
+        -: 1626:	else if constexpr (sizeof...(_Types) <= __index_type(-1) / 2)
+        -: 1627:	  return make_signed_t<__index_type>(this->_M_index);
+        -: 1628:	else
+        -: 1629:	  return size_t(__index_type(this->_M_index + 1)) - 1;
+        -: 1630:      }
+        -: 1631:
+        -: 1632:      _GLIBCXX20_CONSTEXPR
+        -: 1633:      void
+        -: 1634:      swap(variant& __rhs)
+        -: 1635:      noexcept((__is_nothrow_swappable<_Types>::value && ...)
+        -: 1636:	       && is_nothrow_move_constructible_v<variant>)
+        -: 1637:      {
+        -: 1638:	static_assert((is_move_constructible_v<_Types> && ...));
+        -: 1639:
+        -: 1640:	// Handle this here to simplify the visitation.
+        -: 1641:	if (__rhs.valueless_by_exception()) [[__unlikely__]]
+        -: 1642:	  {
+        -: 1643:	    if (!this->valueless_by_exception()) [[__likely__]]
+        -: 1644:	      __rhs.swap(*this);
+        -: 1645:	    return;
+        -: 1646:	  }
+        -: 1647:
+        -: 1648:	namespace __variant = __detail::__variant;
+        -: 1649:
+        -: 1650:	__variant::__raw_idx_visit(
+        -: 1651:	  [this, &__rhs](auto&& __rhs_mem, auto __rhs_index) mutable
+        -: 1652:	  {
+        -: 1653:	    constexpr size_t __j = __rhs_index;
+        -: 1654:	    if constexpr (__j != variant_npos)
+        -: 1655:	      {
+        -: 1656:		if (this->index() == __j)
+        -: 1657:		  {
+        -: 1658:		    using std::swap;
+        -: 1659:		    swap(std::get<__j>(*this), __rhs_mem);
+        -: 1660:		  }
+        -: 1661:		else
+        -: 1662:		  {
+        -: 1663:		    auto __tmp(std::move(__rhs_mem));
+        -: 1664:
+        -: 1665:		    if constexpr (_Traits::_S_trivial_move_assign)
+        -: 1666:		      __rhs = std::move(*this);
+        -: 1667:		    else
+        -: 1668:		      __variant::__raw_idx_visit(
+        -: 1669:			[&__rhs](auto&& __this_mem, auto __this_index) mutable
+        -: 1670:			{
+        -: 1671:			  constexpr size_t __k = __this_index;
+        -: 1672:			  if constexpr (__k != variant_npos)
+        -: 1673:			    __variant::__emplace<__k>(__rhs,
+        -: 1674:						      std::move(__this_mem));
+        -: 1675:			}, *this);
+        -: 1676:
+        -: 1677:		    __variant::__emplace<__j>(*this, std::move(__tmp));
+        -: 1678:		  }
+        -: 1679:	      }
+        -: 1680:	  }, __rhs);
+        -: 1681:      }
+        -: 1682:
+        -: 1683:#if defined(__clang__) && __clang_major__ <= 7
+        -: 1684:    public:
+        -: 1685:      using _Base::_M_u; // See https://bugs.llvm.org/show_bug.cgi?id=31852
+        -: 1686:#endif
+        -: 1687:
+        -: 1688:    private:
+        -: 1689:      template<size_t _Np, typename _Vp>
+        -: 1690:	friend constexpr decltype(auto)
+        -: 1691:	__detail::__variant::__get(_Vp&& __v) noexcept;
+        -: 1692:
+        -: 1693:#define _VARIANT_RELATION_FUNCTION_TEMPLATE(__OP) \
+        -: 1694:      template<typename... _Tp> \
+        -: 1695:	friend constexpr bool \
+        -: 1696:	operator __OP(const variant<_Tp...>& __lhs, \
+        -: 1697:		      const variant<_Tp...>& __rhs);
+        -: 1698:
+        -: 1699:      _VARIANT_RELATION_FUNCTION_TEMPLATE(<)
+        -: 1700:      _VARIANT_RELATION_FUNCTION_TEMPLATE(<=)
+        -: 1701:      _VARIANT_RELATION_FUNCTION_TEMPLATE(==)
+        -: 1702:      _VARIANT_RELATION_FUNCTION_TEMPLATE(!=)
+        -: 1703:      _VARIANT_RELATION_FUNCTION_TEMPLATE(>=)
+        -: 1704:      _VARIANT_RELATION_FUNCTION_TEMPLATE(>)
+        -: 1705:
+        -: 1706:#undef _VARIANT_RELATION_FUNCTION_TEMPLATE
+        -: 1707:    };
+        -: 1708:
+        -: 1709:  template<size_t _Np, typename... _Types>
+        -: 1710:    constexpr variant_alternative_t<_Np, variant<_Types...>>&
+        -: 1711:    get(variant<_Types...>& __v)
+        -: 1712:    {
+        -: 1713:      static_assert(_Np < sizeof...(_Types),
+        -: 1714:		    "The index must be in [0, number of alternatives)");
+        -: 1715:      if (__v.index() != _Np)
+        -: 1716:	__throw_bad_variant_access(__v.valueless_by_exception());
+        -: 1717:      return __detail::__variant::__get<_Np>(__v);
+        -: 1718:    }
+        -: 1719:
+        -: 1720:  template<size_t _Np, typename... _Types>
+        -: 1721:    constexpr variant_alternative_t<_Np, variant<_Types...>>&&
+        -: 1722:    get(variant<_Types...>&& __v)
+        -: 1723:    {
+        -: 1724:      static_assert(_Np < sizeof...(_Types),
+        -: 1725:		    "The index must be in [0, number of alternatives)");
+        -: 1726:      if (__v.index() != _Np)
+        -: 1727:	__throw_bad_variant_access(__v.valueless_by_exception());
+        -: 1728:      return __detail::__variant::__get<_Np>(std::move(__v));
+        -: 1729:    }
+        -: 1730:
+        -: 1731:  template<size_t _Np, typename... _Types>
+        -: 1732:    constexpr const variant_alternative_t<_Np, variant<_Types...>>&
+        -: 1733:    get(const variant<_Types...>& __v)
+        -: 1734:    {
+        -: 1735:      static_assert(_Np < sizeof...(_Types),
+        -: 1736:		    "The index must be in [0, number of alternatives)");
+        -: 1737:      if (__v.index() != _Np)
+        -: 1738:	__throw_bad_variant_access(__v.valueless_by_exception());
+        -: 1739:      return __detail::__variant::__get<_Np>(__v);
+        -: 1740:    }
+        -: 1741:
+        -: 1742:  template<size_t _Np, typename... _Types>
+        -: 1743:    constexpr const variant_alternative_t<_Np, variant<_Types...>>&&
+        -: 1744:    get(const variant<_Types...>&& __v)
+        -: 1745:    {
+        -: 1746:      static_assert(_Np < sizeof...(_Types),
+        -: 1747:		    "The index must be in [0, number of alternatives)");
+        -: 1748:      if (__v.index() != _Np)
+        -: 1749:	__throw_bad_variant_access(__v.valueless_by_exception());
+        -: 1750:      return __detail::__variant::__get<_Np>(std::move(__v));
+        -: 1751:    }
+        -: 1752:
+        -: 1753:  /// @cond undocumented
+        -: 1754:  template<typename _Result_type, typename _Visitor, typename... _Variants>
+        -: 1755:    constexpr decltype(auto)
+        -: 1756:    __do_visit(_Visitor&& __visitor, _Variants&&... __variants)
+        -: 1757:    {
+        -: 1758:      // Get the silly case of visiting no variants out of the way first.
+        -: 1759:      if constexpr (sizeof...(_Variants) == 0)
+        -: 1760:	{
+        -: 1761:	  if constexpr (is_void_v<_Result_type>)
+        -: 1762:	    return (void) std::forward<_Visitor>(__visitor)();
+        -: 1763:	  else
+        -: 1764:	    return std::forward<_Visitor>(__visitor)();
+        -: 1765:	}
+        -: 1766:      else
+        -: 1767:	{
+        -: 1768:	  constexpr size_t __max = 11; // "These go to eleven."
+        -: 1769:
+        -: 1770:	  // The type of the first variant in the pack.
+        -: 1771:	  using _V0 = typename _Nth_type<0, _Variants...>::type;
+        -: 1772:	  // The number of alternatives in that first variant.
+        -: 1773:	  constexpr auto __n = variant_size_v<remove_reference_t<_V0>>;
+        -: 1774:
+        -: 1775:	  if constexpr (sizeof...(_Variants) > 1 || __n > __max)
+        -: 1776:	    {
+        -: 1777:	      // Use a jump table for the general case.
+        -: 1778:	      constexpr auto& __vtable = __detail::__variant::__gen_vtable<
+        -: 1779:		_Result_type, _Visitor&&, _Variants&&...>::_S_vtable;
+        -: 1780:
+        -: 1781:	      auto __func_ptr = __vtable._M_access(__variants.index()...);
+        -: 1782:	      return (*__func_ptr)(std::forward<_Visitor>(__visitor),
+        -: 1783:				   std::forward<_Variants>(__variants)...);
+        -: 1784:	    }
+        -: 1785:	  else // We have a single variant with a small number of alternatives.
+        -: 1786:	    {
+        -: 1787:	      // A name for the first variant in the pack.
+        -: 1788:	      _V0& __v0
+        -: 1789:		= [](_V0& __v, ...) -> _V0& { return __v; }(__variants...);
+        -: 1790:
+        -: 1791:	      using __detail::__variant::_Multi_array;
+        -: 1792:	      using __detail::__variant::__gen_vtable_impl;
+        -: 1793:	      using _Ma = _Multi_array<_Result_type (*)(_Visitor&&, _V0&&)>;
+        -: 1794:
+        -: 1795:#ifdef _GLIBCXX_DEBUG
+        -: 1796:# define _GLIBCXX_VISIT_UNREACHABLE __builtin_trap
+        -: 1797:#else
+        -: 1798:# define _GLIBCXX_VISIT_UNREACHABLE __builtin_unreachable
+        -: 1799:#endif
+        -: 1800:
+        -: 1801:#define _GLIBCXX_VISIT_CASE(N)						\
+        -: 1802:  case N:								\
+        -: 1803:  {									\
+        -: 1804:    if constexpr (N < __n)						\
+        -: 1805:      {									\
+        -: 1806:	return __gen_vtable_impl<_Ma, index_sequence<N>>::		\
+        -: 1807:	  __visit_invoke(std::forward<_Visitor>(__visitor),		\
+        -: 1808:			 std::forward<_V0>(__v0));		\
+        -: 1809:      }									\
+        -: 1810:    else _GLIBCXX_VISIT_UNREACHABLE();					\
+        -: 1811:  }
+        -: 1812:
+        -: 1813:	      switch (__v0.index())
+        -: 1814:		{
+        -: 1815:		  _GLIBCXX_VISIT_CASE(0)
+        -: 1816:		  _GLIBCXX_VISIT_CASE(1)
+        -: 1817:		  _GLIBCXX_VISIT_CASE(2)
+        -: 1818:		  _GLIBCXX_VISIT_CASE(3)
+        -: 1819:		  _GLIBCXX_VISIT_CASE(4)
+        -: 1820:		  _GLIBCXX_VISIT_CASE(5)
+        -: 1821:		  _GLIBCXX_VISIT_CASE(6)
+        -: 1822:		  _GLIBCXX_VISIT_CASE(7)
+        -: 1823:		  _GLIBCXX_VISIT_CASE(8)
+        -: 1824:		  _GLIBCXX_VISIT_CASE(9)
+        -: 1825:		  _GLIBCXX_VISIT_CASE(10)
+        -: 1826:		case variant_npos:
+        -: 1827:		  using __detail::__variant::__variant_idx_cookie;
+        -: 1828:		  using __detail::__variant::__variant_cookie;
+        -: 1829:		  if constexpr (is_same_v<_Result_type, __variant_idx_cookie>
+        -: 1830:				|| is_same_v<_Result_type, __variant_cookie>)
+        -: 1831:		    {
+        -: 1832:		      using _Npos = index_sequence<variant_npos>;
+        -: 1833:		      return __gen_vtable_impl<_Ma, _Npos>::
+        -: 1834:			__visit_invoke(std::forward<_Visitor>(__visitor),
+        -: 1835:				       std::forward<_V0>(__v0));
+        -: 1836:		    }
+        -: 1837:		  else
+        -: 1838:		    _GLIBCXX_VISIT_UNREACHABLE();
+        -: 1839:		default:
+        -: 1840:		  _GLIBCXX_VISIT_UNREACHABLE();
+        -: 1841:		}
+        -: 1842:#undef _GLIBCXX_VISIT_CASE
+        -: 1843:#undef _GLIBCXX_VISIT_UNREACHABLE
+        -: 1844:	    }
+        -: 1845:	}
+        -: 1846:    }
+        -: 1847:  /// @endcond
+        -: 1848:
+        -: 1849:  template<typename _Visitor, typename... _Variants>
+        -: 1850:    constexpr __detail::__variant::__visit_result_t<_Visitor, _Variants...>
+        -: 1851:    visit(_Visitor&& __visitor, _Variants&&... __variants)
+        -: 1852:    {
+        -: 1853:      namespace __variant = std::__detail::__variant;
+        -: 1854:
+        -: 1855:      if ((__variant::__as(__variants).valueless_by_exception() || ...))
+        -: 1856:	__throw_bad_variant_access("std::visit: variant is valueless");
+        -: 1857:
+        -: 1858:      using _Result_type
+        -: 1859:	= __detail::__variant::__visit_result_t<_Visitor, _Variants...>;
+        -: 1860:
+        -: 1861:      using _Tag = __detail::__variant::__deduce_visit_result<_Result_type>;
+        -: 1862:
+        -: 1863:      if constexpr (sizeof...(_Variants) == 1)
+        -: 1864:	{
+        -: 1865:	  using _Vp = decltype(__variant::__as(std::declval<_Variants>()...));
+        -: 1866:
+        -: 1867:	  constexpr bool __visit_rettypes_match = __detail::__variant::
+        -: 1868:	    __check_visitor_results<_Visitor, _Vp>(
+        -: 1869:	      make_index_sequence<variant_size_v<remove_reference_t<_Vp>>>());
+        -: 1870:	  if constexpr (!__visit_rettypes_match)
+        -: 1871:	    {
+        -: 1872:	      static_assert(__visit_rettypes_match,
+        -: 1873:			  "std::visit requires the visitor to have the same "
+        -: 1874:			  "return type for all alternatives of a variant");
+        -: 1875:	      return;
+        -: 1876:	    }
+        -: 1877:	  else
+        -: 1878:	    return std::__do_visit<_Tag>(
+        -: 1879:	      std::forward<_Visitor>(__visitor),
+        -: 1880:	      static_cast<_Vp>(__variants)...);
+        -: 1881:	}
+        -: 1882:      else
+        -: 1883:	return std::__do_visit<_Tag>(
+        -: 1884:	  std::forward<_Visitor>(__visitor),
+        -: 1885:	  __variant::__as(std::forward<_Variants>(__variants))...);
+        -: 1886:    }
+        -: 1887:
+        -: 1888:#if __cplusplus > 201703L
+        -: 1889:  template<typename _Res, typename _Visitor, typename... _Variants>
+        -: 1890:    constexpr _Res
+        -: 1891:    visit(_Visitor&& __visitor, _Variants&&... __variants)
+        -: 1892:    {
+        -: 1893:      namespace __variant = std::__detail::__variant;
+        -: 1894:
+        -: 1895:      if ((__variant::__as(__variants).valueless_by_exception() || ...))
+        -: 1896:	__throw_bad_variant_access("std::visit<R>: variant is valueless");
+        -: 1897:
+        -: 1898:      return std::__do_visit<_Res>(std::forward<_Visitor>(__visitor),
+        -: 1899:	  __variant::__as(std::forward<_Variants>(__variants))...);
+        -: 1900:    }
+        -: 1901:#endif
+        -: 1902:
+        -: 1903:  /// @cond undocumented
+        -: 1904:  template<bool, typename... _Types>
+        -: 1905:    struct __variant_hash_call_base_impl
+        -: 1906:    {
+        -: 1907:      size_t
+        -: 1908:      operator()(const variant<_Types...>& __t) const
+        -: 1909:      noexcept((is_nothrow_invocable_v<hash<decay_t<_Types>>, _Types> && ...))
+        -: 1910:      {
+        -: 1911:	size_t __ret;
+        -: 1912:	__detail::__variant::__raw_visit(
+        -: 1913:	  [&__t, &__ret](auto&& __t_mem) mutable
+        -: 1914:	  {
+        -: 1915:	    using _Type = __remove_cvref_t<decltype(__t_mem)>;
+        -: 1916:	    if constexpr (!is_same_v<_Type,
+        -: 1917:			             __detail::__variant::__variant_cookie>)
+        -: 1918:	      __ret = std::hash<size_t>{}(__t.index())
+        -: 1919:		      + std::hash<_Type>{}(__t_mem);
+        -: 1920:	    else
+        -: 1921:	      __ret = std::hash<size_t>{}(__t.index());
+        -: 1922:	  }, __t);
+        -: 1923:	return __ret;
+        -: 1924:      }
+        -: 1925:    };
+        -: 1926:
+        -: 1927:  template<typename... _Types>
+        -: 1928:    struct __variant_hash_call_base_impl<false, _Types...> {};
+        -: 1929:
+        -: 1930:  template<typename... _Types>
+        -: 1931:    using __variant_hash_call_base =
+        -: 1932:    __variant_hash_call_base_impl<(__poison_hash<remove_const_t<_Types>>::
+        -: 1933:				   __enable_hash_call &&...), _Types...>;
+        -: 1934:  /// @endcond
+        -: 1935:
+        -: 1936:  template<typename... _Types>
+        -: 1937:    struct hash<variant<_Types...>>
+        -: 1938:    : private __detail::__variant::_Variant_hash_base<
+        -: 1939:	variant<_Types...>, std::index_sequence_for<_Types...>>,
+        -: 1940:      public __variant_hash_call_base<_Types...>
+        -: 1941:    {
+        -: 1942:      using result_type [[__deprecated__]] = size_t;
+        -: 1943:      using argument_type [[__deprecated__]] = variant<_Types...>;
+        -: 1944:    };
+        -: 1945:
+        -: 1946:  template<>
+        -: 1947:    struct hash<monostate>
+        -: 1948:    {
+        -: 1949:      using result_type [[__deprecated__]] = size_t;
+        -: 1950:      using argument_type [[__deprecated__]] = monostate;
+        -: 1951:
+        -: 1952:      size_t
+        -: 1953:      operator()(const monostate&) const noexcept
+        -: 1954:      {
+        -: 1955:	constexpr size_t __magic_monostate_hash = -7777;
+        -: 1956:	return __magic_monostate_hash;
+        -: 1957:      }
+        -: 1958:    };
+        -: 1959:
+        -: 1960:  template<typename... _Types>
+        -: 1961:    struct __is_fast_hash<hash<variant<_Types...>>>
+        -: 1962:    : bool_constant<(__is_fast_hash<_Types>::value && ...)>
+        -: 1963:    { };
+        -: 1964:
+        -: 1965:_GLIBCXX_END_NAMESPACE_VERSION
+        -: 1966:} // namespace std
+        -: 1967:
+        -: 1968:#endif // C++17
+        -: 1969:
+        -: 1970:#endif // _GLIBCXX_VARIANT

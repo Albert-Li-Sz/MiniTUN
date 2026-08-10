@@ -1875,5 +1875,123 @@ TEST_F(DaemonControlServiceTest, DatabaseStepFailuresRollBackEveryLifecycleMutat
     EXPECT_EQ(notifications_.load(std::memory_order_relaxed), notifications_before + 4U);
 }
 
+TEST_F(DaemonControlServiceTest, MoreDatabaseStepFailuresRollBackEveryLifecycleMutation) {
+    const auto notifications_before = notifications_.load(std::memory_order_relaxed);
+    const auto added =
+        dispatch(dispatcher_, "server.add",
+                 ipc::Json{{"endpoint", "more.example.com:2333"}, {"name", "more"}});
+    ASSERT_TRUE(added.ok()) << *added.error();
+    const std::string server_id = require_result(added).at("server").at("id").get<std::string>();
+    ASSERT_TRUE(dispatch(dispatcher_, "server.login",
+                         ipc::Json{{"identifier", server_id}, {"psk", "first-secret"}})
+                    .ok());
+    const auto tunnel_added =
+        dispatch(dispatcher_, "tun.add",
+                 ipc::Json{{"server", server_id},
+                           {"name", "more-tunnel"},
+                           {"local_port", 22},
+                           {"remote_port", 6'400}});
+    ASSERT_TRUE(tunnel_added.ok()) << *tunnel_added.error();
+    const std::string tunnel_id =
+        require_result(tunnel_added).at("tunnel").at("id").get<std::string>();
+    EXPECT_EQ(notifications_.load(std::memory_order_relaxed), notifications_before + 3U);
+    ASSERT_TRUE(dispatch(dispatcher_, "server.disable",
+                         ipc::Json{{"identifier", server_id}})
+                    .ok());
+    ASSERT_TRUE(dispatch(dispatcher_, "tun.disable",
+                         ipc::Json{{"identifier", tunnel_id}})
+                    .ok());
+    EXPECT_EQ(notifications_.load(std::memory_order_relaxed), notifications_before + 5U);
+
+    {
+        NativeSqliteDatabase native{state_file_.path()};
+        native.execute("CREATE TRIGGER reject_enable BEFORE UPDATE ON servers BEGIN "
+                       "SELECT RAISE(ABORT, 'injected enable'); END");
+    }
+    expect_control_error(
+        dispatch(dispatcher_, "server.enable", ipc::Json{{"identifier", server_id}}));
+    EXPECT_EQ(notifications_.load(std::memory_order_relaxed), notifications_before + 5U);
+    {
+        NativeSqliteDatabase native{state_file_.path()};
+        native.execute("DROP TRIGGER reject_enable");
+        native.execute("CREATE TRIGGER reject_tunnel_enable BEFORE UPDATE ON tunnels BEGIN "
+                       "SELECT RAISE(ABORT, 'injected tunnel enable'); END");
+    }
+    expect_control_error(
+        dispatch(dispatcher_, "tun.enable", ipc::Json{{"identifier", tunnel_id}}));
+    EXPECT_EQ(notifications_.load(std::memory_order_relaxed), notifications_before + 5U);
+    {
+        NativeSqliteDatabase native{state_file_.path()};
+        native.execute("DROP TRIGGER reject_tunnel_enable");
+    }
+
+    {
+        NativeSqliteDatabase native{credential_file_.path()};
+        native.execute("CREATE TRIGGER reject_credential_put BEFORE INSERT ON credentials BEGIN "
+                       "SELECT RAISE(ABORT, 'injected credential put'); END");
+    }
+    expect_control_error(dispatch(dispatcher_, "server.login",
+                                  ipc::Json{{"identifier", server_id}, {"psk", "second-secret"}}));
+    EXPECT_EQ(notifications_.load(std::memory_order_relaxed), notifications_before + 5U);
+    {
+        NativeSqliteDatabase native{credential_file_.path()};
+        native.execute("DROP TRIGGER reject_credential_put");
+    }
+
+    {
+        NativeSqliteDatabase native{state_file_.path()};
+        native.execute("CREATE TRIGGER reject_transport_update BEFORE UPDATE ON servers BEGIN "
+                       "SELECT RAISE(ABORT, 'injected transport update'); END");
+    }
+    expect_control_error(dispatch(dispatcher_, "server.update",
+                                  ipc::Json{{"identifier", server_id},
+                                            {"endpoint", "new-more.example.com:2444"}}));
+    EXPECT_EQ(notifications_.load(std::memory_order_relaxed), notifications_before + 5U);
+    {
+        NativeSqliteDatabase native{state_file_.path()};
+        native.execute("DROP TRIGGER reject_transport_update");
+    }
+
+    const auto ca_path = credential_file_.directory() / "more-ca.pem";
+    write_test_file(ca_path, "not a real CA\n");
+    expect_control_error(dispatch(dispatcher_, "server.update",
+                                  ipc::Json{{"identifier", server_id},
+                                            {"ca_certificate", ca_path.string()}}),
+                         common::ErrorCode::tls_error);
+    EXPECT_EQ(notifications_.load(std::memory_order_relaxed), notifications_before + 5U);
+
+    const auto update_path = state_file_.directory() / "apply-more-update.json";
+    write_test_file(update_path,
+                    R"json({"format_version":1,"servers":[{"name":"more","endpoint":"applied-more.example.com:2333"}],"tunnels":[]})json");
+    {
+        NativeSqliteDatabase native{state_file_.path()};
+        native.execute("CREATE TRIGGER reject_apply_update BEFORE UPDATE ON servers BEGIN "
+                       "SELECT RAISE(ABORT, 'injected apply update'); END");
+    }
+    expect_control_error(
+        dispatch(dispatcher_, "config.apply", ipc::Json{{"path", update_path.string()}}));
+    EXPECT_EQ(notifications_.load(std::memory_order_relaxed), notifications_before + 5U);
+    {
+        NativeSqliteDatabase native{state_file_.path()};
+        native.execute("DROP TRIGGER reject_apply_update");
+    }
+
+    const auto tunnel_path = state_file_.directory() / "apply-more-tunnel.json";
+    write_test_file(tunnel_path,
+                    R"json({"format_version":1,"servers":[{"name":"more","endpoint":"more.example.com:2333"}],"tunnels":[{"name":"applied","server":"more","local_port":23,"remote_port":6401}]})json");
+    {
+        NativeSqliteDatabase native{state_file_.path()};
+        native.execute("CREATE TRIGGER reject_apply_tunnel BEFORE INSERT ON tunnels BEGIN "
+                       "SELECT RAISE(ABORT, 'injected apply tunnel'); END");
+    }
+    expect_control_error(
+        dispatch(dispatcher_, "config.apply", ipc::Json{{"path", tunnel_path.string()}}));
+    EXPECT_EQ(notifications_.load(std::memory_order_relaxed), notifications_before + 5U);
+    {
+        NativeSqliteDatabase native{state_file_.path()};
+        native.execute("DROP TRIGGER reject_apply_tunnel");
+    }
+}
+
 } // namespace
 } // namespace minitun::daemon

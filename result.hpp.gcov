@@ -1,0 +1,198 @@
+        -:    0:Source:/src/include/minitun/common/result.hpp
+        -:    0:Graph:build/coverage-fault/CMakeFiles/minitun_storage.dir/src/storage/models.cpp.gcno
+        -:    0:Data:build/coverage-fault/CMakeFiles/minitun_storage.dir/src/storage/models.cpp.gcda
+        -:    0:Runs:0
+        -:    1:#pragma once
+        -:    2:
+        -:    3:#include <optional>
+        -:    4:#include <stdexcept>
+        -:    5:#include <string>
+        -:    6:#include <type_traits>
+        -:    7:#include <utility>
+        -:    8:#include <variant>
+        -:    9:
+        -:   10:#include <minitun/common/error.hpp>
+        -:   11:
+        -:   12:namespace minitun::common {
+        -:   13:
+        -:   14:/// C++20-compatible expected-like value used at synchronous and asynchronous
+        -:   15:/// API boundaries.
+        -:   16:template <typename T> class [[nodiscard]] Result final {
+        -:   17:    static_assert(!std::is_reference_v<T>, "Result<T> does not support references");
+        -:   18:    static_assert(!std::is_void_v<T>, "Use the Result<void> specialization");
+        -:   19:    static_assert(!std::is_same_v<std::remove_cv_t<T>, Error>, "Result<Error> is ambiguous");
+        -:   20:
+        -:   21:  public:
+        -:   22:    using value_type = T;
+        -:   23:    using error_type = Error;
+        -:   24:
+    #####:   25:    Result(const T& value) : storage_(std::in_place_index<0>, value) {}
+------------------
+_ZN7minitun6common6ResultINS_7storage17TunnelActualStateEEC2ERKS3_:
+function _ZN7minitun6common6ResultINS_7storage17TunnelActualStateEEC2ERKS3_ called 0 returned 0% blocks executed 0%
+    #####:   25:    Result(const T& value) : storage_(std::in_place_index<0>, value) {}
+call    0 never executed
+------------------
+_ZN7minitun6common6ResultINS_7storage18TunnelDesiredStateEEC2ERKS3_:
+function _ZN7minitun6common6ResultINS_7storage18TunnelDesiredStateEEC2ERKS3_ called 0 returned 0% blocks executed 0%
+    #####:   25:    Result(const T& value) : storage_(std::in_place_index<0>, value) {}
+call    0 never executed
+------------------
+_ZN7minitun6common6ResultINS_7storage17ServerActualStateEEC2ERKS3_:
+function _ZN7minitun6common6ResultINS_7storage17ServerActualStateEEC2ERKS3_ called 0 returned 0% blocks executed 0%
+    #####:   25:    Result(const T& value) : storage_(std::in_place_index<0>, value) {}
+call    0 never executed
+------------------
+_ZN7minitun6common6ResultINS_7storage18ServerDesiredStateEEC2ERKS3_:
+function _ZN7minitun6common6ResultINS_7storage18ServerDesiredStateEEC2ERKS3_ called 0 returned 0% blocks executed 0%
+    #####:   25:    Result(const T& value) : storage_(std::in_place_index<0>, value) {}
+call    0 never executed
+------------------
+_ZN7minitun6common6ResultINS_7storage14TunnelProtocolEEC2ERKS3_:
+function _ZN7minitun6common6ResultINS_7storage14TunnelProtocolEEC2ERKS3_ called 0 returned 0% blocks executed 0%
+    #####:   25:    Result(const T& value) : storage_(std::in_place_index<0>, value) {}
+call    0 never executed
+------------------
+        -:   26:    Result(T&& value) noexcept(std::is_nothrow_move_constructible_v<T>)
+        -:   27:        : storage_(std::in_place_index<0>, std::move(value)) {}
+        -:   28:    Result(const Error& error) : storage_(std::in_place_index<1>, error) {}
+    #####:   29:    Result(Error&& error) noexcept : storage_(std::in_place_index<1>, std::move(error)) {}
+------------------
+_ZN7minitun6common6ResultINS_7storage17TunnelActualStateEEC2EONS0_5ErrorE:
+function _ZN7minitun6common6ResultINS_7storage17TunnelActualStateEEC2EONS0_5ErrorE called 0 returned 0% blocks executed 0%
+    #####:   29:    Result(Error&& error) noexcept : storage_(std::in_place_index<1>, std::move(error)) {}
+call    0 never executed
+call    1 never executed
+------------------
+_ZN7minitun6common6ResultINS_7storage18TunnelDesiredStateEEC2EONS0_5ErrorE:
+function _ZN7minitun6common6ResultINS_7storage18TunnelDesiredStateEEC2EONS0_5ErrorE called 0 returned 0% blocks executed 0%
+    #####:   29:    Result(Error&& error) noexcept : storage_(std::in_place_index<1>, std::move(error)) {}
+call    0 never executed
+call    1 never executed
+------------------
+_ZN7minitun6common6ResultINS_7storage17ServerActualStateEEC2EONS0_5ErrorE:
+function _ZN7minitun6common6ResultINS_7storage17ServerActualStateEEC2EONS0_5ErrorE called 0 returned 0% blocks executed 0%
+    #####:   29:    Result(Error&& error) noexcept : storage_(std::in_place_index<1>, std::move(error)) {}
+call    0 never executed
+call    1 never executed
+------------------
+_ZN7minitun6common6ResultINS_7storage18ServerDesiredStateEEC2EONS0_5ErrorE:
+function _ZN7minitun6common6ResultINS_7storage18ServerDesiredStateEEC2EONS0_5ErrorE called 0 returned 0% blocks executed 0%
+    #####:   29:    Result(Error&& error) noexcept : storage_(std::in_place_index<1>, std::move(error)) {}
+call    0 never executed
+call    1 never executed
+------------------
+_ZN7minitun6common6ResultINS_7storage14TunnelProtocolEEC2EONS0_5ErrorE:
+function _ZN7minitun6common6ResultINS_7storage14TunnelProtocolEEC2EONS0_5ErrorE called 0 returned 0% blocks executed 0%
+    #####:   29:    Result(Error&& error) noexcept : storage_(std::in_place_index<1>, std::move(error)) {}
+call    0 never executed
+call    1 never executed
+------------------
+        -:   30:
+        -:   31:    template <typename... Args> [[nodiscard]] static Result success(Args&&... args) {
+        -:   32:        return Result(ValueTag{}, std::forward<Args>(args)...);
+        -:   33:    }
+        -:   34:
+        -:   35:    [[nodiscard]] static Result failure(Error error) { return Result(std::move(error)); }
+        -:   36:
+    #####:   37:    [[nodiscard]] static Result failure(ErrorCode code, std::string message = {}) {
+    #####:   38:        return Result(Error{code, std::move(message)});
+        -:   39:    }
+        -:   40:
+        -:   41:    [[nodiscard]] bool has_value() const noexcept { return storage_.index() == 0; }
+        -:   42:
+        -:   43:    explicit operator bool() const noexcept { return has_value(); }
+        -:   44:
+        -:   45:    T& value() & { return std::get<0>(storage_); }
+        -:   46:    const T& value() const& { return std::get<0>(storage_); }
+        -:   47:    T&& value() && { return std::get<0>(std::move(storage_)); }
+        -:   48:    const T&& value() const&& { return std::get<0>(std::move(storage_)); }
+        -:   49:
+        -:   50:    Error& error() & { return std::get<1>(storage_); }
+        -:   51:    const Error& error() const& { return std::get<1>(storage_); }
+        -:   52:    Error&& error() && { return std::get<1>(std::move(storage_)); }
+        -:   53:    const Error&& error() const&& { return std::get<1>(std::move(storage_)); }
+        -:   54:
+        -:   55:    T& operator*() & { return value(); }
+        -:   56:    const T& operator*() const& { return value(); }
+        -:   57:    T&& operator*() && { return std::move(*this).value(); }
+        -:   58:
+        -:   59:    T* operator->() { return &value(); }
+        -:   60:    const T* operator->() const { return &value(); }
+        -:   61:
+        -:   62:    template <typename U> [[nodiscard]] T value_or(U&& fallback) const& {
+        -:   63:        if (has_value()) {
+        -:   64:            return value();
+        -:   65:        }
+        -:   66:        return static_cast<T>(std::forward<U>(fallback));
+        -:   67:    }
+        -:   68:
+        -:   69:    template <typename U> [[nodiscard]] T value_or(U&& fallback) && {
+        -:   70:        if (has_value()) {
+        -:   71:            return std::move(*this).value();
+        -:   72:        }
+        -:   73:        return static_cast<T>(std::forward<U>(fallback));
+        -:   74:    }
+        -:   75:
+        -:   76:  private:
+        -:   77:    struct ValueTag final {};
+        -:   78:
+        -:   79:    template <typename... Args>
+        -:   80:    explicit Result(ValueTag, Args&&... args)
+        -:   81:        : storage_(std::in_place_index<0>, std::forward<Args>(args)...) {}
+        -:   82:
+        -:   83:    std::variant<T, Error> storage_;
+        -:   84:};
+        -:   85:
+        -:   86:template <> class [[nodiscard]] Result<void> final {
+        -:   87:  public:
+        -:   88:    using value_type = void;
+        -:   89:    using error_type = Error;
+        -:   90:
+        -:   91:    Result() noexcept = default;
+        -:   92:    Result(const Error& error) : error_(error) {}
+        -:   93:    Result(Error&& error) noexcept : error_(std::move(error)) {}
+        -:   94:
+        -:   95:    [[nodiscard]] static Result success() noexcept { return Result{}; }
+        -:   96:
+        -:   97:    [[nodiscard]] static Result failure(Error error) { return Result(std::move(error)); }
+        -:   98:
+        -:   99:    [[nodiscard]] static Result failure(ErrorCode code, std::string message = {}) {
+        -:  100:        return Result(Error{code, std::move(message)});
+        -:  101:    }
+        -:  102:
+        -:  103:    [[nodiscard]] bool has_value() const noexcept { return !error_.has_value(); }
+        -:  104:    explicit operator bool() const noexcept { return has_value(); }
+        -:  105:
+        -:  106:    void value() const {
+        -:  107:        if (!has_value()) {
+        -:  108:            throw std::logic_error("attempted to access the value of a failed Result");
+        -:  109:        }
+        -:  110:    }
+        -:  111:
+        -:  112:    Error& error() & {
+        -:  113:        if (has_value()) {
+        -:  114:            throw std::logic_error("attempted to access the error of a successful Result");
+        -:  115:        }
+        -:  116:        return *error_;
+        -:  117:    }
+        -:  118:
+        -:  119:    const Error& error() const& {
+        -:  120:        if (has_value()) {
+        -:  121:            throw std::logic_error("attempted to access the error of a successful Result");
+        -:  122:        }
+        -:  123:        return *error_;
+        -:  124:    }
+        -:  125:
+        -:  126:    Error&& error() && {
+        -:  127:        if (has_value()) {
+        -:  128:            throw std::logic_error("attempted to access the error of a successful Result");
+        -:  129:        }
+        -:  130:        return std::move(*error_);
+        -:  131:    }
+        -:  132:
+        -:  133:  private:
+        -:  134:    std::optional<Error> error_;
+        -:  135:};
+        -:  136:
+        -:  137:} // namespace minitun::common
