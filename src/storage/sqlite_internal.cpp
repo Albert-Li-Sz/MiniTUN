@@ -546,7 +546,7 @@ namespace {
 common::Result<void>
 validate_restore_source(const std::string_view destination_path, const std::string_view source,
                         const std::string_view description,
-                        std::function<common::Result<void>(sqlite3*)> source_validator) {
+                        const std::function<common::Result<void>(sqlite3*)>& source_validator) {
     auto source_database =
         open_validated_restore_source(destination_path, source, description, source_validator);
     if (!source_database) {
@@ -559,7 +559,7 @@ validate_restore_source(const std::string_view destination_path, const std::stri
 common::Result<void>
 restore_database(sqlite3* destination_database, const std::string_view destination_path,
                  const std::string_view source, const std::string_view description,
-                 std::function<common::Result<void>(sqlite3*)> source_validator) {
+                 const std::function<common::Result<void>(sqlite3*)>& source_validator) {
     if (destination_database == nullptr) {
         return common::Error{common::ErrorCode::invalid_argument,
                              std::string{description} + " source path is invalid"};
@@ -926,7 +926,7 @@ common::Result<ServerRecord> read_server(sqlite3_stmt* statement) {
         .last_error_code = error_code,
         .last_error_message = std::move(*error_message),
         .reconnect_attempt = static_cast<std::uint32_t>(*reconnect_attempt),
-        .latency_ms = std::move(*latency),
+        .latency_ms = *latency,
         .created_at_unix_ms = *created_at,
         .updated_at_unix_ms = *updated_at,
         .tls_server_name = std::move(*tls_server_name),
@@ -1007,7 +1007,7 @@ common::Result<TunnelRecord> read_tunnel(sqlite3_stmt* statement) {
         .last_error_message = std::move(*error_message),
         .created_at_unix_ms = *created_at,
         .updated_at_unix_ms = *updated_at,
-        .last_synced_at_unix_ms = std::move(*last_synced_at),
+        .last_synced_at_unix_ms = *last_synced_at,
         .config_revision = static_cast<std::uint64_t>(*config_revision),
         .managed_by_config = *managed_by_config != 0,
     };

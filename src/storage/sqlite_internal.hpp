@@ -69,7 +69,7 @@ class Statement final {
 [[nodiscard]] common::Result<void>
 validate_restore_source(std::string_view destination_path, std::string_view source,
                         std::string_view description,
-                        std::function<common::Result<void>(sqlite3*)> source_validator = {});
+                        const std::function<common::Result<void>(sqlite3*)>& source_validator = {});
 
 /// Restores a SQLite database into an already-open connection using the
 /// online-backup API. The caller must serialize access to the connection and
@@ -77,7 +77,7 @@ validate_restore_source(std::string_view destination_path, std::string_view sour
 [[nodiscard]] common::Result<void>
 restore_database(sqlite3* destination_database, std::string_view destination_path,
                  std::string_view source, std::string_view description,
-                 std::function<common::Result<void>(sqlite3*)> source_validator = {});
+                 const std::function<common::Result<void>(sqlite3*)>& source_validator = {});
 
 [[nodiscard]] common::Result<std::int64_t>
 query_single_int64(sqlite3* database, std::string_view sql, std::string_view operation);
