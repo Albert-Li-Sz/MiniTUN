@@ -986,6 +986,7 @@ int minitun_client_config_export(minitun_client* client, minitun_config_snapshot
             minitun_error_free(nested_error);
             return converted;
         }
+        minitun_error_free(nested_error);
         nested_error = nullptr;
         const int tunnels =
             minitun_client_tunnel_list(client, nullptr, &output->tunnels, &nested_error);
