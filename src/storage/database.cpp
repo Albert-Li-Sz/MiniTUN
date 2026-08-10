@@ -808,7 +808,7 @@ common::Result<void> Transaction::commit() {
     }
 
     if (failure_.has_value()) {
-        const common::Error original = *failure_;
+        common::Error original = *failure_;
         auto rolled_back = rollback();
         if (!rolled_back) {
             return common::Error{
@@ -821,7 +821,7 @@ common::Result<void> Transaction::commit() {
 
     auto committed = internal::execute(database_->handle_, "COMMIT", "commit SQLite transaction");
     if (!committed) {
-        const common::Error original = committed.error();
+        common::Error original = committed.error();
         failure_ = original;
         auto rolled_back = rollback();
         if (!rolled_back) {
@@ -910,7 +910,7 @@ common::Result<std::unique_ptr<Database>> Database::open(const std::string_view 
         owned_path.c_str(), &handle,
         SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr);
     if (result != SQLITE_OK) {
-        const common::Error error =
+        common::Error error =
             internal::sqlite_error(handle, result, "open SQLite state database");
         if (handle != nullptr) {
             sqlite3_close_v2(handle);
