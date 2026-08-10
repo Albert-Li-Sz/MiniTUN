@@ -66,12 +66,13 @@ class TunnelRegistry::Impl final {
   private:
     class Listener final : public std::enable_shared_from_this<Listener> {
       public:
-        Listener(asio::any_io_executor listener_executor, asio::any_io_executor connection_executor,
+        Listener(const asio::any_io_executor& listener_executor,
+                 const asio::any_io_executor& connection_executor,
                  TunnelBinding binding, PublicConnectionHandler connection_handler,
                  std::shared_ptr<ReservedFileDescriptor> reserved_descriptor)
-            : binding_(std::move(binding)), acceptor_(std::move(listener_executor)),
+            : binding_(std::move(binding)), acceptor_(listener_executor),
               retry_timer_(acceptor_.get_executor()),
-              connection_executor_(std::move(connection_executor)),
+              connection_executor_(connection_executor),
               connection_handler_(std::move(connection_handler)),
               reserved_descriptor_(std::move(reserved_descriptor)) {}
 
@@ -198,7 +199,7 @@ class TunnelRegistry::Impl final {
          const std::size_t max_total_tunnels, PublicConnectionHandler connection_handler)
         : listener_executor_(std::move(listener_executor)),
           connection_executor_(std::move(connection_executor)),
-          allowed_ports_(std::move(allowed_ports)), max_tunnels_per_client_(max_tunnels_per_client),
+          allowed_ports_(allowed_ports), max_tunnels_per_client_(max_tunnels_per_client),
           max_total_tunnels_(max_total_tunnels), connection_handler_(std::move(connection_handler)),
           reserved_descriptor_(std::make_shared<ReservedFileDescriptor>()) {}
 
@@ -314,17 +315,19 @@ class TunnelRegistry::Impl final {
     std::unordered_map<std::string, std::shared_ptr<Listener>> listeners_;
 };
 
-TunnelRegistry::TunnelRegistry(asio::any_io_executor executor, common::PortRange allowed_ports,
+TunnelRegistry::TunnelRegistry(const asio::any_io_executor& executor,
+                               common::PortRange allowed_ports,
                                const std::size_t max_tunnels_per_client,
                                PublicConnectionHandler connection_handler)
-    : TunnelRegistry(executor, executor, std::move(allowed_ports), max_tunnels_per_client,
+    : TunnelRegistry(executor, executor, allowed_ports, max_tunnels_per_client,
                      kMaximumTotalTunnels, std::move(connection_handler)) {}
 
-TunnelRegistry::TunnelRegistry(asio::any_io_executor executor, common::PortRange allowed_ports,
+TunnelRegistry::TunnelRegistry(const asio::any_io_executor& executor,
+                               common::PortRange allowed_ports,
                                const std::size_t max_tunnels_per_client,
                                const std::size_t max_total_tunnels,
                                PublicConnectionHandler connection_handler)
-    : TunnelRegistry(executor, executor, std::move(allowed_ports), max_tunnels_per_client,
+    : TunnelRegistry(executor, executor, allowed_ports, max_tunnels_per_client,
                      max_total_tunnels, std::move(connection_handler)) {}
 
 TunnelRegistry::TunnelRegistry(asio::any_io_executor listener_executor,
@@ -333,7 +336,7 @@ TunnelRegistry::TunnelRegistry(asio::any_io_executor listener_executor,
                                const std::size_t max_tunnels_per_client,
                                PublicConnectionHandler connection_handler)
     : TunnelRegistry(std::move(listener_executor), std::move(connection_executor),
-                     std::move(allowed_ports), max_tunnels_per_client, kMaximumTotalTunnels,
+                     allowed_ports, max_tunnels_per_client, kMaximumTotalTunnels,
                      std::move(connection_handler)) {}
 
 TunnelRegistry::TunnelRegistry(asio::any_io_executor listener_executor,
@@ -343,7 +346,7 @@ TunnelRegistry::TunnelRegistry(asio::any_io_executor listener_executor,
                                const std::size_t max_total_tunnels,
                                PublicConnectionHandler connection_handler)
     : implementation_(std::make_unique<Impl>(
-          std::move(listener_executor), std::move(connection_executor), std::move(allowed_ports),
+          std::move(listener_executor), std::move(connection_executor), allowed_ports,
           max_tunnels_per_client, max_total_tunnels, std::move(connection_handler))) {}
 
 TunnelRegistry::~TunnelRegistry() noexcept = default;
