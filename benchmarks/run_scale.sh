@@ -61,6 +61,7 @@ baseline_pid=
 rss_sampler_pid=
 
 # shellcheck disable=SC2329  # Invoked by the EXIT trap below.
+# shellcheck disable=SC2317  # Invoked by the EXIT trap below.
 cleanup() {
     : >"$runtime_dir/stop-rss-sampler" 2>/dev/null || true
     for process_id in "$rss_sampler_pid" "$baseline_pid" "$backend_pid" "$server_pid" \

@@ -55,8 +55,8 @@ class Error final {
     friend bool operator==(const Error&, const Error&) = default;
 
   private:
-    ErrorCode code_;
-    std::string message_;
+    ErrorCode code_{ErrorCode::ok};
+    std::string message_{};
 };
 
 std::ostream& operator<<(std::ostream& stream, const Error& error);

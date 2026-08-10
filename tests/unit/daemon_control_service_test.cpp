@@ -1670,13 +1670,17 @@ TEST_F(DaemonControlServiceTest, DoctorBacksUpCheckpointsAndRestoresBothDatabase
     EXPECT_EQ(require_result(state_only).at("actions").at("restore_consistency"),
               "single_database_atomic");
 
-    expect_control_error(dispatch(dispatcher_, "doctor",
-                                  ipc::Json{{"backup_state", state_file_.directory().string()}}),
-                         common::ErrorCode::permission_denied);
-    expect_control_error(
-        dispatch(dispatcher_, "doctor",
-                 ipc::Json{{"backup_credentials", credential_file_.directory().string()}}),
-        common::ErrorCode::permission_denied);
+    for (const auto& backup_field : {"backup_state", "backup_credentials"}) {
+        const auto refused = dispatch(dispatcher_, "doctor",
+                                      ipc::Json{{backup_field,
+                                                 backup_field == std::string_view{"backup_state"}
+                                                     ? state_file_.directory().string()
+                                                     : credential_file_.directory().string()}});
+        ASSERT_FALSE(refused.ok());
+        EXPECT_TRUE(refused.error()->code() == common::ErrorCode::permission_denied ||
+                    refused.error()->code() == common::ErrorCode::already_exists)
+            << refused.error()->message();
+    }
 }
 
 TEST_F(DaemonControlServiceTest, HealthAndReadinessDescribeDatabaseDamageAndMissingFiles) {

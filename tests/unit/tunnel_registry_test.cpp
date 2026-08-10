@@ -294,7 +294,8 @@ TEST(TunnelRegistryTest, ReplacesChangedRevisionOnlyAfterWithdrawingOldListener)
     ASSERT_TRUE(registry.register_tunnel({client_id, 7U, tunnel_id, "127.0.0.1", first_port, 2U}));
     EXPECT_EQ(registry.size(), 1U);
 
-    asio::ip::tcp::acceptor blocker{io_context, asio::ip::tcp::endpoint{asio::ip::tcp::v4(), 0U}};
+    asio::ip::tcp::acceptor blocker{
+        io_context, asio::ip::tcp::endpoint{asio::ip::make_address("127.0.0.1"), 0U}};
     const std::uint16_t blocked_port = blocker.local_endpoint().port();
     const auto failed_replacement =
         registry.register_tunnel({client_id, 7U, tunnel_id, "127.0.0.1", blocked_port, 3U});

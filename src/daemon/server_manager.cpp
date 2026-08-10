@@ -264,10 +264,15 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
 
         [[nodiscard]] asio::awaitable<void> run() {
             while (!stopping_) {
-                auto generation = co_await run_db(
+                // GCC 12 duplicates destruction of owning temporaries created
+                // inline inside a co_await call expression. Keep the operation
+                // in a named local so its owning captures are destroyed once.
+                auto begin_generation_operation =
                     [reconciler = tunnel_reconciler_, server_id = server_.id] {
                         return reconciler->begin_generation(server_id);
-                    });
+                    };
+                auto generation =
+                    co_await run_db(std::move(begin_generation_operation));
                 if (!generation) {
                     terminal_state_.store(TerminalState::stopped);
                     metrics_->persistence_errors.fetch_add(1U, std::memory_order_relaxed);
@@ -1147,13 +1152,18 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
 
         [[nodiscard]] asio::awaitable<common::Result<storage::TunnelRecord>>
         load_tunnel(const common::Id& tunnel_id) {
-            return run_db(
-                [this, tunnel_id] { return repository_.tunnels().get_by_id(tunnel_id); });
+            auto operation = [this, tunnel_id] {
+                return repository_.tunnels().get_by_id(tunnel_id);
+            };
+            return run_db(std::move(operation));
         }
 
         [[nodiscard]] asio::awaitable<common::Result<void>>
         erase_tunnel(const common::Id& tunnel_id) {
-            return run_db([this, tunnel_id] { return repository_.tunnels().erase(tunnel_id); });
+            auto operation = [this, tunnel_id] {
+                return repository_.tunnels().erase(tunnel_id);
+            };
+            return run_db(std::move(operation));
         }
 
         [[nodiscard]] asio::awaitable<common::Result<void>>
@@ -1162,10 +1172,10 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                              const storage::TunnelActualState state,
                              const PersistenceErrorView error = {},
                              const bool synchronized = false) {
-            return run_db([this, tunnel_id, expected_revision, state,
-                           error_code = error.code,
-                           error_message = std::string{error.message}, synchronized,
-                           attempt_generation = attempt_generation_] {
+            auto operation = [this, tunnel_id, expected_revision, state,
+                              error_code = error.code,
+                              error_message = std::string{error.message}, synchronized,
+                              attempt_generation = attempt_generation_] {
                 try {
                     std::optional<common::Error> transition_error;
                     if (error_code.has_value()) {
@@ -1188,16 +1198,17 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                     return common::Result<void>::failure(common::ErrorCode::internal_error,
                                                          "failed to persist tunnel state");
                 }
-            });
+            };
+            return run_db(std::move(operation));
         }
 
         [[nodiscard]] asio::awaitable<common::Result<void>>
         mark_tunnels_pending(const PersistenceErrorView error = {}) {
             registered_tunnels_.clear();
             local_endpoints_.clear();
-            return run_db([this, error_code = error.code,
-                           error_message = std::string{error.message},
-                           attempt_generation = attempt_generation_] {
+            auto operation = [this, error_code = error.code,
+                              error_message = std::string{error.message},
+                              attempt_generation = attempt_generation_] {
                 try {
                     std::optional<common::Error> persistence_error;
                     if (error_code.has_value()) {
@@ -1222,7 +1233,8 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                     return common::Result<void>::failure(common::ErrorCode::internal_error,
                                                          "failed to persist pending tunnel states");
                 }
-            });
+            };
+            return run_db(std::move(operation));
         }
 
         [[nodiscard]] asio::awaitable<common::Result<void>>
@@ -1231,10 +1243,10 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                       const std::uint32_t reconnect_attempt,
                       const std::optional<std::int64_t> latency_ms = std::nullopt,
                       const std::string_view remote_server_id = {}) {
-            return run_db(
-                [this, state, error_code = error.code,
-                 error_message = std::string{error.message}, reconnect_attempt, latency_ms,
-                 remote_server_id = std::string{remote_server_id}] {
+            auto operation = [this, state, error_code = error.code,
+                              error_message = std::string{error.message}, reconnect_attempt,
+                              latency_ms,
+                              remote_server_id = std::string{remote_server_id}] {
                     try {
                         const std::scoped_lock lock{persistence_mutex_};
                         if (!persistence_allowed_) {
@@ -1299,7 +1311,8 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                         return common::Result<void>::failure(common::ErrorCode::internal_error,
                                                              "failed to persist server state");
                     }
-                });
+                };
+            return run_db(std::move(operation));
         }
 
         [[nodiscard]] AttemptResult disconnected(const common::ErrorCode code,
