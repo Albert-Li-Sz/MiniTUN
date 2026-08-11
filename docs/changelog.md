@@ -8,6 +8,23 @@ title: 变更日志
 [CHANGELOG.md](https://github.com/LMTINSUZHOU/MiniTUN/blob/main/CHANGELOG.md) 为准。
 这里保留官网常用的近期版本摘要，方便从文档站快速了解最新能力。
 
+## [1.1.0] - 开发中
+
+### 主要变化
+
+- TCP 之外新增 UDP datagram、SOCKS5 no-auth CONNECT 和 P2P direct/relay fallback；
+  Remote Protocol v2 通过 capability 与追加 mode byte 保持旧 TCP wire image。
+- 新增 localhost-only `minitun-gui` 和独立 `minitun-p2p` connector。
+- 新增 `libminitun-remote-protocol.so.1` C++20 codec/decoder/helper SDK；本地控制 SDK
+  以 `struct_size` 兼容方式支持创建/更新四种 mode。
+- 状态库升级到 schema v5，并补齐多传输、GUI security、Remote SDK ABI/下游链接和
+  安装包布局测试。
+
+::: warning P2P 边界
+当前 P2P 不实现 ICE/STUN/TURN/NAT 打洞，direct path 不额外加密应用数据；候选不可达时
+自动回退到认证 TLS relay。`v1.0.0` GA tag 保持不变，以上能力不在 1.0.0 包中。
+:::
+
 ## [1.0.0] - 2026-08-11
 
 ### 主要变化

@@ -75,14 +75,56 @@ sudo systemctl kill -s HUP minitun-server.service
     {
       "name": "web",
       "server": "edge",
+      "protocol": "tcp",
       "local_host": "127.0.0.1",
       "local_port": 8080,
+      "remote_host": "0.0.0.0",
       "remote_port": 6000,
+      "enabled": true
+    },
+    {
+      "name": "dns-udp",
+      "server": "edge",
+      "protocol": "udp",
+      "local_host": "127.0.0.1",
+      "local_port": 5353,
+      "remote_port": 6001,
+      "enabled": true
+    },
+    {
+      "name": "private-proxy",
+      "server": "edge",
+      "protocol": "socks5",
+      "remote_host": "127.0.0.1",
+      "remote_port": 6002,
+      "enabled": true
+    },
+    {
+      "name": "p2p-web",
+      "server": "edge",
+      "protocol": "p2p",
+      "local_host": "127.0.0.1",
+      "local_port": 8080,
+      "remote_port": 6003,
       "enabled": true
     }
   ]
 }
 ```
+
+Tunnel 字段规则：
+
+| 字段 | 规则 |
+| --- | --- |
+| `protocol` | 可选，默认 `tcp`；可为 `tcp`、`udp`、`socks5`、`p2p`。 |
+| `local_host` | 可选，默认 `127.0.0.1`；SOCKS5 mode 忽略。 |
+| `local_port` | TCP、UDP、P2P 必需；SOCKS5 可省略。 |
+| `remote_host` | 可选；TCP/UDP/P2P 默认 `0.0.0.0`，SOCKS5 默认且只允许数值 loopback。 |
+| `remote_port` | 必需，范围 1..65535，并受服务端 `allowed_ports` 约束。 |
+
+SOCKS5 只实现 no-auth CONNECT；把它限制在 server loopback 是强制安全边界。P2P 适合
+LAN 或已有可路由路径，不包含 ICE/STUN/TURN/NAT 打洞，direct path 也不附加传输加密；
+协商失败会自动回退到 TLS relay。
 
 相对凭据路径以配置文件所在目录为基准。`plan` 完全只读，动作按资源类型与稳定键排序：
 

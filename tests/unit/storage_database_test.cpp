@@ -82,7 +82,7 @@ using test::TemporaryDatabaseFile;
     };
 }
 
-TEST(StorageDatabaseTest, FreshDatabaseMigratesCompleteVersionFourSchema) {
+TEST(StorageDatabaseTest, FreshDatabaseMigratesCompleteVersionFiveSchema) {
     TemporaryDatabaseFile temporary;
     auto database = Database::open(temporary.path_string());
 
@@ -110,7 +110,7 @@ TEST(StorageDatabaseTest, FreshDatabaseMigratesCompleteVersionFourSchema) {
         probe.query_int64("SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name IN ("
                           "'idx_servers_reconcile', 'idx_tunnels_reconcile', 'idx_tunnels_name')"),
         3);
-    EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM schema_version"), 4);
+    EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM schema_version"), 5);
     EXPECT_EQ(probe.query_int64("SELECT MAX(version) FROM schema_version"), kCurrentSchemaVersion);
     EXPECT_GE(probe.query_int64("SELECT MIN(applied_at) FROM schema_version"), 0);
     EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM daemon_identity"), 0);
@@ -214,7 +214,7 @@ TEST(StorageDatabaseTest, ReopeningCurrentSchemaIsIdempotentAndPreservesData) {
     EXPECT_EQ(*restored, sample_server());
 
     NativeSqliteDatabase probe{temporary.path(), SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX};
-    EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM schema_version"), 4);
+    EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM schema_version"), 5);
     EXPECT_EQ(probe.query_int64("SELECT applied_at FROM schema_version WHERE version = 1"),
               first_applied_at);
     EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM servers"), 1);
@@ -239,18 +239,18 @@ TEST(StorageDatabaseTest, MigratesVersionOneInPlaceAndPreservesData) {
                         "ALTER TABLE servers DROP COLUMN ca_credential_ref;"
                         "ALTER TABLE servers DROP COLUMN tls_server_name;"
                         "DROP TABLE daemon_identity;"
-                        "DELETE FROM schema_version WHERE version IN (2, 3, 4)");
+                        "DELETE FROM schema_version WHERE version IN (2, 3, 4, 5)");
     }
 
     auto migrated = StateRepository::open(temporary.path_string());
     ASSERT_TRUE(migrated) << migrated.error();
-    EXPECT_EQ(*(*migrated)->schema_version(), 4);
+    EXPECT_EQ(*(*migrated)->schema_version(), 5);
     const auto restored = (*migrated)->servers().get_by_id(sample_server().id);
     ASSERT_TRUE(restored) << restored.error();
     EXPECT_EQ(*restored, sample_server());
 
     NativeSqliteDatabase probe{temporary.path(), SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX};
-    EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM schema_version"), 4);
+    EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM schema_version"), 5);
     EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM sqlite_master "
                                 "WHERE type = 'table' AND name = 'daemon_identity'"),
               1);
@@ -278,12 +278,12 @@ TEST(StorageDatabaseTest, MigratesVersionTwoTunnelRowsInPlace) {
                         "ALTER TABLE servers DROP COLUMN client_certificate_ref;"
                         "ALTER TABLE servers DROP COLUMN ca_credential_ref;"
                         "ALTER TABLE servers DROP COLUMN tls_server_name;"
-                        "DELETE FROM schema_version WHERE version IN (3, 4)");
+                        "DELETE FROM schema_version WHERE version IN (3, 4, 5)");
     }
 
     auto migrated = StateRepository::open(temporary.path_string());
     ASSERT_TRUE(migrated) << migrated.error();
-    EXPECT_EQ(*(*migrated)->schema_version(), 4);
+    EXPECT_EQ(*(*migrated)->schema_version(), 5);
     const auto restored = (*migrated)->tunnels().get_by_id(expected.id);
     ASSERT_TRUE(restored) << restored.error();
     EXPECT_EQ(*restored, expected);
@@ -317,12 +317,12 @@ TEST(StorageDatabaseTest, MigratesVersionThreeFromV041AndPreservesIdsCredentials
                         "ALTER TABLE servers DROP COLUMN client_certificate_ref;"
                         "ALTER TABLE servers DROP COLUMN ca_credential_ref;"
                         "ALTER TABLE servers DROP COLUMN tls_server_name;"
-                        "DELETE FROM schema_version WHERE version = 4;");
+                        "DELETE FROM schema_version WHERE version IN (4, 5);");
     }
 
     auto migrated = StateRepository::open(temporary.path_string());
     ASSERT_TRUE(migrated) << migrated.error();
-    EXPECT_EQ(*(*migrated)->schema_version(), 4);
+    EXPECT_EQ(*(*migrated)->schema_version(), 5);
     const auto server = (*migrated)->servers().get_by_id(expected_server.id);
     const auto tunnel = (*migrated)->tunnels().get_by_id(expected_tunnel.id);
     ASSERT_TRUE(server) << server.error();
@@ -331,7 +331,7 @@ TEST(StorageDatabaseTest, MigratesVersionThreeFromV041AndPreservesIdsCredentials
     EXPECT_EQ(*tunnel, expected_tunnel);
 
     NativeSqliteDatabase probe{temporary.path(), SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX};
-    EXPECT_EQ(probe.query_int64("SELECT MAX(version) FROM schema_version"), 4);
+    EXPECT_EQ(probe.query_int64("SELECT MAX(version) FROM schema_version"), 5);
     EXPECT_EQ(probe.query_int64("SELECT config_revision FROM servers"), 1);
     EXPECT_EQ(probe.query_int64("SELECT managed_by_config FROM servers"), 0);
     EXPECT_EQ(probe.query_int64("SELECT config_revision FROM tunnels"), 1);
@@ -368,7 +368,7 @@ TEST(StorageDatabaseTest, RejectsFutureSchemaWithoutChangingItsData) {
         NativeSqliteDatabase fixture{temporary.path()};
         fixture.execute(
             "CREATE TABLE schema_version(version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL);"
-            "INSERT INTO schema_version(version, applied_at) VALUES(5, 1234);"
+            "INSERT INTO schema_version(version, applied_at) VALUES(6, 1234);"
             "CREATE TABLE future_data(value TEXT NOT NULL);"
             "INSERT INTO future_data(value) VALUES('preserve-me');");
     }
@@ -378,7 +378,7 @@ TEST(StorageDatabaseTest, RejectsFutureSchemaWithoutChangingItsData) {
     EXPECT_EQ(opened.error().code(), common::ErrorCode::unsupported_version);
 
     NativeSqliteDatabase probe{temporary.path(), SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX};
-    EXPECT_EQ(probe.query_int64("SELECT version FROM schema_version"), 5);
+    EXPECT_EQ(probe.query_int64("SELECT version FROM schema_version"), 6);
     EXPECT_EQ(probe.query_int64("SELECT applied_at FROM schema_version"), 1'234);
     EXPECT_EQ(probe.query_text("SELECT value FROM future_data"), "preserve-me");
     EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM sqlite_master "
@@ -517,11 +517,11 @@ TEST(StorageDatabaseTest, HandlesAlreadyPresentColumnsAndRejectsPartialMigration
         }
         {
             NativeSqliteDatabase fixture{temporary.path()};
-            fixture.execute("DELETE FROM schema_version WHERE version = 4");
+            fixture.execute("DELETE FROM schema_version WHERE version IN (4, 5)");
         }
         auto migrated = Database::open(temporary.path_string());
         ASSERT_TRUE(migrated) << migrated.error();
-        EXPECT_EQ(*(*migrated)->schema_version(), 4);
+        EXPECT_EQ(*(*migrated)->schema_version(), 5);
     }
     {
         TemporaryDatabaseFile temporary;
@@ -539,11 +539,11 @@ TEST(StorageDatabaseTest, HandlesAlreadyPresentColumnsAndRejectsPartialMigration
                             "ALTER TABLE servers DROP COLUMN client_certificate_ref;"
                             "ALTER TABLE servers DROP COLUMN ca_credential_ref;"
                             "ALTER TABLE servers DROP COLUMN tls_server_name;"
-                            "DELETE FROM schema_version WHERE version IN (3, 4)");
+                            "DELETE FROM schema_version WHERE version IN (3, 4, 5)");
         }
         auto migrated = Database::open(temporary.path_string());
         ASSERT_TRUE(migrated) << migrated.error();
-        EXPECT_EQ(*(*migrated)->schema_version(), 4);
+        EXPECT_EQ(*(*migrated)->schema_version(), 5);
     }
     {
         TemporaryDatabaseFile temporary;
@@ -562,7 +562,7 @@ TEST(StorageDatabaseTest, HandlesAlreadyPresentColumnsAndRejectsPartialMigration
                             "ALTER TABLE servers DROP COLUMN client_certificate_ref;"
                             "ALTER TABLE servers DROP COLUMN ca_credential_ref;"
                             "ALTER TABLE servers DROP COLUMN tls_server_name;"
-                            "DELETE FROM schema_version WHERE version IN (2, 3, 4)");
+                            "DELETE FROM schema_version WHERE version IN (2, 3, 4, 5)");
         }
         const auto rejected = Database::open(temporary.path_string());
         ASSERT_FALSE(rejected);

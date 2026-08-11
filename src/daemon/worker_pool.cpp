@@ -18,6 +18,7 @@
 #include <asio/connect.hpp>
 #include <asio/dispatch.hpp>
 #include <asio/ip/tcp.hpp>
+#include <asio/ip/udp.hpp>
 #include <asio/redirect_error.hpp>
 #include <asio/ssl/stream_base.hpp>
 #include <asio/steady_timer.hpp>
@@ -28,8 +29,11 @@
 #include <minitun/common/logging.hpp>
 #include <minitun/common/time.hpp>
 #include <minitun/protocol/auth.hpp>
+#include <minitun/protocol/datagram.hpp>
 #include <minitun/protocol/messages.hpp>
+#include <minitun/protocol/p2p.hpp>
 #include <minitun/protocol/relay.hpp>
+#include <minitun/protocol/socks5.hpp>
 #include <minitun/protocol/state_machine.hpp>
 #include <minitun/protocol/tls.hpp>
 
@@ -43,8 +47,8 @@ inline constexpr std::chrono::hours kMaximumRelayTimeout{24};
 [[nodiscard]] common::Result<void> validate_options(const WorkerPoolOptions& options) {
     if (!common::Id::parse(options.server_id, common::IdKind::server) ||
         !common::Id::parse(options.remote_server_id, common::IdKind::server) ||
-        !common::Id::parse(options.client_id, common::IdKind::client) ||
-        options.psk == nullptr || options.psk->empty() || options.session_generation == 0U) {
+        !common::Id::parse(options.client_id, common::IdKind::client) || options.psk == nullptr ||
+        options.psk->empty() || options.session_generation == 0U) {
         return common::Result<void>::failure(common::ErrorCode::invalid_argument,
                                              "worker pool identity is invalid");
     }
@@ -101,7 +105,8 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
                       std::shared_ptr<WorkerBudget> connection_budget)
             : pool_(pool), worker_id_(std::move(worker_id)), server_id_(pool->options_.server_id),
               remote_endpoint_(pool->options_.endpoint.to_string()), resolver_(pool->executor_),
-              stream_(pool->executor_, *pool->tls_context_), operation_timer_(pool->executor_),
+              udp_resolver_(pool->executor_), stream_(pool->executor_, *pool->tls_context_),
+              operation_timer_(pool->executor_),
               state_(protocol::PeerRole::client, protocol::ConnectionKind::worker),
               connection_budget_(std::move(connection_budget)) {}
 
@@ -112,16 +117,17 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
 
         void start() {
             auto self = shared_from_this();
-            asio::co_spawn(stream_.get_executor(), run(), [self](const std::exception_ptr& failure) {
-                if (failure) {
-                    common::log_warn("worker session ended with an exception",
-                                     self->log_context(common::ErrorCode::internal_error));
-                }
-                self->close();
-                if (auto pool = self->pool_.lock()) {
-                    pool->worker_finished(self->worker_id_);
-                }
-            });
+            asio::co_spawn(
+                stream_.get_executor(), run(), [self](const std::exception_ptr& failure) {
+                    if (failure) {
+                        common::log_warn("worker session ended with an exception",
+                                         self->log_context(common::ErrorCode::internal_error));
+                    }
+                    self->close();
+                    if (auto pool = self->pool_.lock()) {
+                        pool->worker_finished(self->worker_id_);
+                    }
+                });
         }
 
         void stop() noexcept { close(); }
@@ -231,6 +237,143 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
             }
             pool->worker_consumed(worker_id_);
 
+            if (relay->mode == protocol::TunnelMode::udp) {
+                auto local_endpoint = pool->local_endpoint_resolver_(relay->tunnel_id);
+                if (!local_endpoint) {
+                    co_await send_local_error(relay->connection_id, relay_frame->request_id,
+                                              pool->options_.handshake_timeout);
+                    co_return;
+                }
+                arm_timeout(pool->options_.connect_timeout);
+                auto local_endpoints = co_await udp_resolver_.async_resolve(
+                    local_endpoint->host(), std::to_string(local_endpoint->port()),
+                    asio::redirect_error(asio::use_awaitable, error));
+                if (!error && local_endpoints.begin() != local_endpoints.end()) {
+                    local_udp_socket_ = std::make_unique<asio::ip::udp::socket>(
+                        stream_.get_executor(), local_endpoints.begin()->endpoint().protocol());
+                    co_await local_udp_socket_->async_connect(
+                        local_endpoints.begin()->endpoint(),
+                        asio::redirect_error(asio::use_awaitable, error));
+                }
+                cancel_timeout();
+                if (error || local_udp_socket_ == nullptr) {
+                    co_await send_local_error(relay->connection_id, relay_frame->request_id,
+                                              pool->options_.handshake_timeout);
+                    co_return;
+                }
+                if (!co_await send_local_connected(relay->connection_id, relay_frame->request_id,
+                                                   pool->options_.handshake_timeout)) {
+                    co_return;
+                }
+                auto relayed = co_await protocol::relay_tls_and_udp(
+                    stream_, *local_udp_socket_,
+                    {.inactivity_timeout = pool->options_.relay_inactivity_timeout});
+                if (relayed && pool->options_.relay_stats_handler) {
+                    try {
+                        pool->options_.relay_stats_handler(relayed->tls_to_udp_bytes,
+                                                           relayed->udp_to_tls_bytes);
+                    } catch (...) {
+                    }
+                }
+                if (!relayed && relayed.error().code() != common::ErrorCode::connection_timeout) {
+                    common::log_warn("UDP Worker relay ended with a transport error",
+                                     log_context(relayed.error().code()));
+                }
+                co_return;
+            }
+
+            if (relay->mode == protocol::TunnelMode::socks5) {
+                local_socket_ = std::make_unique<asio::ip::tcp::socket>(stream_.get_executor());
+                if (!co_await send_local_connected(relay->connection_id, relay_frame->request_id,
+                                                   pool->options_.handshake_timeout)) {
+                    co_return;
+                }
+                arm_timeout(pool->options_.connect_timeout);
+                auto socks_result =
+                    co_await protocol::accept_socks5_connect(stream_, *local_socket_, resolver_);
+                cancel_timeout();
+                if (!socks_result) {
+                    if (socks_result.error().code() != common::ErrorCode::connection_failed) {
+                        common::log_warn("SOCKS5 Worker request was rejected",
+                                         log_context(socks_result.error().code()));
+                    }
+                    co_return;
+                }
+                protocol::configure_tcp_transport(*local_socket_);
+                co_await relay_connected_socket(*pool);
+                co_return;
+            }
+
+            if (relay->mode == protocol::TunnelMode::p2p) {
+                auto local_endpoint = pool->local_endpoint_resolver_(relay->tunnel_id);
+                asio::error_code endpoint_error;
+                const auto candidate_address =
+                    stream_.lowest_layer().local_endpoint(endpoint_error).address();
+                if (!local_endpoint || endpoint_error || candidate_address.is_unspecified()) {
+                    co_await send_local_error(relay->connection_id, relay_frame->request_id,
+                                              pool->options_.handshake_timeout);
+                    co_return;
+                }
+                if (!co_await send_local_connected(relay->connection_id, relay_frame->request_id,
+                                                   pool->options_.handshake_timeout)) {
+                    co_return;
+                }
+                auto upgraded = co_await protocol::accept_p2p_upgrade(
+                    stream_, candidate_address, pool->options_.connect_timeout);
+                if (!upgraded) {
+                    common::log_warn("P2P Worker negotiation failed",
+                                     log_context(upgraded.error().code()));
+                    co_return;
+                }
+
+                local_socket_ = std::make_unique<asio::ip::tcp::socket>(stream_.get_executor());
+                arm_timeout(pool->options_.connect_timeout);
+                auto local_endpoints = co_await resolver_.async_resolve(
+                    local_endpoint->host(), std::to_string(local_endpoint->port()),
+                    asio::redirect_error(asio::use_awaitable, error));
+                if (!error) {
+                    co_await asio::async_connect(*local_socket_, local_endpoints,
+                                                 asio::redirect_error(asio::use_awaitable, error));
+                }
+                cancel_timeout();
+                if (error) {
+                    co_return;
+                }
+                protocol::configure_tcp_transport(*local_socket_);
+
+                if (upgraded->path == protocol::P2pPath::direct &&
+                    upgraded->direct_socket != nullptr) {
+                    p2p_socket_ = std::move(upgraded->direct_socket);
+                    protocol::configure_tcp_transport(*p2p_socket_);
+                    auto confirmed = co_await protocol::confirm_p2p_direct(*p2p_socket_);
+                    if (!confirmed) {
+                        co_return;
+                    }
+                    auto relayed = co_await protocol::relay_tcp_and_tcp(
+                        *p2p_socket_, *local_socket_, pool->options_.relay_inactivity_timeout);
+                    if (relayed && pool->options_.relay_stats_handler) {
+                        try {
+                            pool->options_.relay_stats_handler(relayed->first_to_second_bytes,
+                                                               relayed->second_to_first_bytes);
+                        } catch (...) {
+                        }
+                    }
+                    if (!relayed &&
+                        relayed.error().code() != common::ErrorCode::connection_timeout) {
+                        common::log_warn("direct P2P relay ended with a transport error",
+                                         log_context(relayed.error().code()));
+                    }
+                    co_return;
+                }
+
+                auto confirmed = co_await protocol::confirm_p2p_relay(stream_);
+                if (!confirmed) {
+                    co_return;
+                }
+                co_await relay_connected_socket(*pool);
+                co_return;
+            }
+
             auto local_endpoint = pool->local_endpoint_resolver_(relay->tunnel_id);
             if (!local_endpoint) {
                 co_await send_local_error(relay->connection_id, relay_frame->request_id,
@@ -255,24 +398,37 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
             }
             protocol::configure_tcp_transport(*local_socket_);
 
-            auto connected_payload = protocol::encode_local_connect_ok({relay->connection_id});
-            if (!connected_payload) {
-                co_return;
-            }
-            const protocol::Frame connected_frame{protocol::MessageType::local_connect_ok, 0U,
-                                                  relay_frame->request_id,
-                                                  std::move(*connected_payload)};
-            if (!co_await write_frame(connected_frame, pool->options_.handshake_timeout)) {
+            if (!co_await send_local_connected(relay->connection_id, relay_frame->request_id,
+                                               pool->options_.handshake_timeout)) {
                 co_return;
             }
 
+            co_await relay_connected_socket(*pool);
+        }
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
+
+        [[nodiscard]] asio::awaitable<bool>
+        send_local_connected(const std::string& connection_id, const std::uint64_t request_id,
+                             const std::chrono::seconds timeout) {
+            auto connected_payload = protocol::encode_local_connect_ok({connection_id});
+            if (!connected_payload) {
+                co_return false;
+            }
+            const protocol::Frame connected_frame{protocol::MessageType::local_connect_ok, 0U,
+                                                  request_id, std::move(*connected_payload)};
+            co_return co_await write_frame(connected_frame, timeout);
+        }
+
+        [[nodiscard]] asio::awaitable<void> relay_connected_socket(Impl& pool) {
             auto relayed = co_await protocol::relay_tls_and_tcp(
                 stream_, *local_socket_,
-                {.inactivity_timeout = pool->options_.relay_inactivity_timeout});
-            if (relayed && pool->options_.relay_stats_handler) {
+                {.inactivity_timeout = pool.options_.relay_inactivity_timeout});
+            if (relayed && pool.options_.relay_stats_handler) {
                 try {
-                    pool->options_.relay_stats_handler(relayed->tls_to_tcp_bytes,
-                                                       relayed->tcp_to_tls_bytes);
+                    pool.options_.relay_stats_handler(relayed->tls_to_tcp_bytes,
+                                                      relayed->tcp_to_tls_bytes);
                 } catch (...) {
                 }
             }
@@ -281,9 +437,6 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
                                  log_context(relayed.error().code()));
             }
         }
-#if defined(__GNUC__) && !defined(__clang__)
-#pragma GCC diagnostic pop
-#endif
 
         [[nodiscard]] asio::awaitable<void> send_local_error(const std::string& connection_id,
                                                              const std::uint64_t request_id,
@@ -331,6 +484,22 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
                 if (!error) {
                     if (auto self = weak.lock()) {
                         self->resolver_.cancel();
+                        self->udp_resolver_.cancel();
+                        if (self->local_socket_ != nullptr) {
+                            asio::error_code ignored;
+                            self->local_socket_->cancel(ignored);
+                            self->local_socket_->close(ignored);
+                        }
+                        if (self->local_udp_socket_ != nullptr) {
+                            asio::error_code ignored;
+                            self->local_udp_socket_->cancel(ignored);
+                            self->local_udp_socket_->close(ignored);
+                        }
+                        if (self->p2p_socket_ != nullptr) {
+                            asio::error_code ignored;
+                            self->p2p_socket_->cancel(ignored);
+                            self->p2p_socket_->close(ignored);
+                        }
                         protocol::close_tls_stream(self->stream_);
                     }
                 }
@@ -346,12 +515,25 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
 
         void close() noexcept {
             resolver_.cancel();
+            udp_resolver_.cancel();
             cancel_timeout();
             if (local_socket_ != nullptr) {
                 asio::error_code ignored;
                 local_socket_->cancel(ignored);
                 local_socket_->close(ignored);
                 local_socket_.reset();
+            }
+            if (local_udp_socket_ != nullptr) {
+                asio::error_code ignored;
+                local_udp_socket_->cancel(ignored);
+                local_udp_socket_->close(ignored);
+                local_udp_socket_.reset();
+            }
+            if (p2p_socket_ != nullptr) {
+                asio::error_code ignored;
+                p2p_socket_->cancel(ignored);
+                p2p_socket_->close(ignored);
+                p2p_socket_.reset();
             }
             protocol::close_tls_stream(stream_);
         }
@@ -372,8 +554,11 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
         std::string server_id_;
         std::string remote_endpoint_;
         asio::ip::tcp::resolver resolver_;
+        asio::ip::udp::resolver udp_resolver_;
         protocol::TlsStream stream_;
         std::unique_ptr<asio::ip::tcp::socket> local_socket_;
+        std::unique_ptr<asio::ip::udp::socket> local_udp_socket_;
+        std::unique_ptr<asio::ip::tcp::socket> p2p_socket_;
         asio::steady_timer operation_timer_;
         protocol::StateMachine state_;
         std::shared_ptr<WorkerBudget> connection_budget_;

@@ -232,6 +232,8 @@ TEST_F(DaemonControlServiceTest, DeclarativePlanApplyIsStableAndPrunesOnlyManage
             "server": "edge",
             "local_host": "127.0.0.1",
             "local_port": 22,
+            "protocol": "udp",
+            "remote_host": "127.0.0.1",
             "remote_port": 6022,
             "enabled": true
         }]
@@ -265,6 +267,8 @@ TEST_F(DaemonControlServiceTest, DeclarativePlanApplyIsStableAndPrunesOnlyManage
     EXPECT_EQ(export_text.find(config_path.string()), std::string::npos);
     EXPECT_EQ(require_result(exported).at("servers").size(), 2U);
     EXPECT_EQ(require_result(exported).at("tunnels").size(), 1U);
+    EXPECT_EQ(require_result(exported).at("tunnels").at(0).at("protocol"), "udp");
+    EXPECT_EQ(require_result(exported).at("tunnels").at(0).at("remote_host"), "127.0.0.1");
 
     write_config(R"json({"format_version":1,"servers":[],"tunnels":[]})json");
     const auto without_prune =
@@ -391,6 +395,19 @@ TEST_F(DaemonControlServiceTest, DeclarativeConfigurationRejectsMalformedDocumen
         {"tunnel-local-host-type",
          "{\"format_version\":1,\"servers\":[" + valid_server +
              R"json(],"tunnels":[{"name":"ssh","server":"edge","local_host":7,"local_port":22,"remote_port":6022}]})json"},
+        {"tunnel-protocol-type",
+         "{\"format_version\":1,\"servers\":[" + valid_server +
+             R"json(],"tunnels":[{"name":"ssh","server":"edge","local_port":22,"protocol":7,"remote_port":6022}]})json"},
+        {"tunnel-protocol-value",
+         "{\"format_version\":1,\"servers\":[" + valid_server +
+             R"json(],"tunnels":[{"name":"ssh","server":"edge","local_port":22,"protocol":"quic","remote_port":6022}]})json"},
+        {"tunnel-remote-host-type",
+         "{\"format_version\":1,\"servers\":[" + valid_server +
+             R"json(],"tunnels":[{"name":"ssh","server":"edge","local_port":22,"remote_host":7,"remote_port":6022}]})json"},
+        {"tunnel-socks5-non-loopback",
+         "{\"format_version\":1,\"servers\":[" + valid_server +
+             R"json(],"tunnels":[{"name":"proxy","server":"edge","protocol":"socks5","remote_host":"0.0.0.0","remote_port":6080}]})json",
+         common::ErrorCode::permission_denied},
         {"tunnel-enabled-type",
          "{\"format_version\":1,\"servers\":[" + valid_server +
              R"json(],"tunnels":[{"name":"ssh","server":"edge","local_port":22,"remote_port":6022,"enabled":1}]})json"},
@@ -759,6 +776,44 @@ TEST_F(DaemonControlServiceTest, UpdatesAndTogglesServerAndTunnelWithMonotonicRe
     ASSERT_FALSE(immutable_server.ok());
     ASSERT_NE(immutable_server.error(), nullptr);
     EXPECT_EQ(immutable_server.error()->code(), common::ErrorCode::invalid_argument);
+}
+
+TEST_F(DaemonControlServiceTest, EnforcesProtocolSpecificTunnelUpdateRequirements) {
+    ASSERT_TRUE(dispatch(dispatcher_, "server.add",
+                         ipc::Json{{"endpoint", "example.com:2333"}, {"name", "primary"}})
+                    .ok());
+    const auto added = dispatch(dispatcher_, "tun.add",
+                                ipc::Json{{"server", "primary"},
+                                          {"name", "proxy"},
+                                          {"protocol", "socks5"},
+                                          {"remote_port", 6'080}});
+    ASSERT_TRUE(added.ok()) << *added.error();
+    const auto& tunnel = require_result(added).at("tunnel");
+    const std::string tunnel_id = tunnel.at("id").get<std::string>();
+    EXPECT_EQ(tunnel.at("protocol"), "socks5");
+    EXPECT_EQ(tunnel.at("remote_endpoint"), "127.0.0.1:6080");
+
+    const auto missing_target = dispatch(dispatcher_, "tun.update",
+                                         ipc::Json{{"identifier", tunnel_id}, {"protocol", "tcp"}});
+    ASSERT_FALSE(missing_target.ok());
+    ASSERT_NE(missing_target.error(), nullptr);
+    EXPECT_EQ(missing_target.error()->code(), common::ErrorCode::invalid_argument);
+
+    const auto exposed_proxy =
+        dispatch(dispatcher_, "tun.update",
+                 ipc::Json{{"identifier", tunnel_id}, {"remote_host", "0.0.0.0"}});
+    ASSERT_FALSE(exposed_proxy.ok());
+    ASSERT_NE(exposed_proxy.error(), nullptr);
+    EXPECT_EQ(exposed_proxy.error()->code(), common::ErrorCode::permission_denied);
+
+    const auto converted = dispatch(dispatcher_, "tun.update",
+                                    ipc::Json{{"identifier", tunnel_id},
+                                              {"protocol", "tcp"},
+                                              {"local_port", 8'080},
+                                              {"remote_host", "0.0.0.0"}});
+    ASSERT_TRUE(converted.ok()) << *converted.error();
+    EXPECT_EQ(require_result(converted).at("tunnel").at("protocol"), "tcp");
+    EXPECT_EQ(require_result(converted).at("tunnel").at("local_endpoint"), "127.0.0.1:8080");
 }
 
 TEST_F(DaemonControlServiceTest, LogoutDeletesAuthenticationAndConvergesToUnauthenticated) {
@@ -1671,11 +1726,11 @@ TEST_F(DaemonControlServiceTest, DoctorBacksUpCheckpointsAndRestoresBothDatabase
               "single_database_atomic");
 
     for (const auto& backup_field : {"backup_state", "backup_credentials"}) {
-        const auto refused = dispatch(dispatcher_, "doctor",
-                                      ipc::Json{{backup_field,
-                                                 backup_field == std::string_view{"backup_state"}
-                                                     ? state_file_.directory().string()
-                                                     : credential_file_.directory().string()}});
+        const auto refused =
+            dispatch(dispatcher_, "doctor",
+                     ipc::Json{{backup_field, backup_field == std::string_view{"backup_state"}
+                                                  ? state_file_.directory().string()
+                                                  : credential_file_.directory().string()}});
         ASSERT_FALSE(refused.ok());
         EXPECT_TRUE(refused.error()->code() == common::ErrorCode::permission_denied ||
                     refused.error()->code() == common::ErrorCode::already_exists)
@@ -1736,9 +1791,8 @@ TEST_F(DaemonControlServiceTest, DatabaseStepFailuresRollBackEveryLifecycleMutat
         native.execute("DROP TRIGGER reject_server_insert");
     }
 
-    const auto added =
-        dispatch(dispatcher_, "server.add",
-                 ipc::Json{{"endpoint", "step.example.com:2333"}, {"name", "step"}});
+    const auto added = dispatch(dispatcher_, "server.add",
+                                ipc::Json{{"endpoint", "step.example.com:2333"}, {"name", "step"}});
     ASSERT_TRUE(added.ok()) << *added.error();
     const std::string server_id = require_result(added).at("server").at("id").get<std::string>();
 
@@ -1748,8 +1802,7 @@ TEST_F(DaemonControlServiceTest, DatabaseStepFailuresRollBackEveryLifecycleMutat
                        "SELECT RAISE(ABORT, 'injected server update'); END");
     }
     expect_control_error(dispatch(dispatcher_, "server.update",
-                                  ipc::Json{{"identifier", server_id},
-                                            {"name", "renamed"}}));
+                                  ipc::Json{{"identifier", server_id}, {"name", "renamed"}}));
     EXPECT_EQ(notifications_.load(std::memory_order_relaxed), notifications_before + 1U);
     {
         NativeSqliteDatabase native{state_file_.path()};
@@ -1792,12 +1845,11 @@ TEST_F(DaemonControlServiceTest, DatabaseStepFailuresRollBackEveryLifecycleMutat
         native.execute("DROP TRIGGER reject_tunnel_insert");
     }
 
-    const auto tunnel_added =
-        dispatch(dispatcher_, "tun.add",
-                 ipc::Json{{"server", server_id},
-                           {"name", "step-tunnel"},
-                           {"local_port", 22},
-                           {"remote_port", 6'300}});
+    const auto tunnel_added = dispatch(dispatcher_, "tun.add",
+                                       ipc::Json{{"server", server_id},
+                                                 {"name", "step-tunnel"},
+                                                 {"local_port", 22},
+                                                 {"remote_port", 6'300}});
     ASSERT_TRUE(tunnel_added.ok()) << *tunnel_added.error();
     const std::string tunnel_id =
         require_result(tunnel_added).at("tunnel").at("id").get<std::string>();
@@ -1820,8 +1872,7 @@ TEST_F(DaemonControlServiceTest, DatabaseStepFailuresRollBackEveryLifecycleMutat
         native.execute("CREATE TRIGGER reject_tunnel_remove BEFORE UPDATE OF desired_state ON "
                        "tunnels BEGIN SELECT RAISE(ABORT, 'injected tunnel remove'); END");
     }
-    expect_control_error(dispatch(dispatcher_, "tun.remove",
-                                  ipc::Json{{"identifier", tunnel_id}}));
+    expect_control_error(dispatch(dispatcher_, "tun.remove", ipc::Json{{"identifier", tunnel_id}}));
     EXPECT_EQ(notifications_.load(std::memory_order_relaxed), notifications_before + 2U);
     {
         NativeSqliteDatabase native{state_file_.path()};
@@ -1833,8 +1884,8 @@ TEST_F(DaemonControlServiceTest, DatabaseStepFailuresRollBackEveryLifecycleMutat
         native.execute("CREATE TRIGGER reject_server_remove BEFORE UPDATE OF desired_state ON "
                        "servers BEGIN SELECT RAISE(ABORT, 'injected server remove'); END");
     }
-    expect_control_error(dispatch(dispatcher_, "server.remove",
-                                  ipc::Json{{"identifier", server_id}}));
+    expect_control_error(
+        dispatch(dispatcher_, "server.remove", ipc::Json{{"identifier", server_id}}));
     EXPECT_EQ(notifications_.load(std::memory_order_relaxed), notifications_before + 2U);
     {
         NativeSqliteDatabase native{state_file_.path()};
@@ -1842,8 +1893,9 @@ TEST_F(DaemonControlServiceTest, DatabaseStepFailuresRollBackEveryLifecycleMutat
     }
 
     const auto apply_path = state_file_.directory() / "apply-step.json";
-    write_test_file(apply_path,
-                    R"json({"format_version":1,"servers":[{"name":"apply-step","endpoint":"apply.example.com:2333"}],"tunnels":[]})json");
+    write_test_file(
+        apply_path,
+        R"json({"format_version":1,"servers":[{"name":"apply-step","endpoint":"apply.example.com:2333"}],"tunnels":[]})json");
     {
         NativeSqliteDatabase native{state_file_.path()};
         native.execute("CREATE TRIGGER reject_config_apply BEFORE INSERT ON servers BEGIN "
@@ -1865,46 +1917,38 @@ TEST_F(DaemonControlServiceTest, DatabaseStepFailuresRollBackEveryLifecycleMutat
         native.execute("CREATE TRIGGER reject_server_logout BEFORE UPDATE ON servers BEGIN "
                        "SELECT RAISE(ABORT, 'injected server logout'); END");
     }
-    expect_control_error(dispatch(dispatcher_, "server.logout",
-                                  ipc::Json{{"identifier", server_id}}));
+    expect_control_error(
+        dispatch(dispatcher_, "server.logout", ipc::Json{{"identifier", server_id}}));
     EXPECT_EQ(notifications_.load(std::memory_order_relaxed), notifications_before + 3U);
     {
         NativeSqliteDatabase native{state_file_.path()};
         native.execute("DROP TRIGGER reject_server_logout");
     }
 
-    ASSERT_TRUE(dispatch(dispatcher_, "server.remove",
-                         ipc::Json{{"identifier", server_id}})
-                    .ok());
+    ASSERT_TRUE(dispatch(dispatcher_, "server.remove", ipc::Json{{"identifier", server_id}}).ok());
     EXPECT_EQ(notifications_.load(std::memory_order_relaxed), notifications_before + 4U);
 }
 
 TEST_F(DaemonControlServiceTest, MoreDatabaseStepFailuresRollBackEveryLifecycleMutation) {
     const auto notifications_before = notifications_.load(std::memory_order_relaxed);
-    const auto added =
-        dispatch(dispatcher_, "server.add",
-                 ipc::Json{{"endpoint", "more.example.com:2333"}, {"name", "more"}});
+    const auto added = dispatch(dispatcher_, "server.add",
+                                ipc::Json{{"endpoint", "more.example.com:2333"}, {"name", "more"}});
     ASSERT_TRUE(added.ok()) << *added.error();
     const std::string server_id = require_result(added).at("server").at("id").get<std::string>();
     ASSERT_TRUE(dispatch(dispatcher_, "server.login",
                          ipc::Json{{"identifier", server_id}, {"psk", "first-secret"}})
                     .ok());
-    const auto tunnel_added =
-        dispatch(dispatcher_, "tun.add",
-                 ipc::Json{{"server", server_id},
-                           {"name", "more-tunnel"},
-                           {"local_port", 22},
-                           {"remote_port", 6'400}});
+    const auto tunnel_added = dispatch(dispatcher_, "tun.add",
+                                       ipc::Json{{"server", server_id},
+                                                 {"name", "more-tunnel"},
+                                                 {"local_port", 22},
+                                                 {"remote_port", 6'400}});
     ASSERT_TRUE(tunnel_added.ok()) << *tunnel_added.error();
     const std::string tunnel_id =
         require_result(tunnel_added).at("tunnel").at("id").get<std::string>();
     EXPECT_EQ(notifications_.load(std::memory_order_relaxed), notifications_before + 3U);
-    ASSERT_TRUE(dispatch(dispatcher_, "server.disable",
-                         ipc::Json{{"identifier", server_id}})
-                    .ok());
-    ASSERT_TRUE(dispatch(dispatcher_, "tun.disable",
-                         ipc::Json{{"identifier", tunnel_id}})
-                    .ok());
+    ASSERT_TRUE(dispatch(dispatcher_, "server.disable", ipc::Json{{"identifier", server_id}}).ok());
+    ASSERT_TRUE(dispatch(dispatcher_, "tun.disable", ipc::Json{{"identifier", tunnel_id}}).ok());
     EXPECT_EQ(notifications_.load(std::memory_order_relaxed), notifications_before + 5U);
 
     {
@@ -1921,8 +1965,7 @@ TEST_F(DaemonControlServiceTest, MoreDatabaseStepFailuresRollBackEveryLifecycleM
         native.execute("CREATE TRIGGER reject_tunnel_enable BEFORE UPDATE ON tunnels BEGIN "
                        "SELECT RAISE(ABORT, 'injected tunnel enable'); END");
     }
-    expect_control_error(
-        dispatch(dispatcher_, "tun.enable", ipc::Json{{"identifier", tunnel_id}}));
+    expect_control_error(dispatch(dispatcher_, "tun.enable", ipc::Json{{"identifier", tunnel_id}}));
     EXPECT_EQ(notifications_.load(std::memory_order_relaxed), notifications_before + 5U);
     {
         NativeSqliteDatabase native{state_file_.path()};
@@ -1947,9 +1990,9 @@ TEST_F(DaemonControlServiceTest, MoreDatabaseStepFailuresRollBackEveryLifecycleM
         native.execute("CREATE TRIGGER reject_transport_update BEFORE UPDATE ON servers BEGIN "
                        "SELECT RAISE(ABORT, 'injected transport update'); END");
     }
-    expect_control_error(dispatch(dispatcher_, "server.update",
-                                  ipc::Json{{"identifier", server_id},
-                                            {"endpoint", "new-more.example.com:2444"}}));
+    expect_control_error(
+        dispatch(dispatcher_, "server.update",
+                 ipc::Json{{"identifier", server_id}, {"endpoint", "new-more.example.com:2444"}}));
     EXPECT_EQ(notifications_.load(std::memory_order_relaxed), notifications_before + 5U);
     {
         NativeSqliteDatabase native{state_file_.path()};
@@ -1958,15 +2001,16 @@ TEST_F(DaemonControlServiceTest, MoreDatabaseStepFailuresRollBackEveryLifecycleM
 
     const auto ca_path = credential_file_.directory() / "more-ca.pem";
     write_test_file(ca_path, "not a real CA\n");
-    expect_control_error(dispatch(dispatcher_, "server.update",
-                                  ipc::Json{{"identifier", server_id},
-                                            {"ca_certificate", ca_path.string()}}),
-                         common::ErrorCode::tls_error);
+    expect_control_error(
+        dispatch(dispatcher_, "server.update",
+                 ipc::Json{{"identifier", server_id}, {"ca_certificate", ca_path.string()}}),
+        common::ErrorCode::tls_error);
     EXPECT_EQ(notifications_.load(std::memory_order_relaxed), notifications_before + 5U);
 
     const auto update_path = state_file_.directory() / "apply-more-update.json";
-    write_test_file(update_path,
-                    R"json({"format_version":1,"servers":[{"name":"more","endpoint":"applied-more.example.com:2333"}],"tunnels":[]})json");
+    write_test_file(
+        update_path,
+        R"json({"format_version":1,"servers":[{"name":"more","endpoint":"applied-more.example.com:2333"}],"tunnels":[]})json");
     {
         NativeSqliteDatabase native{state_file_.path()};
         native.execute("CREATE TRIGGER reject_apply_update BEFORE UPDATE ON servers BEGIN "
@@ -1981,8 +2025,9 @@ TEST_F(DaemonControlServiceTest, MoreDatabaseStepFailuresRollBackEveryLifecycleM
     }
 
     const auto tunnel_path = state_file_.directory() / "apply-more-tunnel.json";
-    write_test_file(tunnel_path,
-                    R"json({"format_version":1,"servers":[{"name":"more","endpoint":"more.example.com:2333"}],"tunnels":[{"name":"applied","server":"more","local_port":23,"remote_port":6401}]})json");
+    write_test_file(
+        tunnel_path,
+        R"json({"format_version":1,"servers":[{"name":"more","endpoint":"more.example.com:2333"}],"tunnels":[{"name":"applied","server":"more","local_port":23,"remote_port":6401}]})json");
     {
         NativeSqliteDatabase native{state_file_.path()};
         native.execute("CREATE TRIGGER reject_apply_tunnel BEFORE INSERT ON tunnels BEGIN "

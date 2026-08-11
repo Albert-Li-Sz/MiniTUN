@@ -678,8 +678,9 @@ int minitun_client_tunnel_create(minitun_client* client,
                                  const minitun_tunnel_create_request* create,
                                  minitun_tunnel_info* output, minitun_error** error) {
     return api_guard(error, [client, create, output]() -> Result<void> {
-        if (create == nullptr || create->struct_size < sizeof(*create) || output == nullptr ||
-            create->local_port == 0U || create->remote_port == 0U) {
+        constexpr std::size_t v1_size = offsetof(minitun_tunnel_create_request, protocol);
+        if (create == nullptr || create->struct_size < v1_size || output == nullptr ||
+            create->remote_port == 0U) {
             return Error{ErrorCode::invalid_argument, "tunnel create request is invalid"};
         }
         *output = {};
@@ -687,9 +688,24 @@ int minitun_client_tunnel_create(minitun_client* client,
         if (!server) {
             return server.error();
         }
-        Json params{{"server", *server},
-                    {"local_port", create->local_port},
-                    {"remote_port", create->remote_port}};
+        std::string protocol{"tcp"};
+        if (create->struct_size >=
+                offsetof(minitun_tunnel_create_request, protocol) + sizeof(create->protocol) &&
+            create->protocol != nullptr) {
+            auto value = bounded_string(create->protocol, "tunnel protocol");
+            if (!value) {
+                return value.error();
+            }
+            protocol = std::move(*value);
+        }
+        if (create->local_port == 0U && protocol != "socks5") {
+            return Error{ErrorCode::invalid_argument,
+                         "local port is required for this tunnel protocol"};
+        }
+        Json params{{"server", *server}, {"remote_port", create->remote_port}};
+        if (create->local_port != 0U) {
+            params["local_port"] = create->local_port;
+        }
         if (create->name != nullptr) {
             auto name = bounded_string(create->name, "tunnel name");
             if (!name) {
@@ -704,6 +720,20 @@ int minitun_client_tunnel_create(minitun_client* client,
             }
             params["local_host"] = *host;
         }
+        if (create->struct_size >=
+                offsetof(minitun_tunnel_create_request, protocol) + sizeof(create->protocol) &&
+            create->protocol != nullptr) {
+            params["protocol"] = protocol;
+        }
+        if (create->struct_size >= offsetof(minitun_tunnel_create_request, remote_host) +
+                                       sizeof(create->remote_host) &&
+            create->remote_host != nullptr) {
+            auto value = bounded_string(create->remote_host, "remote host");
+            if (!value) {
+                return value.error();
+            }
+            params["remote_host"] = *value;
+        }
         auto result = request(client, "tun.add", std::move(params));
         return result ? fill_tunnel_info(result->at("tunnel"), *output)
                       : Result<void>::failure(result.error());
@@ -714,8 +744,16 @@ int minitun_client_tunnel_update(minitun_client* client,
                                  const minitun_tunnel_update_request* update,
                                  minitun_tunnel_info* output, minitun_error** error) {
     return api_guard(error, [client, update, output]() -> Result<void> {
-        if (update == nullptr || update->struct_size < sizeof(*update) || output == nullptr) {
+        constexpr std::size_t v1_size = offsetof(minitun_tunnel_update_request, protocol);
+        constexpr std::uint32_t supported_fields =
+            MINITUN_TUNNEL_UPDATE_NAME | MINITUN_TUNNEL_UPDATE_LOCAL_HOST |
+            MINITUN_TUNNEL_UPDATE_LOCAL_PORT | MINITUN_TUNNEL_UPDATE_REMOTE_PORT |
+            MINITUN_TUNNEL_UPDATE_PROTOCOL | MINITUN_TUNNEL_UPDATE_REMOTE_HOST;
+        if (update == nullptr || update->struct_size < v1_size || output == nullptr) {
             return Error{ErrorCode::invalid_argument, "tunnel update request is invalid"};
+        }
+        if (update->field_mask == 0U || (update->field_mask & ~supported_fields) != 0U) {
+            return Error{ErrorCode::invalid_argument, "tunnel update field mask is invalid"};
         }
         *output = {};
         auto id = bounded_string(update->identifier, "tunnel identifier");
@@ -752,6 +790,30 @@ int minitun_client_tunnel_update(minitun_client* client,
                 return Error{ErrorCode::invalid_argument, "remote port is invalid"};
             }
             params["remote_port"] = update->remote_port;
+        }
+        if ((update->field_mask & MINITUN_TUNNEL_UPDATE_PROTOCOL) != 0U) {
+            if (update->struct_size <
+                offsetof(minitun_tunnel_update_request, protocol) + sizeof(update->protocol)) {
+                return Error{ErrorCode::invalid_argument,
+                             "tunnel update protocol field is unavailable"};
+            }
+            auto value = bounded_string(update->protocol, "tunnel protocol");
+            if (!value) {
+                return value.error();
+            }
+            params["protocol"] = *value;
+        }
+        if ((update->field_mask & MINITUN_TUNNEL_UPDATE_REMOTE_HOST) != 0U) {
+            if (update->struct_size < offsetof(minitun_tunnel_update_request, remote_host) +
+                                          sizeof(update->remote_host)) {
+                return Error{ErrorCode::invalid_argument,
+                             "tunnel update remote host field is unavailable"};
+            }
+            auto value = bounded_string(update->remote_host, "remote host");
+            if (!value) {
+                return value.error();
+            }
+            params["remote_host"] = *value;
         }
         auto result = request(client, "tun.update", std::move(params));
         return result ? fill_tunnel_info(result->at("tunnel"), *output)

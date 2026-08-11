@@ -840,10 +840,6 @@ common::Result<void> validate_tunnel_record(const TunnelRecord& record) {
         return common::Error{common::ErrorCode::invalid_argument,
                              "tunnel record contains an unknown protocol or state"};
     }
-    if (record.protocol != TunnelProtocol::tcp) {
-        return common::Error{common::ErrorCode::invalid_argument,
-                             "stage 2 persistence only supports TCP tunnels"};
-    }
     if (auto result = validate_error_fields(record.last_error_code, record.last_error_message);
         !result) {
         return result;

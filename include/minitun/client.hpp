@@ -132,6 +132,8 @@ struct TunnelCreate final {
     std::string local_host{"127.0.0.1"};
     std::uint16_t local_port{0};
     std::uint16_t remote_port{0};
+    std::string protocol{"tcp"};
+    std::optional<std::string> remote_host{std::nullopt};
 };
 
 struct TunnelUpdate final {
@@ -140,6 +142,8 @@ struct TunnelUpdate final {
     UpdateField<std::string> local_host;
     UpdateField<std::uint16_t> local_port;
     UpdateField<std::uint16_t> remote_port;
+    UpdateField<std::string> protocol;
+    UpdateField<std::string> remote_host;
 };
 
 enum class TunnelAction : std::uint8_t {
@@ -219,13 +223,13 @@ class Client final {
         if (minitun_client_status_get(handle_.get(), &raw, &error) != 0) {
             return take_error(error);
         }
-        return Status{raw.server_total,       raw.server_online, raw.tunnel_total,
-                      raw.tunnel_active,      raw.sessions_active, raw.workers_idle,
-                      raw.workers_active,     raw.connections_active};
+        return Status{raw.server_total,   raw.server_online,     raw.tunnel_total,
+                      raw.tunnel_active,  raw.sessions_active,   raw.workers_idle,
+                      raw.workers_active, raw.connections_active};
     }
 
-    [[nodiscard]] Result<Server> create_server(std::string endpoint,
-                                               std::optional<std::string> name = std::nullopt) const {
+    [[nodiscard]] Result<Server>
+    create_server(std::string endpoint, std::optional<std::string> name = std::nullopt) const {
         minitun_server_create_request request{sizeof(request), endpoint.c_str(),
                                               name ? name->c_str() : nullptr};
         minitun_server_info raw{};
@@ -239,8 +243,8 @@ class Client final {
     [[nodiscard]] Result<Server> login_server(std::string identifier, std::string psk) const {
         minitun_server_info raw{};
         minitun_error* error = nullptr;
-        const int status = minitun_client_server_login(handle_.get(), identifier.c_str(), psk.c_str(),
-                                                       &raw, &error);
+        const int status = minitun_client_server_login(handle_.get(), identifier.c_str(),
+                                                       psk.c_str(), &raw, &error);
         std::fill(psk.begin(), psk.end(), '\0');
         if (status != 0) {
             return take_error(error);
@@ -295,8 +299,8 @@ class Client final {
                             : action == ServerAction::disable ? MINITUN_SERVER_DISABLE
                             : action == ServerAction::logout  ? MINITUN_SERVER_LOGOUT
                                                               : MINITUN_SERVER_REMOVE;
-        if (minitun_client_server_execute(handle_.get(), identifier.c_str(), native, &raw, &error) !=
-            0) {
+        if (minitun_client_server_execute(handle_.get(), identifier.c_str(), native, &raw,
+                                          &error) != 0) {
             return take_error(error);
         }
         if (action == ServerAction::remove) {
@@ -328,6 +332,8 @@ class Client final {
             create.local_host.c_str(),
             create.local_port,
             create.remote_port,
+            create.protocol.c_str(),
+            create.remote_host ? create.remote_host->c_str() : nullptr,
         };
         minitun_tunnel_info raw{};
         minitun_error* error = nullptr;
@@ -351,6 +357,12 @@ class Client final {
         if (update.remote_port.specified) {
             mask |= static_cast<std::uint32_t>(MINITUN_TUNNEL_UPDATE_REMOTE_PORT);
         }
+        if (update.protocol.specified) {
+            mask |= static_cast<std::uint32_t>(MINITUN_TUNNEL_UPDATE_PROTOCOL);
+        }
+        if (update.remote_host.specified) {
+            mask |= static_cast<std::uint32_t>(MINITUN_TUNNEL_UPDATE_REMOTE_HOST);
+        }
         minitun_tunnel_update_request request{
             sizeof(request),
             update.identifier.c_str(),
@@ -359,6 +371,8 @@ class Client final {
             pointer(update.local_host),
             update.local_port.value.value_or(0U),
             update.remote_port.value.value_or(0U),
+            pointer(update.protocol),
+            pointer(update.remote_host),
         };
         minitun_tunnel_info raw{};
         minitun_error* error = nullptr;
@@ -375,8 +389,8 @@ class Client final {
         const auto native = action == TunnelAction::enable    ? MINITUN_TUNNEL_ENABLE
                             : action == TunnelAction::disable ? MINITUN_TUNNEL_DISABLE
                                                               : MINITUN_TUNNEL_REMOVE;
-        if (minitun_client_tunnel_execute(handle_.get(), identifier.c_str(), native, &raw, &error) !=
-            0) {
+        if (minitun_client_tunnel_execute(handle_.get(), identifier.c_str(), native, &raw,
+                                          &error) != 0) {
             return take_error(error);
         }
         if (action == TunnelAction::remove) {
@@ -385,8 +399,8 @@ class Client final {
         return take_tunnel(raw);
     }
 
-    [[nodiscard]] Result<std::vector<Tunnel>> tunnels(
-        const std::optional<std::string>& server = std::nullopt) const {
+    [[nodiscard]] Result<std::vector<Tunnel>>
+    tunnels(const std::optional<std::string>& server = std::nullopt) const {
         minitun_tunnel_list raw{};
         minitun_error* error = nullptr;
         if (minitun_client_tunnel_list(handle_.get(), server ? server->c_str() : nullptr, &raw,
@@ -406,7 +420,8 @@ class Client final {
         return run_config(path, prune, false);
     }
 
-    [[nodiscard]] Result<ConfigPlan> config_apply(std::string path, const bool prune = false) const {
+    [[nodiscard]] Result<ConfigPlan> config_apply(std::string path,
+                                                  const bool prune = false) const {
         return run_config(path, prune, true);
     }
 
@@ -448,7 +463,8 @@ class Client final {
 
     [[nodiscard]] static ClientError take_error(minitun_error* error) {
         ClientError result{
-            error != nullptr ? static_cast<ClientErrorCode>(error->code) : ClientErrorCode::internal,
+            error != nullptr ? static_cast<ClientErrorCode>(error->code)
+                             : ClientErrorCode::internal,
             error != nullptr && error->message != nullptr ? error->message : "local SDK error",
         };
         minitun_error_free(error);
@@ -509,10 +525,9 @@ class Client final {
                                                 const bool apply) const {
         minitun_config_plan_result raw{};
         minitun_error* error = nullptr;
-        const int status = apply ? minitun_client_config_apply(handle_.get(), path.c_str(), prune,
-                                                               &raw, &error)
-                                 : minitun_client_config_plan(handle_.get(), path.c_str(), prune,
-                                                              &raw, &error);
+        const int status =
+            apply ? minitun_client_config_apply(handle_.get(), path.c_str(), prune, &raw, &error)
+                  : minitun_client_config_plan(handle_.get(), path.c_str(), prune, &raw, &error);
         if (status != 0) {
             return take_error(error);
         }
@@ -521,13 +536,10 @@ class Client final {
         result.actions.reserve(raw.size);
         for (std::size_t index = 0U; index < raw.size; ++index) {
             const auto& action = raw.actions[index];
-            const auto kind = action.action == MINITUN_CONFIG_CREATE
-                                  ? ConfigActionKind::create
-                              : action.action == MINITUN_CONFIG_UPDATE
-                                  ? ConfigActionKind::update
-                              : action.action == MINITUN_CONFIG_DISABLE
-                                  ? ConfigActionKind::disable
-                                  : ConfigActionKind::remove;
+            const auto kind = action.action == MINITUN_CONFIG_CREATE    ? ConfigActionKind::create
+                              : action.action == MINITUN_CONFIG_UPDATE  ? ConfigActionKind::update
+                              : action.action == MINITUN_CONFIG_DISABLE ? ConfigActionKind::disable
+                                                                        : ConfigActionKind::remove;
             result.actions.push_back({kind,
                                       action.resource == MINITUN_CONFIG_SERVER
                                           ? ConfigResourceKind::server

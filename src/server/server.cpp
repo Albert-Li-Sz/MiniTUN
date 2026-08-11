@@ -166,7 +166,7 @@ inline constexpr std::chrono::hours kMaximumRelayTimeout{24};
         return false;
     }
     const std::unique_ptr<GENERAL_NAMES, decltype(&GENERAL_NAMES_free)> names{raw_names,
-                                                                            &GENERAL_NAMES_free};
+                                                                              &GENERAL_NAMES_free};
     const int count = sk_GENERAL_NAME_num(names.get());
     for (int index = 0; index < count; ++index) {
         const GENERAL_NAME* name = sk_GENERAL_NAME_value(names.get(), index);
@@ -364,14 +364,15 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
             policy_reload_failures_total_.fetch_add(1U, std::memory_order_relaxed);
             return context.error();
         }
-        auto changed_clients = client_policies_->reload([this](const ClientPolicySnapshot& snapshot) {
-            if (snapshot.has_certificate_bindings() && options_.client_ca_path.empty()) {
-                return common::Result<void>::failure(
-                    common::ErrorCode::invalid_argument,
-                    "client-ca is required when a client policy binds a certificate");
-            }
-            return common::Result<void>::success();
-        });
+        auto changed_clients =
+            client_policies_->reload([this](const ClientPolicySnapshot& snapshot) {
+                if (snapshot.has_certificate_bindings() && options_.client_ca_path.empty()) {
+                    return common::Result<void>::failure(
+                        common::ErrorCode::invalid_argument,
+                        "client-ca is required when a client policy binds a certificate");
+                }
+                return common::Result<void>::success();
+            });
         if (!changed_clients) {
             policy_reload_failures_total_.fetch_add(1U, std::memory_order_relaxed);
             return changed_clients.error();
@@ -502,9 +503,9 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
                         "client policy changed before worker registration");
                 }
                 registration.max_idle_workers = current->max_idle_workers;
-                auto result = worker_pool_.add(std::move(registration),
-                                               std::move(assignment_handler),
-                                               std::move(removal_handler));
+                auto result =
+                    worker_pool_.add(std::move(registration), std::move(assignment_handler),
+                                     std::move(removal_handler));
                 if (!result && result.error().code() == common::ErrorCode::resource_exhausted) {
                     quota_rejections_total_.fetch_add(1U, std::memory_order_relaxed);
                 }
@@ -566,10 +567,9 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
                     std::memory_order_relaxed);
                 if (result) {
                     registration_success_total_.fetch_add(1U, std::memory_order_relaxed);
-                    common::log_info("client tunnel registered",
-                                     {.component = "server.audit",
-                                      .server_id = server_id_,
-                                      .tunnel_id = binding.tunnel_id});
+                    common::log_info("client tunnel registered", {.component = "server.audit",
+                                                                  .server_id = server_id_,
+                                                                  .tunnel_id = binding.tunnel_id});
                 } else {
                     registration_failure_total_.fetch_add(1U, std::memory_order_relaxed);
                     if (result.error().code() == common::ErrorCode::resource_exhausted) {
@@ -592,10 +592,9 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
                                                    config_revision);
                 unregistration_total_.fetch_add(1U, std::memory_order_relaxed);
                 refresh_resource_gauges();
-                common::log_info("client tunnel unregistered",
-                                 {.component = "server.audit",
-                                  .server_id = server_id_,
-                                  .tunnel_id = tunnel_id});
+                common::log_info(
+                    "client tunnel unregistered",
+                    {.component = "server.audit", .server_id = server_id_, .tunnel_id = tunnel_id});
                 return true;
             },
             asio::use_awaitable);
@@ -621,18 +620,19 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
 
         void start() {
             auto self = shared_from_this();
-            asio::co_spawn(stream_.get_executor(), run(), [self](const std::exception_ptr& failure) {
-                if (failure) {
-                    common::log_warn("remote control session ended with an exception",
-                                     self->log_context(common::ErrorCode::internal_error));
-                }
-                self->run_finished_ = true;
-                self->cancel_timers();
-                if (!self->goaway_in_progress_) {
-                    self->close_transport();
-                    self->notify_finished();
-                }
-            });
+            asio::co_spawn(
+                stream_.get_executor(), run(), [self](const std::exception_ptr& failure) {
+                    if (failure) {
+                        common::log_warn("remote control session ended with an exception",
+                                         self->log_context(common::ErrorCode::internal_error));
+                    }
+                    self->run_finished_ = true;
+                    self->cancel_timers();
+                    if (!self->goaway_in_progress_) {
+                        self->close_transport();
+                        self->notify_finished();
+                    }
+                });
         }
 
         void request_stop(const bool graceful) {
@@ -641,33 +641,32 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
                            [self, graceful] { self->request_stop_on_executor(graceful); });
         }
 
-        void request_reload_stop(
-            std::shared_ptr<const std::vector<std::string>> affected_clients) {
+        void request_reload_stop(std::shared_ptr<const std::vector<std::string>> affected_clients) {
             auto self = shared_from_this();
-            asio::dispatch(stream_.get_executor(), [self, affected_clients =
-                                                              std::move(affected_clients)] {
-                if (std::find(affected_clients->begin(), affected_clients->end(),
-                              self->client_id_) == affected_clients->end()) {
-                    return;
-                }
-                // A policy change stops listeners and idle capacity immediately,
-                // while an already assigned relay receives the same bounded drain
-                // period used for process shutdown.
-                if (self->worker_assignment_ != nullptr) {
-                    self->reload_drain_timer_.expires_after(
-                        self->server_->options_.graceful_shutdown_timeout);
-                    const auto weak = self->weak_from_this();
-                    self->reload_drain_timer_.async_wait([weak](const asio::error_code& error) {
-                        if (!error) {
-                            if (auto active = weak.lock()) {
-                                active->force_stop_on_executor();
+            asio::dispatch(
+                stream_.get_executor(), [self, affected_clients = std::move(affected_clients)] {
+                    if (std::find(affected_clients->begin(), affected_clients->end(),
+                                  self->client_id_) == affected_clients->end()) {
+                        return;
+                    }
+                    // A policy change stops listeners and idle capacity immediately,
+                    // while an already assigned relay receives the same bounded drain
+                    // period used for process shutdown.
+                    if (self->worker_assignment_ != nullptr) {
+                        self->reload_drain_timer_.expires_after(
+                            self->server_->options_.graceful_shutdown_timeout);
+                        const auto weak = self->weak_from_this();
+                        self->reload_drain_timer_.async_wait([weak](const asio::error_code& error) {
+                            if (!error) {
+                                if (auto active = weak.lock()) {
+                                    active->force_stop_on_executor();
+                                }
                             }
-                        }
-                    });
-                    return;
-                }
-                self->request_stop_on_executor(true);
-            });
+                        });
+                        return;
+                    }
+                    self->request_stop_on_executor(true);
+                });
         }
 
         void force_stop() noexcept {
@@ -782,8 +781,7 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
             }
             const bool authenticated = co_await authenticate(*first_frame);
             if (!authenticated) {
-                server_->authentication_failure_total_.fetch_add(1U,
-                                                                  std::memory_order_relaxed);
+                server_->authentication_failure_total_.fetch_add(1U, std::memory_order_relaxed);
                 co_return;
             }
             server_->authentication_success_total_.fetch_add(1U, std::memory_order_relaxed);
@@ -818,8 +816,7 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
             const bool policy_eligible = policy_owner_ != nullptr && policy_owner_->enabled &&
                                          policy_owner_->psk != nullptr &&
                                          certificate_matches(stream_, policy_owner_->certificate);
-            selected_capabilities_ =
-                hello->capabilities & protocol::kSupportedCapabilities;
+            selected_capabilities_ = hello->capabilities & protocol::kSupportedCapabilities;
             if ((selected_capabilities_ & protocol::kRequiredCapabilities) !=
                 protocol::kRequiredCapabilities) {
                 co_return false;
@@ -859,8 +856,7 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
             accepted = accepted && policy_eligible;
             accepted = accepted && auth->client_id == client_id_;
             accepted = accepted && auth->nonce == challenge_nonce_;
-            accepted = accepted &&
-                       auth->selected_capabilities == selected_capabilities_;
+            accepted = accepted && auth->selected_capabilities == selected_capabilities_;
             if (accepted) {
                 auto skew = common::is_clock_skew_within(auth->timestamp_seconds,
                                                          common::unix_seconds_now(),
@@ -871,12 +867,12 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
             // Unknown, disabled, and certificate-mismatched clients use an
             // ephemeral rejection key so policy existence is not exposed by an
             // avoidable authentication timing distinction.
-            const std::string_view psk = policy_eligible ? policy_owner_->psk->view()
-                                                         : server_->rejection_psk_.view();
+            const std::string_view psk =
+                policy_eligible ? policy_owner_->psk->view() : server_->rejection_psk_.view();
             auto verified = protocol::verify_and_consume_authentication_data(
-                server_->nonce_cache_, psk, auth->client_id,
-                server_->server_id_, auth->timestamp_seconds, auth->nonce,
-                auth->selected_capabilities, auth->authentication_data, now);
+                server_->nonce_cache_, psk, auth->client_id, server_->server_id_,
+                auth->timestamp_seconds, auth->nonce, auth->selected_capabilities,
+                auth->authentication_data, now);
             accepted = accepted && verified && *verified;
             if (!accepted) {
                 server_->auth_rate_limiter_.record_failure(remote_endpoint_, now);
@@ -901,7 +897,8 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
             const auto heartbeat_milliseconds =
                 std::chrono::duration_cast<std::chrono::milliseconds>(
                     server_->options_.heartbeat_interval);
-            const auto policy_max_idle = static_cast<std::uint16_t>(policy_owner_->max_idle_workers);
+            const auto policy_max_idle =
+                static_cast<std::uint16_t>(policy_owner_->max_idle_workers);
             auto ok_payload = protocol::encode_auth_ok({
                 .session_generation = generation_,
                 .heartbeat_interval_milliseconds =
@@ -946,9 +943,9 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
                                                        hello->session_generation)) {
                 co_return;
             }
-            auto skew = common::is_clock_skew_within(hello->timestamp_seconds,
-                                                     common::unix_seconds_now(),
-                                                     server_->options_.allowed_clock_skew);
+            auto skew =
+                common::is_clock_skew_within(hello->timestamp_seconds, common::unix_seconds_now(),
+                                             server_->options_.allowed_clock_skew);
             if (!skew || !*skew) {
                 co_return;
             }
@@ -1045,7 +1042,8 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
             }
             const std::string connection_id_text = connection_id->str();
             auto relay_payload = protocol::encode_start_relay(
-                {worker_assignment_->binding.tunnel_id, connection_id_text});
+                {worker_assignment_->binding.tunnel_id, connection_id_text,
+                 worker_assignment_->binding.mode});
             if (!relay_payload) {
                 co_return;
             }
@@ -1309,6 +1307,17 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
             if (!registration) {
                 co_return false;
             }
+            if (!protocol::supports_tunnel_mode(selected_capabilities_, registration->mode)) {
+                auto payload = protocol::encode_register_tunnel_error(
+                    {registration->tunnel_id, common::ErrorCode::unsupported_version,
+                     registration->desired_revision});
+                if (!payload) {
+                    co_return false;
+                }
+                const protocol::Frame error_frame{protocol::MessageType::register_tunnel_error, 0U,
+                                                  frame.request_id, std::move(*payload)};
+                co_return co_await write_frame(error_frame, timeout);
+            }
             // Keep this aggregate out of the co_await expression so its strings
             // have unambiguous ownership across older coroutine implementations.
             const TunnelBinding binding{
@@ -1318,6 +1327,7 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
                 .bind_host = registration->bind_host,
                 .bind_port = registration->bind_port,
                 .config_revision = registration->desired_revision,
+                .mode = registration->mode,
             };
             auto registered = co_await server_->register_tunnel(policy_owner_, binding);
             if (!registered) {
@@ -1348,9 +1358,8 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
             if (!removal) {
                 co_return false;
             }
-            static_cast<void>(
-                co_await server_->unregister_tunnel(client_id_, generation_, removal->tunnel_id,
-                                                    removal->desired_revision));
+            static_cast<void>(co_await server_->unregister_tunnel(
+                client_id_, generation_, removal->tunnel_id, removal->desired_revision));
             auto payload = protocol::encode_unregister_tunnel_ok(
                 {removal->tunnel_id, removal->desired_revision});
             if (!payload) {
@@ -1693,19 +1702,19 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
     Impl(asio::io_context& io_context, ServerOptions options,
          const asio::ip::tcp::endpoint& listen_endpoint,
          std::shared_ptr<asio::ssl::context> tls_context,
-         std::shared_ptr<ClientPolicyStore> client_policies,
-         std::string server_id, common::PortRange allowed_ports)
+         std::shared_ptr<ClientPolicyStore> client_policies, std::string server_id,
+         common::PortRange allowed_ports)
         : io_context_(io_context), options_(std::move(options)),
           strand_(asio::make_strand(io_context)), acceptor_(strand_), accept_retry_timer_(strand_),
           worker_request_retry_timer_(strand_), shutdown_timer_(strand_),
           listen_endpoint_(listen_endpoint), tls_context_(std::move(tls_context)),
-          client_policies_(std::move(client_policies)),
-          server_id_(std::move(server_id)), session_registry_(options_.max_clients),
+          client_policies_(std::move(client_policies)), server_id_(std::move(server_id)),
+          session_registry_(options_.max_clients),
           worker_pool_(options_.max_idle_workers, options_.max_total_idle_workers),
           connection_quota_(options_.max_connections_per_client, options_.max_total_connections),
           tunnel_registry_(
-              strand_, io_context_.get_executor(), allowed_ports,
-              options_.max_tunnels_per_client, options_.max_total_tunnels,
+              strand_, io_context_.get_executor(), allowed_ports, options_.max_tunnels_per_client,
+              options_.max_total_tunnels,
               [this](TunnelBinding binding, asio::ip::tcp::socket public_socket) mutable {
                   handle_public_connection(std::move(binding), std::move(public_socket));
               }) {}
@@ -2020,8 +2029,7 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
                         session->start();
                     } else {
                         self->active_connections_.fetch_sub(1U);
-                        self->quota_rejections_total_.fetch_add(1U,
-                                                                std::memory_order_relaxed);
+                        self->quota_rejections_total_.fetch_add(1U, std::memory_order_relaxed);
                         asio::error_code ignored;
                         socket.close(ignored);
                     }

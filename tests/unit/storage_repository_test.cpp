@@ -448,16 +448,15 @@ TEST(TunnelRepositoryTest, RejectsEveryInvalidRecordAndTransitionArgument) {
 
     const TunnelRecord tunnel = make_tunnel(150, server.id, 7'100U, "conditional");
     ASSERT_TRUE((*repository)->tunnels().create(tunnel));
-    const auto conditional = [&repository](const common::Id& id, const common::Id& server_id,
-                                           const std::uint64_t revision,
-                                           const TunnelActualState state,
-                                           const std::optional<common::Error>& error,
-                                           const std::int64_t updated_at) {
-        return (*repository)
-            ->tunnels()
-            .update_runtime_state_if_revision(id, server_id, revision, state, error, updated_at,
-                                              false);
-    };
+    const auto conditional =
+        [&repository](const common::Id& id, const common::Id& server_id,
+                      const std::uint64_t revision, const TunnelActualState state,
+                      const std::optional<common::Error>& error, const std::int64_t updated_at) {
+            return (*repository)
+                ->tunnels()
+                .update_runtime_state_if_revision(id, server_id, revision, state, error, updated_at,
+                                                  false);
+        };
     EXPECT_FALSE(
         conditional(wrong_tunnel_id, server.id, 1U, TunnelActualState::pending, std::nullopt, 1));
     EXPECT_FALSE(
@@ -572,7 +571,7 @@ TEST(StorageRepositoryCorruptionTest, RejectsMalformedServerAndTunnelRowsFieldBy
          "UPDATE tunnels SET server_id = '" + server.id.str() + "'" + tunnel_where},
         {"protocol-type", "UPDATE tunnels SET protocol = 7" + tunnel_where,
          "UPDATE tunnels SET protocol = 'tcp'" + tunnel_where},
-        {"protocol-value", "UPDATE tunnels SET protocol = 'udp'" + tunnel_where,
+        {"protocol-value", "UPDATE tunnels SET protocol = 'quic'" + tunnel_where,
          "UPDATE tunnels SET protocol = 'tcp'" + tunnel_where},
         {"local-host-type", "UPDATE tunnels SET local_host = X'37'" + tunnel_where,
          "UPDATE tunnels SET local_host = '127.0.0.1'" + tunnel_where},
@@ -942,8 +941,11 @@ TEST(StorageRepositoryInjectionTest, TriggerFailuresRollBackEveryMutation) {
         test::NativeSqliteDatabase injector{temporary.path()};
         injector.execute("CREATE TRIGGER reject_child_tombstone BEFORE UPDATE OF desired_state ON "
                          "tunnels BEGIN SELECT RAISE(ABORT, 'injected child tombstone'); END");
-        const auto marked = (*repository)->servers().mark_removed(
-            server.id, std::max(server.updated_at_unix_ms, tunnel.updated_at_unix_ms) + 100);
+        const auto marked =
+            (*repository)
+                ->servers()
+                .mark_removed(server.id,
+                              std::max(server.updated_at_unix_ms, tunnel.updated_at_unix_ms) + 100);
         ASSERT_FALSE(marked);
         EXPECT_EQ(marked.error().code(), common::ErrorCode::invalid_argument);
         EXPECT_EQ((*repository)->tunnels().get_by_id(tunnel.id)->desired_state,
@@ -958,8 +960,8 @@ TEST(StorageRepositoryInjectionTest, TriggerFailuresRollBackEveryMutation) {
         test::NativeSqliteDatabase injector{temporary.path()};
         injector.execute("CREATE TRIGGER reject_server_tombstone BEFORE UPDATE OF desired_state ON "
                          "servers BEGIN SELECT RAISE(ABORT, 'injected server tombstone'); END");
-        const auto marked = (*repository)->servers().mark_removed(
-            server.id, server.updated_at_unix_ms + 100);
+        const auto marked =
+            (*repository)->servers().mark_removed(server.id, server.updated_at_unix_ms + 100);
         ASSERT_FALSE(marked);
         EXPECT_EQ(marked.error().code(), common::ErrorCode::invalid_argument);
         EXPECT_EQ((*repository)->servers().get_by_id(server.id)->desired_state,
@@ -973,8 +975,8 @@ TEST(StorageRepositoryInjectionTest, TriggerFailuresRollBackEveryMutation) {
         const TunnelRecord tunnel = make_tunnel(114, server.id, 6'310, "child");
         ASSERT_TRUE((*repository)->servers().create(server));
         ASSERT_TRUE((*repository)->tunnels().create(tunnel));
-        const std::int64_t tombstone_at = std::max(server.updated_at_unix_ms,
-                                                   tunnel.updated_at_unix_ms) + 100;
+        const std::int64_t tombstone_at =
+            std::max(server.updated_at_unix_ms, tunnel.updated_at_unix_ms) + 100;
         ASSERT_TRUE((*repository)->tunnels().mark_removed(tunnel.id, tombstone_at));
         ASSERT_TRUE((*repository)->servers().mark_removed(server.id, tombstone_at + 100));
         test::NativeSqliteDatabase injector{temporary.path()};
@@ -1019,8 +1021,8 @@ TEST(StorageRepositoryInjectionTest, TriggerFailuresRollBackEveryMutation) {
             injector.execute(
                 "CREATE TRIGGER reject_tunnel_tombstone BEFORE UPDATE OF desired_state ON "
                 "tunnels BEGIN SELECT RAISE(ABORT, 'injected tunnel tombstone'); END");
-            const auto marked = (*repository)->tunnels().mark_removed(
-                tunnel.id, tunnel.updated_at_unix_ms + 100);
+            const auto marked =
+                (*repository)->tunnels().mark_removed(tunnel.id, tunnel.updated_at_unix_ms + 100);
             ASSERT_FALSE(marked);
             EXPECT_EQ(marked.error().code(), common::ErrorCode::invalid_argument);
             injector.execute("DROP TRIGGER reject_tunnel_tombstone");
@@ -1046,12 +1048,16 @@ TEST(StorageRepositoryInjectionTest, TriggerFailuresRollBackEveryMutation) {
         ASSERT_TRUE((*repository)->servers().create(server));
         ASSERT_TRUE((*repository)->tunnels().create(tunnel));
         test::NativeSqliteDatabase injector{temporary.path()};
-        injector.execute("CREATE TRIGGER reject_runtime_transition BEFORE UPDATE OF actual_state ON "
-                         "tunnels WHEN NEW.actual_state = 'active' BEGIN "
-                         "SELECT RAISE(ABORT, 'injected runtime transition'); END");
-        const auto transition = (*repository)->tunnels().update_runtime_state_if_revision(
-            tunnel.id, server.id, tunnel.config_revision, TunnelActualState::active, std::nullopt,
-            tunnel.updated_at_unix_ms + 100, true);
+        injector.execute(
+            "CREATE TRIGGER reject_runtime_transition BEFORE UPDATE OF actual_state ON "
+            "tunnels WHEN NEW.actual_state = 'active' BEGIN "
+            "SELECT RAISE(ABORT, 'injected runtime transition'); END");
+        const auto transition =
+            (*repository)
+                ->tunnels()
+                .update_runtime_state_if_revision(tunnel.id, server.id, tunnel.config_revision,
+                                                  TunnelActualState::active, std::nullopt,
+                                                  tunnel.updated_at_unix_ms + 100, true);
         ASSERT_FALSE(transition);
         EXPECT_EQ(transition.error().code(), common::ErrorCode::invalid_argument);
     }
@@ -1101,8 +1107,10 @@ TEST(StorageRepositoryInjectionTest, ReadAndCascadePrepareFailuresAreReported) {
         const auto by_server = (*repository)->tunnels().list_by_server(server.id);
         ASSERT_FALSE(by_server);
         EXPECT_EQ(by_server.error().code(), common::ErrorCode::database_error);
-        const auto pending = (*repository)->tunnels().mark_active_pending_by_server(
-            server.id, std::nullopt, tunnel.updated_at_unix_ms + 100);
+        const auto pending = (*repository)
+                                 ->tunnels()
+                                 .mark_active_pending_by_server(server.id, std::nullopt,
+                                                                tunnel.updated_at_unix_ms + 100);
         ASSERT_FALSE(pending);
         EXPECT_EQ(pending.error().code(), common::ErrorCode::database_error);
     }
@@ -1117,8 +1125,11 @@ TEST(StorageRepositoryInjectionTest, ReadAndCascadePrepareFailuresAreReported) {
         test::NativeSqliteDatabase injector{temporary.path()};
         injector.execute("DROP TABLE tunnels");
 
-        const auto marked = (*repository)->servers().mark_removed(
-            server.id, std::max(server.updated_at_unix_ms, tunnel.updated_at_unix_ms) + 100);
+        const auto marked =
+            (*repository)
+                ->servers()
+                .mark_removed(server.id,
+                              std::max(server.updated_at_unix_ms, tunnel.updated_at_unix_ms) + 100);
         ASSERT_FALSE(marked);
         EXPECT_EQ(marked.error().code(), common::ErrorCode::database_error);
     }
@@ -1130,8 +1141,8 @@ TEST(StorageRepositoryInjectionTest, ReadAndCascadePrepareFailuresAreReported) {
         const TunnelRecord tunnel = make_tunnel(120, server.id, 6'360, "erase");
         ASSERT_TRUE((*repository)->servers().create(server));
         ASSERT_TRUE((*repository)->tunnels().create(tunnel));
-        const std::int64_t tombstone_at = std::max(server.updated_at_unix_ms,
-                                                   tunnel.updated_at_unix_ms) + 100;
+        const std::int64_t tombstone_at =
+            std::max(server.updated_at_unix_ms, tunnel.updated_at_unix_ms) + 100;
         ASSERT_TRUE((*repository)->tunnels().mark_removed(tunnel.id, tombstone_at));
         ASSERT_TRUE((*repository)->servers().mark_removed(server.id, tombstone_at + 100));
         test::NativeSqliteDatabase injector{temporary.path()};
@@ -1154,189 +1165,185 @@ void expect_per_field_inequalities(const Record& base,
 
 TEST(StorageRepositoryTest, PerFieldInequalityCoversEveryRecordComparison) {
     const ServerRecord server = make_server(200, "base");
-    expect_per_field_inequalities(
-        server,
-        {[&] {
-             ServerRecord value = server;
-             value.id = make_id(common::IdKind::server, 201U);
-             return value;
-         }(),
-         [&] {
-             ServerRecord value = server;
-             value.name = "other";
-             return value;
-         }(),
-         [&] {
-             ServerRecord value = server;
-             value.endpoint = make_endpoint("other.example.com:2444");
-             return value;
-         }(),
-         [&] {
-             ServerRecord value = server;
-             value.credential_ref = "other-key";
-             return value;
-         }(),
-         [&] {
-             ServerRecord value = server;
-             value.remote_server_id = "other-remote";
-             return value;
-         }(),
-         [&] {
-             ServerRecord value = server;
-             value.desired_state = ServerDesiredState::disabled;
-             return value;
-         }(),
-         [&] {
-             ServerRecord value = server;
-             value.actual_state = ServerActualState::disconnected;
-             return value;
-         }(),
-         [&] {
-             ServerRecord value = server;
-             value.last_error_code = common::ErrorCode::not_found;
-             return value;
-         }(),
-         [&] {
-             ServerRecord value = server;
-             value.last_error_message = "other";
-             return value;
-         }(),
-         [&] {
-             ServerRecord value = server;
-             value.reconnect_attempt = 7U;
-             return value;
-         }(),
-         [&] {
-             ServerRecord value = server;
-             value.latency_ms = 99;
-             return value;
-         }(),
-         [&] {
-             ServerRecord value = server;
-             ++value.created_at_unix_ms;
-             return value;
-         }(),
-         [&] {
-             ServerRecord value = server;
-             ++value.updated_at_unix_ms;
-             return value;
-         }(),
-         [&] {
-             ServerRecord value = server;
-             value.tls_server_name = "other.test";
-             return value;
-         }(),
-         [&] {
-             ServerRecord value = server;
-             value.ca_credential_ref = "other-ca";
-             return value;
-         }(),
-         [&] {
-             ServerRecord value = server;
-             value.client_certificate_ref = "other-cert";
-             return value;
-         }(),
-         [&] {
-             ServerRecord value = server;
-             value.client_private_key_ref = "other-private-key";
-             return value;
-         }(),
-         [&] {
-             ServerRecord value = server;
-             value.config_revision = 2U;
-             return value;
-         }(),
-         [&] {
-             ServerRecord value = server;
-             value.managed_by_config = true;
-             return value;
-         }()});
+    expect_per_field_inequalities(server, {[&] {
+                                               ServerRecord value = server;
+                                               value.id = make_id(common::IdKind::server, 201U);
+                                               return value;
+                                           }(),
+                                           [&] {
+                                               ServerRecord value = server;
+                                               value.name = "other";
+                                               return value;
+                                           }(),
+                                           [&] {
+                                               ServerRecord value = server;
+                                               value.endpoint =
+                                                   make_endpoint("other.example.com:2444");
+                                               return value;
+                                           }(),
+                                           [&] {
+                                               ServerRecord value = server;
+                                               value.credential_ref = "other-key";
+                                               return value;
+                                           }(),
+                                           [&] {
+                                               ServerRecord value = server;
+                                               value.remote_server_id = "other-remote";
+                                               return value;
+                                           }(),
+                                           [&] {
+                                               ServerRecord value = server;
+                                               value.desired_state = ServerDesiredState::disabled;
+                                               return value;
+                                           }(),
+                                           [&] {
+                                               ServerRecord value = server;
+                                               value.actual_state = ServerActualState::disconnected;
+                                               return value;
+                                           }(),
+                                           [&] {
+                                               ServerRecord value = server;
+                                               value.last_error_code = common::ErrorCode::not_found;
+                                               return value;
+                                           }(),
+                                           [&] {
+                                               ServerRecord value = server;
+                                               value.last_error_message = "other";
+                                               return value;
+                                           }(),
+                                           [&] {
+                                               ServerRecord value = server;
+                                               value.reconnect_attempt = 7U;
+                                               return value;
+                                           }(),
+                                           [&] {
+                                               ServerRecord value = server;
+                                               value.latency_ms = 99;
+                                               return value;
+                                           }(),
+                                           [&] {
+                                               ServerRecord value = server;
+                                               ++value.created_at_unix_ms;
+                                               return value;
+                                           }(),
+                                           [&] {
+                                               ServerRecord value = server;
+                                               ++value.updated_at_unix_ms;
+                                               return value;
+                                           }(),
+                                           [&] {
+                                               ServerRecord value = server;
+                                               value.tls_server_name = "other.test";
+                                               return value;
+                                           }(),
+                                           [&] {
+                                               ServerRecord value = server;
+                                               value.ca_credential_ref = "other-ca";
+                                               return value;
+                                           }(),
+                                           [&] {
+                                               ServerRecord value = server;
+                                               value.client_certificate_ref = "other-cert";
+                                               return value;
+                                           }(),
+                                           [&] {
+                                               ServerRecord value = server;
+                                               value.client_private_key_ref = "other-private-key";
+                                               return value;
+                                           }(),
+                                           [&] {
+                                               ServerRecord value = server;
+                                               value.config_revision = 2U;
+                                               return value;
+                                           }(),
+                                           [&] {
+                                               ServerRecord value = server;
+                                               value.managed_by_config = true;
+                                               return value;
+                                           }()});
 
     const TunnelRecord tunnel = make_tunnel(200, server.id, 8'000U, "base");
-    expect_per_field_inequalities(
-        tunnel,
-        {[&] {
-             TunnelRecord value = tunnel;
-             value.id = make_id(common::IdKind::tunnel, 201U);
-             return value;
-         }(),
-         [&] {
-             TunnelRecord value = tunnel;
-             value.name = "other";
-             return value;
-         }(),
-         [&] {
-             TunnelRecord value = tunnel;
-             value.server_id = make_id(common::IdKind::server, 201U);
-             return value;
-         }(),
-         [&] {
-             TunnelRecord value = tunnel;
-             // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
-             value.protocol = static_cast<TunnelProtocol>(255U);
-             return value;
-         }(),
-         [&] {
-             TunnelRecord value = tunnel;
-             value.local_endpoint = make_endpoint("127.0.0.1:2222");
-             return value;
-         }(),
-         [&] {
-             TunnelRecord value = tunnel;
-             value.remote_endpoint = make_endpoint("127.0.0.1:8001");
-             return value;
-         }(),
-         [&] {
-             TunnelRecord value = tunnel;
-             value.desired_state = TunnelDesiredState::disabled;
-             return value;
-         }(),
-         [&] {
-             TunnelRecord value = tunnel;
-             value.actual_state = TunnelActualState::pending;
-             return value;
-         }(),
-         [&] {
-             TunnelRecord value = tunnel;
-             value.last_error_code = common::ErrorCode::not_found;
-             return value;
-         }(),
-         [&] {
-             TunnelRecord value = tunnel;
-             value.last_error_message = "other";
-             return value;
-         }(),
-         [&] {
-             TunnelRecord value = tunnel;
-             ++value.created_at_unix_ms;
-             return value;
-         }(),
-         [&] {
-             TunnelRecord value = tunnel;
-             ++value.updated_at_unix_ms;
-             return value;
-         }(),
-         [&] {
-             TunnelRecord value = tunnel;
-             value.last_synced_at_unix_ms = 9'000;
-             return value;
-         }(),
-         [&] {
-             TunnelRecord value = tunnel;
-             value.config_revision = 2U;
-             return value;
-         }(),
-         [&] {
-             TunnelRecord value = tunnel;
-             value.managed_by_config = true;
-             return value;
-         }()});
+    expect_per_field_inequalities(tunnel,
+                                  {[&] {
+                                       TunnelRecord value = tunnel;
+                                       value.id = make_id(common::IdKind::tunnel, 201U);
+                                       return value;
+                                   }(),
+                                   [&] {
+                                       TunnelRecord value = tunnel;
+                                       value.name = "other";
+                                       return value;
+                                   }(),
+                                   [&] {
+                                       TunnelRecord value = tunnel;
+                                       value.server_id = make_id(common::IdKind::server, 201U);
+                                       return value;
+                                   }(),
+                                   [&] {
+                                       TunnelRecord value = tunnel;
+                                       // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
+                                       value.protocol = static_cast<TunnelProtocol>(255U);
+                                       return value;
+                                   }(),
+                                   [&] {
+                                       TunnelRecord value = tunnel;
+                                       value.local_endpoint = make_endpoint("127.0.0.1:2222");
+                                       return value;
+                                   }(),
+                                   [&] {
+                                       TunnelRecord value = tunnel;
+                                       value.remote_endpoint = make_endpoint("127.0.0.1:8001");
+                                       return value;
+                                   }(),
+                                   [&] {
+                                       TunnelRecord value = tunnel;
+                                       value.desired_state = TunnelDesiredState::disabled;
+                                       return value;
+                                   }(),
+                                   [&] {
+                                       TunnelRecord value = tunnel;
+                                       value.actual_state = TunnelActualState::pending;
+                                       return value;
+                                   }(),
+                                   [&] {
+                                       TunnelRecord value = tunnel;
+                                       value.last_error_code = common::ErrorCode::not_found;
+                                       return value;
+                                   }(),
+                                   [&] {
+                                       TunnelRecord value = tunnel;
+                                       value.last_error_message = "other";
+                                       return value;
+                                   }(),
+                                   [&] {
+                                       TunnelRecord value = tunnel;
+                                       ++value.created_at_unix_ms;
+                                       return value;
+                                   }(),
+                                   [&] {
+                                       TunnelRecord value = tunnel;
+                                       ++value.updated_at_unix_ms;
+                                       return value;
+                                   }(),
+                                   [&] {
+                                       TunnelRecord value = tunnel;
+                                       value.last_synced_at_unix_ms = 9'000;
+                                       return value;
+                                   }(),
+                                   [&] {
+                                       TunnelRecord value = tunnel;
+                                       value.config_revision = 2U;
+                                       return value;
+                                   }(),
+                                   [&] {
+                                       TunnelRecord value = tunnel;
+                                       value.managed_by_config = true;
+                                       return value;
+                                   }()});
 
     const RecoverySnapshot snapshot{.servers = {server}, .tunnels = {tunnel}};
-    expect_per_field_inequalities(
-        snapshot,
-        {RecoverySnapshot{.servers = {}, .tunnels = {tunnel}},
-         RecoverySnapshot{.servers = {server}, .tunnels = {}}});
+    expect_per_field_inequalities(snapshot, {RecoverySnapshot{.servers = {}, .tunnels = {tunnel}},
+                                             RecoverySnapshot{.servers = {server}, .tunnels = {}}});
 }
 
 } // namespace

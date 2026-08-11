@@ -152,6 +152,35 @@ TEST(RemoteMessagesTest, RoundTripsTunnelRegistrationPayloads) {
     EXPECT_EQ(*decode_unregister_tunnel_ok(*removed_payload), removal);
 }
 
+TEST(RemoteMessagesTest, NegotiatesTransportModesWithoutChangingTheTcpWireImage) {
+    const std::string tunnel_id = generated_id(common::IdKind::tunnel);
+    const std::string connection_id = generated_id(common::IdKind::connection);
+    const RegisterTunnelMessage tcp_registration{tunnel_id, "0.0.0.0", 6'000U, 7U, TunnelMode::tcp};
+    const StartRelayMessage tcp_relay{tunnel_id, connection_id, TunnelMode::tcp};
+    const auto tcp_registration_payload = encode_register_tunnel(tcp_registration);
+    const auto tcp_relay_payload = encode_start_relay(tcp_relay);
+    ASSERT_TRUE(tcp_registration_payload);
+    ASSERT_TRUE(tcp_relay_payload);
+
+    for (const auto mode : {TunnelMode::udp, TunnelMode::socks5, TunnelMode::p2p}) {
+        auto registration = tcp_registration;
+        registration.mode = mode;
+        auto relay = tcp_relay;
+        relay.mode = mode;
+        const auto registration_payload = encode_register_tunnel(registration);
+        const auto relay_payload = encode_start_relay(relay);
+        ASSERT_TRUE(registration_payload);
+        ASSERT_TRUE(relay_payload);
+        ASSERT_EQ(registration_payload->size(), tcp_registration_payload->size() + 1U);
+        ASSERT_EQ(relay_payload->size(), tcp_relay_payload->size() + 1U);
+        EXPECT_EQ(*decode_register_tunnel(*registration_payload), registration);
+        EXPECT_EQ(*decode_start_relay(*relay_payload), relay);
+        EXPECT_TRUE(supports_tunnel_mode(kSupportedCapabilities, mode));
+        EXPECT_FALSE(supports_tunnel_mode(kRequiredCapabilities, mode));
+    }
+    EXPECT_TRUE(supports_tunnel_mode(kRequiredCapabilities, TunnelMode::tcp));
+}
+
 TEST(RemoteMessagesTest, RejectsInvalidTunnelRegistrationPayloads) {
     const std::string tunnel_id = generated_id(common::IdKind::tunnel);
     EXPECT_FALSE(encode_register_tunnel({"tun_invalid", "0.0.0.0", 6'000U}));
@@ -347,8 +376,7 @@ TEST(RemoteMessagesTest, RejectsEverySemanticWireInvariant) {
     EXPECT_FALSE(decode_auth_error(error_wire("unknown")));
     EXPECT_FALSE(decode_auth_error(error_wire("ok")));
 
-    const auto tunnel_revision_wire = [](const std::string_view id,
-                                         const std::uint64_t revision) {
+    const auto tunnel_revision_wire = [](const std::string_view id, const std::uint64_t revision) {
         return wire_payload([&](PayloadWriter& writer) {
             return writer.write_string(id) && writer.write_u64(revision);
         });
@@ -465,23 +493,24 @@ TEST(RemoteMessagesTest, PerFieldInequalityCoversEveryMessageComparison) {
     {
         HelloMessage base{.client_id = client_id};
         expect_per_field_inequalities(
-            base, {HelloMessage{.client_id = "other"},
-                   HelloMessage{.client_id = client_id,
-                                .capabilities = capability_bit(Capability::client_certificate_binding)}});
+            base,
+            {HelloMessage{.client_id = "other"},
+             HelloMessage{.client_id = client_id,
+                          .capabilities = capability_bit(Capability::client_certificate_binding)}});
     }
     {
         HelloAckMessage base{.server_id = server_id};
         expect_per_field_inequalities(
-            base,
-            {HelloAckMessage{.server_id = "other"},
-             HelloAckMessage{.server_id = server_id, .server_time_seconds = 1},
-             [&] {
-                 HelloAckMessage value{.server_id = server_id};
-                 value.nonce[0] = 1U;
-                 return value;
-             }(),
-             HelloAckMessage{.server_id = server_id,
-                             .selected_capabilities = capability_bit(Capability::tunnel_revisions)}});
+            base, {HelloAckMessage{.server_id = "other"},
+                   HelloAckMessage{.server_id = server_id, .server_time_seconds = 1},
+                   [&] {
+                       HelloAckMessage value{.server_id = server_id};
+                       value.nonce[0] = 1U;
+                       return value;
+                   }(),
+                   HelloAckMessage{.server_id = server_id,
+                                   .selected_capabilities =
+                                       capability_bit(Capability::tunnel_revisions)}});
     }
     {
         AuthMessage base{.client_id = client_id};
@@ -504,17 +533,15 @@ TEST(RemoteMessagesTest, PerFieldInequalityCoversEveryMessageComparison) {
     }
     {
         AuthOkMessage base{};
-        expect_per_field_inequalities(
-            base,
-            {AuthOkMessage{.session_generation = 1U},
-             AuthOkMessage{.heartbeat_interval_milliseconds = 1U},
-             AuthOkMessage{.min_idle_workers = 1U},
-             AuthOkMessage{.max_idle_workers = 1U}});
+        expect_per_field_inequalities(base, {AuthOkMessage{.session_generation = 1U},
+                                             AuthOkMessage{.heartbeat_interval_milliseconds = 1U},
+                                             AuthOkMessage{.min_idle_workers = 1U},
+                                             AuthOkMessage{.max_idle_workers = 1U}});
     }
     {
         AuthErrorMessage base{};
-        expect_per_field_inequalities(
-            base, {AuthErrorMessage{.code = common::ErrorCode::tls_error}});
+        expect_per_field_inequalities(base,
+                                      {AuthErrorMessage{.code = common::ErrorCode::tls_error}});
     }
     {
         HeartbeatMessage base{};
@@ -526,33 +553,31 @@ TEST(RemoteMessagesTest, PerFieldInequalityCoversEveryMessageComparison) {
             base,
             {RegisterTunnelMessage{.tunnel_id = "other", .bind_host = "0.0.0.0"},
              RegisterTunnelMessage{.tunnel_id = tunnel_id, .bind_host = "other"},
-             RegisterTunnelMessage{.tunnel_id = tunnel_id, .bind_host = "0.0.0.0",
-                                   .bind_port = 1U},
-             RegisterTunnelMessage{.tunnel_id = tunnel_id, .bind_host = "0.0.0.0",
-                                   .desired_revision = 2U}});
+             RegisterTunnelMessage{.tunnel_id = tunnel_id, .bind_host = "0.0.0.0", .bind_port = 1U},
+             RegisterTunnelMessage{
+                 .tunnel_id = tunnel_id, .bind_host = "0.0.0.0", .desired_revision = 2U},
+             RegisterTunnelMessage{
+                 .tunnel_id = tunnel_id, .bind_host = "0.0.0.0", .mode = TunnelMode::udp}});
     }
     {
         RegisterTunnelOkMessage base{.tunnel_id = tunnel_id};
         expect_per_field_inequalities(
-            base,
-            {RegisterTunnelOkMessage{.tunnel_id = "other"},
-             RegisterTunnelOkMessage{.tunnel_id = tunnel_id, .desired_revision = 2U}});
+            base, {RegisterTunnelOkMessage{.tunnel_id = "other"},
+                   RegisterTunnelOkMessage{.tunnel_id = tunnel_id, .desired_revision = 2U}});
     }
     {
         RegisterTunnelErrorMessage base{.tunnel_id = tunnel_id};
         expect_per_field_inequalities(
-            base,
-            {RegisterTunnelErrorMessage{.tunnel_id = "other"},
-             RegisterTunnelErrorMessage{.tunnel_id = tunnel_id,
-                                        .code = common::ErrorCode::remote_port_in_use},
-             RegisterTunnelErrorMessage{.tunnel_id = tunnel_id, .desired_revision = 2U}});
+            base, {RegisterTunnelErrorMessage{.tunnel_id = "other"},
+                   RegisterTunnelErrorMessage{.tunnel_id = tunnel_id,
+                                              .code = common::ErrorCode::remote_port_in_use},
+                   RegisterTunnelErrorMessage{.tunnel_id = tunnel_id, .desired_revision = 2U}});
     }
     {
         UnregisterTunnelMessage base{.tunnel_id = tunnel_id};
         expect_per_field_inequalities(
-            base,
-            {UnregisterTunnelMessage{.tunnel_id = "other"},
-             UnregisterTunnelMessage{.tunnel_id = tunnel_id, .desired_revision = 2U}});
+            base, {UnregisterTunnelMessage{.tunnel_id = "other"},
+                   UnregisterTunnelMessage{.tunnel_id = tunnel_id, .desired_revision = 2U}});
     }
     {
         RequestWorkersMessage base{};
@@ -561,23 +586,22 @@ TEST(RemoteMessagesTest, PerFieldInequalityCoversEveryMessageComparison) {
     {
         WorkerHelloMessage base{.client_id = client_id, .worker_id = worker_id};
         expect_per_field_inequalities(
-            base,
-            {WorkerHelloMessage{.client_id = "other", .worker_id = worker_id},
-             WorkerHelloMessage{.client_id = client_id, .session_generation = 1U,
-                                .worker_id = worker_id},
-             WorkerHelloMessage{.client_id = client_id, .worker_id = "other"},
-             WorkerHelloMessage{.client_id = client_id, .worker_id = worker_id,
-                                .timestamp_seconds = 1},
-             [&] {
-                 WorkerHelloMessage value{.client_id = client_id, .worker_id = worker_id};
-                 value.nonce[0] = 1U;
-                 return value;
-             }(),
-             [&] {
-                 WorkerHelloMessage value{.client_id = client_id, .worker_id = worker_id};
-                 value.authentication_data[0] = 1U;
-                 return value;
-             }()});
+            base, {WorkerHelloMessage{.client_id = "other", .worker_id = worker_id},
+                   WorkerHelloMessage{
+                       .client_id = client_id, .session_generation = 1U, .worker_id = worker_id},
+                   WorkerHelloMessage{.client_id = client_id, .worker_id = "other"},
+                   WorkerHelloMessage{
+                       .client_id = client_id, .worker_id = worker_id, .timestamp_seconds = 1},
+                   [&] {
+                       WorkerHelloMessage value{.client_id = client_id, .worker_id = worker_id};
+                       value.nonce[0] = 1U;
+                       return value;
+                   }(),
+                   [&] {
+                       WorkerHelloMessage value{.client_id = client_id, .worker_id = worker_id};
+                       value.authentication_data[0] = 1U;
+                       return value;
+                   }()});
     }
     {
         WorkerAcceptedMessage base{.worker_id = worker_id};
@@ -588,20 +612,20 @@ TEST(RemoteMessagesTest, PerFieldInequalityCoversEveryMessageComparison) {
         expect_per_field_inequalities(
             base,
             {StartRelayMessage{.tunnel_id = "other", .connection_id = connection_id},
-             StartRelayMessage{.tunnel_id = tunnel_id, .connection_id = "other"}});
+             StartRelayMessage{.tunnel_id = tunnel_id, .connection_id = "other"},
+             StartRelayMessage{
+                 .tunnel_id = tunnel_id, .connection_id = connection_id, .mode = TunnelMode::udp}});
     }
     {
         LocalConnectOkMessage base{.connection_id = connection_id};
-        expect_per_field_inequalities(base,
-                                      {LocalConnectOkMessage{.connection_id = "other"}});
+        expect_per_field_inequalities(base, {LocalConnectOkMessage{.connection_id = "other"}});
     }
     {
         LocalConnectErrorMessage base{.connection_id = connection_id};
         expect_per_field_inequalities(
-            base,
-            {LocalConnectErrorMessage{.connection_id = "other"},
-             LocalConnectErrorMessage{.connection_id = connection_id,
-                                      .code = common::ErrorCode::connection_failed}});
+            base, {LocalConnectErrorMessage{.connection_id = "other"},
+                   LocalConnectErrorMessage{.connection_id = connection_id,
+                                            .code = common::ErrorCode::connection_failed}});
     }
 }
 

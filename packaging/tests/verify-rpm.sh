@@ -34,7 +34,11 @@ rpm -qlp "$sdk_development_package"
 [ "$(rpm -qp --queryformat '%{ARCH}' "$sdk_development_package")" = "$expected_arch" ]
 
 rpm -qlp "$client_package" | grep -qx '/usr/bin/minitun'
+rpm -qlp "$client_package" | grep -qx '/usr/bin/minitun-gui'
+rpm -qlp "$client_package" | grep -qx '/usr/bin/minitun-p2p'
 rpm -qlp "$client_package" | grep -qx '/usr/libexec/minitun/minitund'
+rpm -qlp "$client_package" | grep -qx '/usr/share/minitun/gui/index.html'
+rpm -qlp "$client_package" | grep -qx '/usr/share/minitun/gui/logo.svg'
 rpm -qlp "$client_package" | grep -qx '/usr/lib/systemd/system/minitund.service'
 rpm -qlp "$client_package" | grep -qx '/usr/lib/sysusers.d/minitun.conf'
 if rpm -qlp "$client_package" | grep -q 'minitun-server'; then
@@ -50,14 +54,18 @@ if rpm -qlp "$server_package" | grep -Eq '/etc/minitun-server/(server\.crt|serve
 fi
 
 rpm -qlp "$sdk_library_package" | grep -Eq '^/usr/lib(64|/[^/]+)?/libminitun-client\.so\.1(\.|$)'
+rpm -qlp "$sdk_library_package" | grep -Eq '^/usr/lib(64|/[^/]+)?/libminitun-remote-protocol\.so\.1(\.|$)'
 if rpm -qlp "$sdk_library_package" | grep -Eq '/include/|libminitun-client\.so$'; then
     exit 1
 fi
 rpm -qlp "$sdk_development_package" | grep -qx '/usr/include/minitun/client.h'
 rpm -qlp "$sdk_development_package" | grep -qx '/usr/include/minitun/client.hpp'
+rpm -qlp "$sdk_development_package" | grep -qx '/usr/include/minitun/remote_protocol.hpp'
 rpm -qlp "$sdk_development_package" | grep -Eq '^/usr/lib(64|/[^/]+)?/pkgconfig/minitun-client\.pc$'
+rpm -qlp "$sdk_development_package" | grep -Eq '^/usr/lib(64|/[^/]+)?/pkgconfig/minitun-remote-protocol\.pc$'
 rpm -qlp "$sdk_development_package" | grep -Eq '^/usr/lib(64|/[^/]+)?/cmake/MiniTun/MiniTunConfig\.cmake$'
 rpm -qlp "$sdk_development_package" | grep -Eq '^/usr/lib(64|/[^/]+)?/libminitun-client\.so$'
+rpm -qlp "$sdk_development_package" | grep -Eq '^/usr/lib(64|/[^/]+)?/libminitun-remote-protocol\.so$'
 rpm -qp --requires "$sdk_development_package" | grep -q 'libminitun-client1'
 
 rpm -qp --scripts "$client_package" | grep -q systemd-sysusers

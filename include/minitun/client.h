@@ -147,13 +147,18 @@ typedef struct minitun_tunnel_create_request {
     const char* local_host;
     uint16_t local_port;
     uint16_t remote_port;
+    /* Added after ABI v1.0. Older callers may omit these fields via struct_size. */
+    const char* protocol;
+    const char* remote_host;
 } minitun_tunnel_create_request;
 
 enum {
     MINITUN_TUNNEL_UPDATE_NAME = 1u << 0,
     MINITUN_TUNNEL_UPDATE_LOCAL_HOST = 1u << 1,
     MINITUN_TUNNEL_UPDATE_LOCAL_PORT = 1u << 2,
-    MINITUN_TUNNEL_UPDATE_REMOTE_PORT = 1u << 3
+    MINITUN_TUNNEL_UPDATE_REMOTE_PORT = 1u << 3,
+    MINITUN_TUNNEL_UPDATE_PROTOCOL = 1u << 4,
+    MINITUN_TUNNEL_UPDATE_REMOTE_HOST = 1u << 5
 };
 
 typedef struct minitun_tunnel_update_request {
@@ -164,6 +169,9 @@ typedef struct minitun_tunnel_update_request {
     const char* local_host;
     uint16_t local_port;
     uint16_t remote_port;
+    /* Added after ABI v1.0. Older callers may omit these fields via struct_size. */
+    const char* protocol;
+    const char* remote_host;
 } minitun_tunnel_update_request;
 
 typedef enum minitun_tunnel_action {
@@ -211,32 +219,28 @@ typedef struct minitun_diagnostics {
 
 MINITUN_CLIENT_API uint32_t minitun_client_abi_version(void);
 MINITUN_CLIENT_API int minitun_client_create(const minitun_client_options* options,
-                                             minitun_client** output,
-                                             minitun_error** error);
+                                             minitun_client** output, minitun_error** error);
 MINITUN_CLIENT_API void minitun_client_destroy(minitun_client* client);
 MINITUN_CLIENT_API void minitun_error_free(minitun_error* error);
 
-MINITUN_CLIENT_API int minitun_client_identity_get(minitun_client* client,
-                                                   minitun_identity* output,
+MINITUN_CLIENT_API int minitun_client_identity_get(minitun_client* client, minitun_identity* output,
                                                    minitun_error** error);
 MINITUN_CLIENT_API void minitun_identity_free(minitun_identity* value);
-MINITUN_CLIENT_API int minitun_client_status_get(minitun_client* client,
-                                                 minitun_status* output,
+MINITUN_CLIENT_API int minitun_client_status_get(minitun_client* client, minitun_status* output,
                                                  minitun_error** error);
 
-MINITUN_CLIENT_API int minitun_client_server_create(
-    minitun_client* client, const minitun_server_create_request* request,
-    minitun_server_info* output, minitun_error** error);
-MINITUN_CLIENT_API int minitun_client_server_login(minitun_client* client,
-                                                   const char* identifier,
-                                                   const char* psk,
-                                                   minitun_server_info* output,
+MINITUN_CLIENT_API int minitun_client_server_create(minitun_client* client,
+                                                    const minitun_server_create_request* request,
+                                                    minitun_server_info* output,
+                                                    minitun_error** error);
+MINITUN_CLIENT_API int minitun_client_server_login(minitun_client* client, const char* identifier,
+                                                   const char* psk, minitun_server_info* output,
                                                    minitun_error** error);
-MINITUN_CLIENT_API int minitun_client_server_update(
-    minitun_client* client, const minitun_server_update_request* request,
-    minitun_server_info* output, minitun_error** error);
-MINITUN_CLIENT_API int minitun_client_server_execute(minitun_client* client,
-                                                     const char* identifier,
+MINITUN_CLIENT_API int minitun_client_server_update(minitun_client* client,
+                                                    const minitun_server_update_request* request,
+                                                    minitun_server_info* output,
+                                                    minitun_error** error);
+MINITUN_CLIENT_API int minitun_client_server_execute(minitun_client* client, const char* identifier,
                                                      minitun_server_action action,
                                                      minitun_server_info* output,
                                                      minitun_error** error);
@@ -246,31 +250,28 @@ MINITUN_CLIENT_API int minitun_client_server_list(minitun_client* client,
 MINITUN_CLIENT_API void minitun_server_info_free(minitun_server_info* value);
 MINITUN_CLIENT_API void minitun_server_list_free(minitun_server_list* value);
 
-MINITUN_CLIENT_API int minitun_client_tunnel_create(
-    minitun_client* client, const minitun_tunnel_create_request* request,
-    minitun_tunnel_info* output, minitun_error** error);
-MINITUN_CLIENT_API int minitun_client_tunnel_update(
-    minitun_client* client, const minitun_tunnel_update_request* request,
-    minitun_tunnel_info* output, minitun_error** error);
-MINITUN_CLIENT_API int minitun_client_tunnel_execute(minitun_client* client,
-                                                     const char* identifier,
+MINITUN_CLIENT_API int minitun_client_tunnel_create(minitun_client* client,
+                                                    const minitun_tunnel_create_request* request,
+                                                    minitun_tunnel_info* output,
+                                                    minitun_error** error);
+MINITUN_CLIENT_API int minitun_client_tunnel_update(minitun_client* client,
+                                                    const minitun_tunnel_update_request* request,
+                                                    minitun_tunnel_info* output,
+                                                    minitun_error** error);
+MINITUN_CLIENT_API int minitun_client_tunnel_execute(minitun_client* client, const char* identifier,
                                                      minitun_tunnel_action action,
                                                      minitun_tunnel_info* output,
                                                      minitun_error** error);
-MINITUN_CLIENT_API int minitun_client_tunnel_list(minitun_client* client,
-                                                  const char* server,
+MINITUN_CLIENT_API int minitun_client_tunnel_list(minitun_client* client, const char* server,
                                                   minitun_tunnel_list* output,
                                                   minitun_error** error);
 MINITUN_CLIENT_API void minitun_tunnel_info_free(minitun_tunnel_info* value);
 MINITUN_CLIENT_API void minitun_tunnel_list_free(minitun_tunnel_list* value);
 
-MINITUN_CLIENT_API int minitun_client_config_plan(minitun_client* client,
-                                                  const char* path,
-                                                  uint8_t prune,
-                                                  minitun_config_plan_result* output,
+MINITUN_CLIENT_API int minitun_client_config_plan(minitun_client* client, const char* path,
+                                                  uint8_t prune, minitun_config_plan_result* output,
                                                   minitun_error** error);
-MINITUN_CLIENT_API int minitun_client_config_apply(minitun_client* client,
-                                                   const char* path,
+MINITUN_CLIENT_API int minitun_client_config_apply(minitun_client* client, const char* path,
                                                    uint8_t prune,
                                                    minitun_config_plan_result* output,
                                                    minitun_error** error);

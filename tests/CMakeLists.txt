@@ -6,6 +6,7 @@ add_executable(minitun_unit_tests
     unit/connection_quota_test.cpp
     unit/credential_store_test.cpp
     unit/credential_keys_test.cpp
+    unit/datagram_test.cpp
     unit/daemon_control_service_test.cpp
     unit/endpoint_test.cpp
     unit/id_test.cpp
@@ -15,10 +16,12 @@ add_executable(minitun_unit_tests
     unit/ipc_transport_test.cpp
     unit/logging_test.cpp
     unit/port_range_test.cpp
+    unit/p2p_test.cpp
     unit/remote_codec_test.cpp
     unit/remote_auth_test.cpp
     unit/remote_frame_test.cpp
     unit/remote_messages_test.cpp
+    unit/remote_protocol_sdk_test.cpp
     unit/relay_test.cpp
     unit/remote_state_machine_test.cpp
     unit/reconnect_backoff_test.cpp
@@ -46,6 +49,7 @@ target_link_libraries(minitun_unit_tests
         MiniTun::daemon
         MiniTun::admin
         MiniTun::Client
+        MiniTun::RemoteProtocol
         MiniTun::server
         MiniTun::storage
         MiniTun::ipc
@@ -77,10 +81,21 @@ target_link_libraries(minitun_cpp_sdk_smoke PRIVATE MiniTun::Client minitun_proj
 set_target_properties(minitun_cpp_sdk_smoke PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED YES)
 minitun_apply_sanitizers(minitun_cpp_sdk_smoke)
 
+add_executable(minitun_remote_protocol_smoke sdk/remote_protocol_smoke.cpp)
+target_link_libraries(minitun_remote_protocol_smoke
+    PRIVATE MiniTun::RemoteProtocol minitun_project_warnings)
+set_target_properties(minitun_remote_protocol_smoke PROPERTIES
+    CXX_STANDARD 20
+    CXX_STANDARD_REQUIRED YES
+)
+minitun_apply_sanitizers(minitun_remote_protocol_smoke)
+
 add_test(NAME sdk.c11-smoke COMMAND minitun_c_sdk_smoke)
 set_tests_properties(sdk.c11-smoke PROPERTIES LABELS "sdk;smoke")
 add_test(NAME sdk.cpp20-smoke COMMAND minitun_cpp_sdk_smoke)
 set_tests_properties(sdk.cpp20-smoke PROPERTIES LABELS "sdk;smoke")
+add_test(NAME sdk.remote-protocol-smoke COMMAND minitun_remote_protocol_smoke)
+set_tests_properties(sdk.remote-protocol-smoke PROPERTIES LABELS "sdk;remote;smoke")
 add_test(NAME sdk.find-package
     COMMAND "${CMAKE_COMMAND}"
         "-DMINITUN_BUILD_DIR=${CMAKE_BINARY_DIR}"
@@ -114,6 +129,13 @@ add_test(NAME sdk.abi-baseline
         -P "${CMAKE_CURRENT_SOURCE_DIR}/integration/sdk_abi.cmake"
 )
 set_tests_properties(sdk.abi-baseline PROPERTIES LABELS "sdk;abi")
+add_test(NAME sdk.remote-protocol-abi
+    COMMAND "${CMAKE_COMMAND}"
+        "-DMINITUN_LIBRARY=$<TARGET_FILE:minitun_remote_protocol>"
+        "-DMINITUN_NM=${CMAKE_NM}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/integration/remote_protocol_abi.cmake"
+)
+set_tests_properties(sdk.remote-protocol-abi PROPERTIES LABELS "sdk;remote;abi")
 
 find_package(Python3 QUIET COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
@@ -174,6 +196,30 @@ add_test(NAME smoke.server-help
 set_tests_properties(smoke.server-help PROPERTIES
     LABELS "smoke"
     PASS_REGULAR_EXPRESSION "MiniTun public server"
+)
+
+add_test(NAME smoke.gui-help
+    COMMAND $<TARGET_FILE:minitun-gui> --help
+)
+set_tests_properties(smoke.gui-help PROPERTIES
+    LABELS "smoke;gui"
+    PASS_REGULAR_EXPRESSION "MiniTun localhost web management console"
+)
+
+add_test(NAME smoke.p2p-help
+    COMMAND $<TARGET_FILE:minitun-p2p> --help
+)
+set_tests_properties(smoke.p2p-help PROPERTIES
+    LABELS "smoke;p2p"
+    PASS_REGULAR_EXPRESSION "automatic relay fallback"
+)
+
+add_test(NAME smoke.p2p-version
+    COMMAND $<TARGET_FILE:minitun-p2p> --version
+)
+set_tests_properties(smoke.p2p-version PROPERTIES
+    LABELS "smoke;p2p;version"
+    PASS_REGULAR_EXPRESSION "minitun-p2p [0-9]+\\.[0-9]+\\.[0-9]+"
 )
 
 if(UNIX)
@@ -326,6 +372,35 @@ if(UNIX)
         LABELS "integration;e2e;tls;relay"
         TIMEOUT 90
         PASS_REGULAR_EXPRESSION "TCP relay integration passed"
+    )
+
+    add_test(NAME integration.extended-transports
+        COMMAND
+            "${CMAKE_CURRENT_SOURCE_DIR}/integration/extended_transports.sh"
+            $<TARGET_FILE:minitun>
+            $<TARGET_FILE:minitund>
+            $<TARGET_FILE:minitun-server>
+            $<TARGET_FILE:minitun-p2p>
+    )
+
+    add_test(NAME integration.gui-console
+        COMMAND
+            "${CMAKE_CURRENT_SOURCE_DIR}/integration/gui_console.sh"
+            $<TARGET_FILE:minitund>
+            $<TARGET_FILE:minitun-gui>
+            "${CMAKE_SOURCE_DIR}/gui/dist"
+    )
+    set_tests_properties(integration.gui-console PROPERTIES
+        LABELS "integration;gui;http;security"
+        TIMEOUT 30
+        PASS_REGULAR_EXPRESSION "GUI console integration passed"
+        RUN_SERIAL TRUE
+    )
+    set_tests_properties(integration.extended-transports PROPERTIES
+        LABELS "integration;e2e;tls;udp;socks5;p2p"
+        TIMEOUT 90
+        PASS_REGULAR_EXPRESSION "extended transport integration passed"
+        RUN_SERIAL TRUE
     )
 
     add_test(NAME integration.stability

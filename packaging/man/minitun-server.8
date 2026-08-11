@@ -1,7 +1,7 @@
-.TH MINITUN-SERVER 8 "2026-08-09" "MiniTun 1.0.0" "系统管理"
+.TH MINITUN-SERVER 8 "2026-08-12" "MiniTun 1.1.0" "系统管理"
 .SH NAME
 minitun-server \-
-MiniTun Protocol v2 公网 TCP 隧道服务端
+MiniTun Protocol v2 公网多传输隧道服务端
 .SH 用法
 .B minitun-server
 .B --tls-cert
@@ -13,8 +13,9 @@ MiniTun Protocol v2 公网 TCP 隧道服务端
 .RI [ options ]
 .SH 描述
 .B minitun-server
-接受 TLS 1.2+ Remote Protocol v2 控制和 Worker 连接，并按每客户端策略创建公开 TCP
-listener。每个客户端有独立 PSK、端口 ACL 和资源配额，可选绑定客户端证书。
+接受 TLS 1.2+ Remote Protocol v2 控制和 Worker 连接，并按每客户端策略创建 TCP、UDP、
+SOCKS5 或 P2P listener。每个客户端有独立 PSK、端口 ACL 和资源配额，可选绑定客户端
+证书。SOCKS5 listener 强制为 loopback；P2P candidate 不可达时保留 TLS relay fallback。
 .SH 必需选项
 .TP
 .BI --tls-cert " file"
@@ -135,4 +136,5 @@ HTTP 实现限制方法、大小、并发和超时。
 .SH 另请参阅
 .BR minitun (1),
 .BR minitund (8),
+.BR minitun-p2p (1),
 .BR systemd.service (5)

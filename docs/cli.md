@@ -63,10 +63,13 @@ endpoint、TLS server name、CA 或客户端证书身份变化只重建对应 se
 
 ```text
 minitun tun add <server-id-or-name> <local-port> <server-port>
-        [--local-host <host>] [--name <name>]
+        [--local-host <host>] [--remote-host <numeric-host>]
+        [--protocol tcp|udp|socks5|p2p] [--name <name>]
 minitun tun update <tun-id-or-name>
         [--name <name> | --clear-name]
-        [--local-host <host>] [--local-port <port>] [--server-port <port>]
+        [--local-host <host>] [--local-port <port>]
+        [--remote-host <numeric-host>] [--server-port <port>]
+        [--protocol tcp|udp|socks5|p2p]
 minitun tun enable <tun-id-or-name>
 minitun tun disable <tun-id-or-name>
 minitun tun list [server-id-or-name] [--json]
@@ -80,9 +83,30 @@ minitun tun remove <tun-id-or-name>
 minitun tun add edge 8080 6000 --name web
 ```
 
-表示 `公网 server 0.0.0.0:6000 -> daemon 127.0.0.1:8080`。即使 server 离线，记录
+表示 `公网 server 0.0.0.0:6000/tcp -> daemon 127.0.0.1:8080/tcp`。即使 server 离线，记录
 也以 `desired_state=active`、`actual_state=pending` 创建。稳定 tunnel ID 和 server
 归属不可更新；名称、本地地址/端口和公开端口可以更新。
+
+四种 mode 的创建示例：
+
+```bash
+# 公网 UDP 6001 -> 本地 UDP 5353
+minitun tun add edge 5353 6001 --protocol udp --name dns
+
+# server loopback 上的 SOCKS5 CONNECT；local-port=1 只是兼容位置参数
+minitun tun add edge 1 6002 --protocol socks5 \
+  --remote-host 127.0.0.1 --name proxy
+
+# P2P tunnel 的固定本地 TCP 目标
+minitun tun add edge 8080 6003 --protocol p2p --name direct-web
+minitun-p2p tunnel.example.com:6003 --listen 127.0.0.1:6501
+```
+
+`--remote-host` 是 server 侧的数值 bind address，默认 `0.0.0.0`。SOCKS5 强制使用
+loopback bind，只支持 no-auth `CONNECT`（IPv4、IPv6、domain），不支持 BIND 或 UDP
+ASSOCIATE。UDP 保留 datagram 边界，单个 payload 上限 65,507 字节。P2P 先尝试一次性
+token 认证的 direct TCP candidate，失败时自动回退到 TLS relay；它不提供
+ICE/STUN/TURN/NAT 打洞，也不额外加密 direct path。
 
 修改公开端口时先撤销旧 listener，再注册新端口。新端口失败时资源保持新期望配置并
 显示 `failed`，旧入口不会继续存在。disable 保留记录并注销 listener；enable 后重新
@@ -131,8 +155,33 @@ minitun doctor --json --checkpoint \
 ```
 
 同时在线恢复时会先验证两个来源，再分别原子替换并唤醒同步；两个 SQLite 文件之间不是
-同一个数据库事务，因此必须使用成对备份。schema v4 降级回 v0.4.1 需要离线恢复，见
+同一个数据库事务，因此必须使用成对备份。当前 schema v5 降级回 v0.4.1 需要离线恢复，见
 [迁移指南](migration-v1.md)。
+
+## P2P connector
+
+```text
+minitun-p2p <server-host:tunnel-port>
+  [--listen <numeric-host:port>] [--relay-only]
+  [--connect-timeout <seconds>] [--negotiation-timeout <seconds>]
+  [--direct-timeout <seconds>] [--inactivity-timeout <seconds>]
+  [--allow-non-loopback]
+```
+
+默认监听 `127.0.0.1:6501`。每个本地连接独立协商并打印选中的 `direct` 或 `relay`
+path；`--relay-only` 可用于策略控制和验证 fallback。只有明确要向受信网络暴露本地入口
+时才使用 `--allow-non-loopback`。
+
+## Web GUI
+
+```text
+minitun-gui [--listen <numeric-loopback:port>]
+            [--socket <path>] [--assets-dir <directory>]
+```
+
+默认在 `http://127.0.0.1:6500` 提供管理控制台。它拒绝非 loopback listener，通过同一
+Unix IPC 查看/管理 server 与 tunnel，不直接打开数据库或秘密。完整安全边界与开发运行
+方式见 [GUI 文档](gui.md)。
 
 ## 输出与退出码
 

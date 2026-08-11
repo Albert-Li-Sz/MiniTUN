@@ -1,6 +1,6 @@
 {
   "name": "minitun-site",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -9,9 +9,17 @@
   "scripts": {
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
-    "docs:preview": "vitepress preview docs"
+    "docs:preview": "vitepress preview docs",
+    "gui:dev": "vite --config gui/vite.config.js",
+    "gui:build": "vite build --config gui/vite.config.js",
+    "gui:preview": "vite preview --config gui/vite.config.js"
   },
   "devDependencies": {
+    "vite": "^8.2.1",
     "vitepress": "2.0.0-alpha.19"
+  },
+  "dependencies": {
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
   }
 }

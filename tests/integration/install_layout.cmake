@@ -76,11 +76,17 @@ staged_path("${MINITUN_SYSUSERS_DIR}" staged_sysusers_dir)
 install_component(Client client_prefix)
 require_paths("${client_prefix}"
     "${staged_bindir}/minitun"
+    "${staged_bindir}/minitun-gui"
+    "${staged_bindir}/minitun-p2p"
     "${staged_libexecdir}/minitun/minitund"
     "${staged_systemd_unit_dir}/minitund.service"
     "${staged_sysusers_dir}/minitun.conf"
     "${staged_mandir}/man1/minitun.1"
+    "${staged_mandir}/man1/minitun-gui.1"
+    "${staged_mandir}/man1/minitun-p2p.1"
     "${staged_mandir}/man8/minitund.8"
+    "usr/share/minitun/gui/index.html"
+    "usr/share/minitun/gui/logo.svg"
 )
 if(EXISTS "${client_prefix}/${staged_bindir}/minitun-server")
     message(FATAL_ERROR "Client component unexpectedly installed minitun-server")
@@ -138,6 +144,14 @@ file(GLOB sdk_runtime_libraries
 if(NOT sdk_runtime_libraries)
     message(FATAL_ERROR "ClientLibrary component is missing the SOVERSION 1 runtime")
 endif()
+file(GLOB remote_protocol_runtime_libraries
+    "${client_library_prefix}/${staged_libdir}/libminitun-remote-protocol.so.1*"
+    "${client_library_prefix}/${staged_libdir}/libminitun-remote-protocol.1*.dylib"
+)
+if(NOT remote_protocol_runtime_libraries)
+    message(FATAL_ERROR
+        "ClientLibrary component is missing the Remote Protocol SOVERSION 1 runtime")
+endif()
 if(EXISTS "${client_library_prefix}/${staged_libdir}/libminitun-client.so" OR
    EXISTS "${client_library_prefix}/${staged_libdir}/libminitun-client.dylib")
     message(FATAL_ERROR "ClientLibrary component unexpectedly contains the development symlink")
@@ -147,15 +161,24 @@ install_component(ClientDevelopment client_development_prefix)
 require_paths("${client_development_prefix}"
     "${staged_includedir}/minitun/client.h"
     "${staged_includedir}/minitun/client.hpp"
+    "${staged_includedir}/minitun/remote_protocol.hpp"
     "${staged_libdir}/cmake/MiniTun/MiniTunConfig.cmake"
     "${staged_libdir}/cmake/MiniTun/MiniTunTargets.cmake"
     "${staged_libdir}/pkgconfig/minitun-client.pc"
+    "${staged_libdir}/pkgconfig/minitun-remote-protocol.pc"
 )
 if(NOT EXISTS "${client_development_prefix}/${staged_libdir}/libminitun-client.so" AND
    NOT IS_SYMLINK "${client_development_prefix}/${staged_libdir}/libminitun-client.so" AND
    NOT EXISTS "${client_development_prefix}/${staged_libdir}/libminitun-client.dylib" AND
    NOT IS_SYMLINK "${client_development_prefix}/${staged_libdir}/libminitun-client.dylib")
     message(FATAL_ERROR "ClientDevelopment component is missing the linker name")
+endif()
+if(NOT EXISTS "${client_development_prefix}/${staged_libdir}/libminitun-remote-protocol.so" AND
+   NOT IS_SYMLINK "${client_development_prefix}/${staged_libdir}/libminitun-remote-protocol.so" AND
+   NOT EXISTS "${client_development_prefix}/${staged_libdir}/libminitun-remote-protocol.dylib" AND
+   NOT IS_SYMLINK "${client_development_prefix}/${staged_libdir}/libminitun-remote-protocol.dylib")
+    message(FATAL_ERROR
+        "ClientDevelopment component is missing the Remote Protocol linker name")
 endif()
 
 message(STATUS "component installation layout passed")

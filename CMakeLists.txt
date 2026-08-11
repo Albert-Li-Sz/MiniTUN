@@ -2,8 +2,8 @@ cmake_minimum_required(VERSION 3.22)
 
 project(
     MiniTun
-    VERSION 1.0.0
-    DESCRIPTION "A small, high-performance TCP reverse-tunnelling system"
+    VERSION 1.1.0
+    DESCRIPTION "A small, high-performance multi-transport reverse-tunnelling system"
     HOMEPAGE_URL "https://github.com/LMTINSUZHOU/MiniTUN"
     LANGUAGES C CXX
 )
@@ -129,9 +129,12 @@ minitun_apply_lto(minitun_common)
 add_library(minitun_protocol STATIC
     src/protocol/auth.cpp
     src/protocol/codec.cpp
+    src/protocol/datagram.cpp
     src/protocol/frame.cpp
     src/protocol/messages.cpp
+    src/protocol/p2p.cpp
     src/protocol/relay.cpp
+    src/protocol/socks5.cpp
     src/protocol/state_machine.cpp
     src/protocol/tls.cpp
 )
@@ -152,6 +155,44 @@ target_link_libraries(minitun_protocol
 )
 minitun_apply_sanitizers(minitun_protocol)
 minitun_apply_lto(minitun_protocol)
+
+add_library(minitun_remote_protocol SHARED src/sdk/remote_protocol.cpp)
+add_library(MiniTun::RemoteProtocol ALIAS minitun_remote_protocol)
+set_target_properties(minitun_remote_protocol PROPERTIES
+    OUTPUT_NAME minitun-remote-protocol
+    EXPORT_NAME RemoteProtocol
+    VERSION "${PROJECT_VERSION}"
+    SOVERSION 1
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN YES
+)
+target_compile_definitions(minitun_remote_protocol PRIVATE MINITUN_REMOTE_PROTOCOL_BUILD)
+target_include_directories(minitun_remote_protocol
+    PUBLIC
+        "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+        "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>"
+)
+target_compile_features(minitun_remote_protocol PUBLIC cxx_std_20)
+target_link_libraries(minitun_remote_protocol
+    PRIVATE MiniTun::protocol minitun_project_warnings
+)
+if(APPLE)
+    target_link_options(minitun_remote_protocol PRIVATE
+        "LINKER:-exported_symbols_list,${CMAKE_CURRENT_SOURCE_DIR}/abi/minitun-remote-protocol-1.apple.exports"
+    )
+    set_property(TARGET minitun_remote_protocol APPEND PROPERTY LINK_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/abi/minitun-remote-protocol-1.apple.exports"
+    )
+elseif(UNIX)
+    target_link_options(minitun_remote_protocol PRIVATE
+        "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/abi/minitun-remote-protocol-1.map"
+    )
+    set_property(TARGET minitun_remote_protocol APPEND PROPERTY LINK_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/abi/minitun-remote-protocol-1.map"
+    )
+endif()
+minitun_apply_sanitizers(minitun_remote_protocol)
+minitun_apply_lto(minitun_remote_protocol)
 
 add_library(minitun_storage STATIC
     src/storage/credential_store.cpp
@@ -216,6 +257,18 @@ target_link_libraries(minitun_admin
 )
 minitun_apply_sanitizers(minitun_admin)
 minitun_apply_lto(minitun_admin)
+
+add_library(minitun_gui STATIC src/gui/server.cpp)
+add_library(MiniTun::gui ALIAS minitun_gui)
+target_include_directories(minitun_gui
+    PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+)
+target_link_libraries(minitun_gui
+    PUBLIC MiniTun::ipc
+    PRIVATE minitun_project_warnings
+)
+minitun_apply_sanitizers(minitun_gui)
+minitun_apply_lto(minitun_gui)
 
 add_library(minitun_client SHARED src/sdk/client.cpp)
 add_library(MiniTun::Client ALIAS minitun_client)
@@ -317,6 +370,11 @@ endfunction()
 minitun_add_program(minitun apps/minitun_main.cpp MiniTun::ipc)
 minitun_add_program(minitund apps/minitund_main.cpp MiniTun::daemon)
 minitun_add_program(minitun-server apps/minitun_server_main.cpp MiniTun::server)
+minitun_add_program(minitun-gui apps/minitun_gui_main.cpp MiniTun::gui)
+minitun_add_program(minitun-p2p apps/minitun_p2p_main.cpp MiniTun::protocol)
+target_compile_definitions(minitun-gui PRIVATE
+    MINITUN_GUI_ASSETS_DIR="${CMAKE_INSTALL_FULL_DATADIR}/minitun/gui"
+)
 target_link_libraries(minitund PRIVATE MiniTun::admin)
 target_link_libraries(minitun-server PRIVATE MiniTun::admin)
 
@@ -348,6 +406,11 @@ configure_file(
     "${CMAKE_CURRENT_BINARY_DIR}/minitun-client.pc"
     @ONLY
 )
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/packaging/pkgconfig/minitun-remote-protocol.pc.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/minitun-remote-protocol.pc"
+    @ONLY
+)
 install(
     EXPORT MiniTunTargets
     FILE MiniTunTargets.cmake
@@ -363,7 +426,9 @@ install(
     COMPONENT ClientDevelopment
 )
 install(
-    FILES "${CMAKE_CURRENT_BINARY_DIR}/minitun-client.pc"
+    FILES
+        "${CMAKE_CURRENT_BINARY_DIR}/minitun-client.pc"
+        "${CMAKE_CURRENT_BINARY_DIR}/minitun-remote-protocol.pc"
     DESTINATION "${CMAKE_INSTALL_LIBDIR}/pkgconfig"
     COMPONENT ClientDevelopment
 )
@@ -378,7 +443,32 @@ install(
     COMPONENT Server
 )
 install(
+    TARGETS minitun-gui
+    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+    COMPONENT Client
+)
+install(
+    TARGETS minitun-p2p
+    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+    COMPONENT Client
+)
+install(
+    DIRECTORY gui/dist/
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/minitun/gui"
+    COMPONENT Client
+)
+install(
     TARGETS minitun_client
+    EXPORT MiniTunTargets
+    LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+            COMPONENT ClientLibrary
+            NAMELINK_COMPONENT ClientDevelopment
+    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT ClientLibrary
+    ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT ClientDevelopment
+    INCLUDES DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
+)
+install(
+    TARGETS minitun_remote_protocol
     EXPORT MiniTunTargets
     LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
             COMPONENT ClientLibrary
@@ -411,6 +501,8 @@ install(
 
 install(
     FILES packaging/man/minitun.1
+          packaging/man/minitun-gui.1
+          packaging/man/minitun-p2p.1
     DESTINATION "${CMAKE_INSTALL_MANDIR}/man1"
     COMPONENT Client
 )
@@ -449,9 +541,15 @@ install(
     FILES_MATCHING PATTERN "*.hpp" PATTERN "*.h"
 )
 install(
-    FILES include/minitun/client.h include/minitun/client.hpp
+    FILES include/minitun/client.h include/minitun/client.hpp include/minitun/remote_protocol.hpp
     DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/minitun"
     COMPONENT ClientDevelopment
+)
+install(
+    DIRECTORY include/minitun/common include/minitun/protocol
+    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/minitun"
+    COMPONENT ClientDevelopment
+    FILES_MATCHING PATTERN "*.hpp"
 )
 
 if(MINITUN_BUILD_TESTS)

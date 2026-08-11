@@ -12,6 +12,7 @@
 - Ninja；
 - 支持 C++20 的 GCC 或 Clang；
 - OpenSSL 3、SQLite3 和 Python 3；
+- Node.js 22.12+ 与 npm（修改或验证 Web GUI/文档站时）；
 - 可访问 FetchContent 上游依赖的网络环境。
 
 Debian/Ubuntu 的最小开发依赖：
@@ -38,6 +39,8 @@ CLI11、Asio、nlohmann/json、spdlog 与 GoogleTest 开发包。
 ## 构建与测试
 
 ```bash
+npm ci
+npm run gui:build
 cmake --preset dev
 cmake --build --preset dev
 ctest --preset dev
@@ -49,8 +52,14 @@ ctest --preset dev
 build/dev/minitun
 build/dev/minitund
 build/dev/minitun-server
+build/dev/minitun-gui
+build/dev/minitun-p2p
 build/dev/libminitun-client.so.1  # Linux；macOS 为对应 dylib
+build/dev/libminitun-remote-protocol.so.1
 ```
+
+`gui/dist` 是软件包使用的可复现静态资源并随源码提交。修改 `gui/src` 后必须执行
+`npm run gui:build`，质量工作流会重建并拒绝未同步的 dist。
 
 常用 CMake 选项：
 
@@ -264,7 +273,8 @@ packaging/tests/verify-rpm.sh build/package-rpm
 ```
 
 生成 `minitun-client`、`minitun-server`、`libminitun-client1` 和
-`libminitun-client-dev`/`libminitun-client-devel`。在 Docker 可用的 Linux
+`libminitun-client-dev`/`libminitun-client-devel`。Client 包含 GUI、P2P connector 与
+静态资源；两个 SDK 的 runtime 和 development 文件共用对应 library/devel 包。在 Docker 可用的 Linux
 开发主机上，可以继续执行干净容器冒烟测试：
 
 ```bash
@@ -304,7 +314,7 @@ rpmbuild 的 ELF 依赖扫描生成 soname 级 `Requires`。每个新架构都�
 | --- | --- |
 | `ci.yml` | Linux GCC/Clang、macOS 编译、完整 CTest、SDK 示例 |
 | `sanitizers.yml` | ASan、UBSan、TSan、PR fuzz smoke 与 nightly corpus fuzz |
-| `quality.yml` | clang-tidy、line ≥85% / branch ≥75% coverage、ABI/downstream checks |
+| `quality.yml` | GUI/文档可复现构建、clang-tidy、line ≥85% / branch ≥75% coverage、ABI/downstream checks |
 | `codeql.yml` | GitHub CodeQL C/C++ 扫描 |
 | `reliability.yml` | tunnel registration 与高延迟 reconciliation 重复 100 次 |
 | `performance.yml` | 可选的独立 4 vCPU/8 GiB 三轮基准、持久 systemd soak 与 OIDC 证据 |
@@ -316,7 +326,7 @@ rpmbuild 的 ELF 依赖扫描生成 soname 级 `Requires`。每个新架构都�
 发布 tag 必须是 `vMAJOR.MINOR.PATCH` 或 `vMAJOR.MINOR.PATCH-rc.NUMBER`，基础版本必须与
 `CMakeLists.txt` 一致。
 
-v1.0 发布顺序是强制门禁，不是只创建 tag：
+以下是已经完成的 v1.0 发布顺序；`v1.0.0` tag 不得移动或重建：
 
 1. 发布 `v1.0.0-rc.1` 并冻结协议、schema、SDK ABI 和功能；
 2. 只修阻断项，发布 `v1.0.0-rc.2`；后续修改必须按顺序增加 `rc.N`；
@@ -337,6 +347,9 @@ attestation 的工程验证记录；`release.yml` 不下载或要求这些记录
 
 最终 RC 后任何源码变化仍必须发布后续 `rc.N`，因为 GA 必须与最终 RC 指向完全相同的
 commit；这一冻结规则与可选性能/浸泡验证无关。
+
+1.1.0 必须从当前源码另行创建连续 `v1.1.0-rc.N`，验证最终 RC 后再在同一 commit 创建
+`v1.1.0`；不得把新增能力回填到已经发布的 `v1.0.0` tag。
 
 OCI 漏洞扫描在 RC 和 GA 中都会完整报告 High/Critical 发现，但不阻断发布。报告仍保留在
 Actions 日志中供发布决策和后续基础镜像修复使用；CodeQL、依赖审计及其他安全门禁保持

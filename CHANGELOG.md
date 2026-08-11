@@ -4,6 +4,44 @@ MiniTun 的所有重要变更都会记录在此文件中。本文档以
 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 的结构为基础，项目
 版本遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased] - 1.1.0
+
+### 新增
+
+- 新增 `udp` tunnel：公网 UDP peer 使用有界 session/queue，datagram 通过认证 TLS Worker
+  的 2 字节长度 record 转发到固定本地 UDP 目标，并保留报文边界。
+- 新增 SOCKS5 no-auth CONNECT（IPv4、IPv6、domain）；server bind 强制为数值 loopback，
+  防止误部署为公网开放代理。
+- 新增 P2P mode 与 `minitun-p2p` connector：使用一次性 token 尝试 direct TCP path，
+  不可达或确认失败时自动回退到原 TLS relay；支持 `--relay-only` 验证 fallback。
+- 新增 `minitun-gui` localhost Web 控制台，提供响应式 server/tunnel/P2P/诊断视图和四种
+  mode 创建入口；HTTP 限额、同源 mutation、路径校验与 CSP 安全头默认启用。
+- 新增 `libminitun-remote-protocol.so.1` C++20 SDK：强类型 message variant、增量 frame
+  decoder、codec 和 control/Worker 认证摘要 helper，并提供 CMake/pkg-config 集成。
+- 本地 C/C++ 控制 SDK 的 tunnel create/update 以 `struct_size` 兼容方式新增 `protocol`
+  与 `remote_host` 字段；旧 1.0 调用方继续按 TCP 默认值运行。
+
+### 数据与协议
+
+- 状态库升级到 schema v5，事务迁移原 tunnel 为 `tcp`/`0.0.0.0`，并持久化四种 mode 与
+  server bind host。
+- Remote Protocol v2 新增 `udp_datagrams`、`socks5_proxy`、`p2p_rendezvous` capability；
+  非 TCP REGISTER/START payload 使用单字节扩展，原 TCP v2 wire image 保持不变。
+
+### 交付与验证
+
+- Client 软件包新增 `minitun-gui`、`minitun-p2p`、GUI 静态资源和 man pages；SDK
+  runtime/development 包同时交付 Remote Protocol 共享库、头文件、CMake target 和
+  pkg-config 元数据。
+- 新增 UDP/SOCKS5/P2P 端到端、P2P direct/fallback、GUI HTTP/API/security、Remote SDK
+  ABI/下游链接、schema v5 迁移和安装布局回归测试。
+
+### 安全边界
+
+- 当前 P2P 不实现 ICE、STUN、TURN 或 NAT 打洞；一次性 token 只认证 direct candidate，
+  direct application data 不额外加密，敏感应用必须自行使用 TLS。
+- `v1.0.0` GA tag 保持不可变；以上能力只属于 1.1.0 开发线。
+
 ## [1.0.0] - 2026-08-11
 
 ### 不兼容变更

@@ -39,7 +39,11 @@ sdk_library_contents=$(dpkg-deb --fsys-tarfile "$sdk_library_package" | tar -tf 
 sdk_development_contents=$(dpkg-deb --fsys-tarfile "$sdk_development_package" | tar -tf -)
 
 printf '%s\n' "$client_contents" | grep -qx './usr/bin/minitun'
+printf '%s\n' "$client_contents" | grep -qx './usr/bin/minitun-gui'
+printf '%s\n' "$client_contents" | grep -qx './usr/bin/minitun-p2p'
 printf '%s\n' "$client_contents" | grep -qx './usr/libexec/minitun/minitund'
+printf '%s\n' "$client_contents" | grep -qx './usr/share/minitun/gui/index.html'
+printf '%s\n' "$client_contents" | grep -qx './usr/share/minitun/gui/logo.svg'
 printf '%s\n' "$client_contents" | grep -qx './usr/lib/systemd/system/minitund.service'
 printf '%s\n' "$client_contents" | grep -qx './usr/lib/sysusers.d/minitun.conf'
 if printf '%s\n' "$client_contents" | grep -q 'minitun-server'; then
@@ -55,14 +59,18 @@ if printf '%s\n' "$server_contents" | grep -Eq '/etc/minitun-server/(server\.crt
 fi
 
 printf '%s\n' "$sdk_library_contents" | grep -Eq '^\./usr/lib(/[^/]+)?/libminitun-client\.so\.1(\.|$)'
+printf '%s\n' "$sdk_library_contents" | grep -Eq '^\./usr/lib(/[^/]+)?/libminitun-remote-protocol\.so\.1(\.|$)'
 if printf '%s\n' "$sdk_library_contents" | grep -Eq '/include/|libminitun-client\.so$'; then
     exit 1
 fi
 printf '%s\n' "$sdk_development_contents" | grep -qx './usr/include/minitun/client.h'
 printf '%s\n' "$sdk_development_contents" | grep -qx './usr/include/minitun/client.hpp'
+printf '%s\n' "$sdk_development_contents" | grep -qx './usr/include/minitun/remote_protocol.hpp'
 printf '%s\n' "$sdk_development_contents" | grep -Eq '^\./usr/lib(/[^/]+)?/pkgconfig/minitun-client\.pc$'
+printf '%s\n' "$sdk_development_contents" | grep -Eq '^\./usr/lib(/[^/]+)?/pkgconfig/minitun-remote-protocol\.pc$'
 printf '%s\n' "$sdk_development_contents" | grep -Eq '^\./usr/lib(/[^/]+)?/cmake/MiniTun/MiniTunConfig\.cmake$'
 printf '%s\n' "$sdk_development_contents" | grep -Eq '^\./usr/lib(/[^/]+)?/libminitun-client\.so$'
+printf '%s\n' "$sdk_development_contents" | grep -Eq '^\./usr/lib(/[^/]+)?/libminitun-remote-protocol\.so$'
 dpkg-deb -f "$sdk_development_package" Depends | grep -q 'libminitun-client1'
 
 control_directory=$(mktemp -d)

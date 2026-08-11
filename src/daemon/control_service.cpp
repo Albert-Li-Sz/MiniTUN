@@ -13,6 +13,8 @@
 #include <utility>
 #include <vector>
 
+#include <asio/ip/address.hpp>
+
 #include <minitun/common/endpoint.hpp>
 #include <minitun/common/error.hpp>
 #include <minitun/common/id.hpp>
@@ -40,6 +42,19 @@ using storage::ServerRecord;
 using storage::TunnelActualState;
 using storage::TunnelDesiredState;
 using storage::TunnelRecord;
+
+[[nodiscard]] Result<void> validate_protocol_binding(const storage::TunnelProtocol protocol,
+                                                     const common::Endpoint& remote_endpoint) {
+    if (protocol != storage::TunnelProtocol::socks5) {
+        return Result<void>::success();
+    }
+    asio::error_code error;
+    const auto address = asio::ip::make_address(remote_endpoint.host(), error);
+    if (error || !address.is_loopback()) {
+        return Error{ErrorCode::permission_denied, "SOCKS5 tunnels must bind a loopback address"};
+    }
+    return Result<void>::success();
+}
 
 class StringScrubber final {
   public:
@@ -1345,16 +1360,19 @@ Result<Json> ControlService::server_remove(const ipc::Request& request) {
 }
 
 Result<Json> ControlService::tunnel_add(const ipc::Request& request) {
-    if (auto valid = validate_params(request.params, {"server", "local_port", "remote_port"},
-                                     {"local_host", "name"});
+    if (auto valid =
+            validate_params(request.params, {"server", "remote_port"},
+                            {"local_host", "local_port", "remote_host", "name", "protocol"});
         !valid) {
         return valid.error();
     }
     auto server_identifier = required_string(request.params, "server");
-    auto local_port = required_port(request.params, "local_port");
+    auto local_port = optional_port(request.params, "local_port");
     auto remote_port = required_port(request.params, "remote_port");
     auto local_host = optional_string(request.params, "local_host");
+    auto remote_host = optional_string(request.params, "remote_host");
     auto name = optional_string(request.params, "name");
+    auto protocol_text = optional_string(request.params, "protocol");
     if (!server_identifier) {
         return server_identifier.error();
     }
@@ -1367,8 +1385,22 @@ Result<Json> ControlService::tunnel_add(const ipc::Request& request) {
     if (!local_host) {
         return local_host.error();
     }
+    if (!remote_host) {
+        return remote_host.error();
+    }
     if (!name) {
         return name.error();
+    }
+    if (!protocol_text) {
+        return protocol_text.error();
+    }
+    auto tunnel_protocol = storage::tunnel_protocol_from_string(protocol_text->value_or("tcp"));
+    if (!tunnel_protocol) {
+        return tunnel_protocol.error();
+    }
+    if (*tunnel_protocol != storage::TunnelProtocol::socks5 && !local_port->has_value()) {
+        return Error{ErrorCode::invalid_argument,
+                     "local_port is required for tcp, udp, and p2p tunnels"};
     }
     auto transaction = repository_.begin_transaction();
     if (!transaction) {
@@ -1379,13 +1411,20 @@ Result<Json> ControlService::tunnel_add(const ipc::Request& request) {
         return server.error();
     }
     const std::string host = local_host->value_or("127.0.0.1");
-    auto local_endpoint = common::Endpoint::parse(endpoint_text(host, *local_port));
-    auto remote_endpoint = common::Endpoint::parse(endpoint_text("0.0.0.0", *remote_port));
+    const std::uint16_t target_port = local_port->value_or(1U);
+    const std::string bind_host = remote_host->value_or(
+        *tunnel_protocol == storage::TunnelProtocol::socks5 ? "127.0.0.1" : "0.0.0.0");
+    auto local_endpoint = common::Endpoint::parse(endpoint_text(host, target_port));
+    auto remote_endpoint = common::Endpoint::parse(endpoint_text(bind_host, *remote_port));
     if (!local_endpoint) {
         return local_endpoint.error();
     }
     if (!remote_endpoint) {
         return remote_endpoint.error();
+    }
+    if (auto valid_binding = validate_protocol_binding(*tunnel_protocol, *remote_endpoint);
+        !valid_binding) {
+        return valid_binding.error();
     }
     auto id = common::Id::generate(common::IdKind::tunnel);
     if (!id) {
@@ -1403,7 +1442,7 @@ Result<Json> ControlService::tunnel_add(const ipc::Request& request) {
         .id = std::move(*id),
         .name = std::move(*name),
         .server_id = server->id,
-        .protocol = storage::TunnelProtocol::tcp,
+        .protocol = *tunnel_protocol,
         .local_endpoint = std::move(*local_endpoint),
         .remote_endpoint = std::move(*remote_endpoint),
         .desired_state = TunnelDesiredState::active,
@@ -1428,8 +1467,9 @@ Result<Json> ControlService::tunnel_add(const ipc::Request& request) {
 }
 
 Result<Json> ControlService::tunnel_update(const ipc::Request& request) {
-    if (auto valid = validate_params(request.params, {"identifier"},
-                                     {"name", "local_host", "local_port", "remote_port"});
+    if (auto valid = validate_params(
+            request.params, {"identifier"},
+            {"name", "local_host", "local_port", "remote_host", "remote_port", "protocol"});
         !valid) {
         return valid.error();
     }
@@ -1440,13 +1480,18 @@ Result<Json> ControlService::tunnel_update(const ipc::Request& request) {
     auto name = optional_nullable_string(request.params, "name");
     auto local_host = optional_string(request.params, "local_host");
     auto local_port = optional_port(request.params, "local_port");
+    auto remote_host = optional_string(request.params, "remote_host");
     auto remote_port = optional_port(request.params, "remote_port");
-    if (!identifier || !name || !local_host || !local_port || !remote_port) {
-        return !identifier   ? identifier.error()
-               : !name       ? name.error()
-               : !local_host ? local_host.error()
-               : !local_port ? local_port.error()
-                             : remote_port.error();
+    auto protocol_text = optional_string(request.params, "protocol");
+    if (!identifier || !name || !local_host || !local_port || !remote_host || !remote_port ||
+        !protocol_text) {
+        return !identifier    ? identifier.error()
+               : !name        ? name.error()
+               : !local_host  ? local_host.error()
+               : !local_port  ? local_port.error()
+               : !remote_host ? remote_host.error()
+               : !remote_port ? remote_port.error()
+                              : protocol_text.error();
     }
 
     auto transaction = repository_.begin_transaction();
@@ -1468,14 +1513,32 @@ Result<Json> ControlService::tunnel_update(const ipc::Request& request) {
         local_port->has_value() ? **local_port : tunnel->local_endpoint.port();
     const std::uint16_t next_remote_port =
         remote_port->has_value() ? **remote_port : tunnel->remote_endpoint.port();
+    const std::string next_remote_host =
+        remote_host->has_value() ? **remote_host : tunnel->remote_endpoint.host();
+    storage::TunnelProtocol next_protocol = tunnel->protocol;
+    if (protocol_text->has_value()) {
+        auto parsed = storage::tunnel_protocol_from_string(**protocol_text);
+        if (!parsed) {
+            return parsed.error();
+        }
+        next_protocol = *parsed;
+    }
+    if (next_protocol != storage::TunnelProtocol::socks5 &&
+        tunnel->protocol == storage::TunnelProtocol::socks5 && !local_port->has_value()) {
+        return Error{ErrorCode::invalid_argument,
+                     "local_port is required when changing a SOCKS5 tunnel to tcp, udp, or p2p"};
+    }
     auto next_local = common::Endpoint::parse(endpoint_text(next_local_host, next_local_port));
-    auto next_remote =
-        common::Endpoint::parse(endpoint_text(tunnel->remote_endpoint.host(), next_remote_port));
+    auto next_remote = common::Endpoint::parse(endpoint_text(next_remote_host, next_remote_port));
     if (!next_local) {
         return next_local.error();
     }
     if (!next_remote) {
         return next_remote.error();
+    }
+    if (auto valid_binding = validate_protocol_binding(next_protocol, *next_remote);
+        !valid_binding) {
+        return valid_binding.error();
     }
 
     bool changed = false;
@@ -1489,6 +1552,10 @@ Result<Json> ControlService::tunnel_update(const ipc::Request& request) {
     }
     if (tunnel->remote_endpoint != *next_remote) {
         tunnel->remote_endpoint = std::move(*next_remote);
+        changed = true;
+    }
+    if (tunnel->protocol != next_protocol) {
+        tunnel->protocol = next_protocol;
         changed = true;
     }
     if (changed) {

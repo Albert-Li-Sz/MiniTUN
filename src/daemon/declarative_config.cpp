@@ -20,6 +20,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <asio/ip/address.hpp>
+
 #include <minitun/common/endpoint.hpp>
 #include <minitun/common/error.hpp>
 #include <minitun/common/id.hpp>
@@ -87,7 +89,7 @@ enum class FileKind : std::uint8_t {
                      "configuration input file cannot be opened"};
     }
     const FileDescriptor descriptor{raw_descriptor};
-    struct stat status {};
+    struct stat status{};
     if (::fstat(descriptor.get(), &status) != 0 || !S_ISREG(status.st_mode) ||
         status.st_nlink != 1 || status.st_size <= 0) {
         return Error{ErrorCode::permission_denied,
@@ -102,8 +104,10 @@ enum class FileKind : std::uint8_t {
     if (status.st_uid != ::geteuid() || (status.st_mode & forbidden) != 0) {
         return Error{ErrorCode::permission_denied,
                      kind == FileKind::private_credential
-                         ? "private credential file must be owned by the daemon user and inaccessible to others"
-                         : "configuration input must be owned by the daemon user and not writable by others"};
+                         ? "private credential file must be owned by the daemon user and "
+                           "inaccessible to others"
+                         : "configuration input must be owned by the daemon user and not writable "
+                           "by others"};
     }
     std::vector<char> bytes(static_cast<std::size_t>(status.st_size));
     std::size_t offset = 0U;
@@ -227,16 +231,14 @@ struct ParseLimits final {
         }
         return document;
     } catch (const Json::exception&) {
-        return Error{ErrorCode::invalid_argument,
-                     "declarative configuration is not strict JSON"};
+        return Error{ErrorCode::invalid_argument, "declarative configuration is not strict JSON"};
     } catch (...) {
         return Error{ErrorCode::resource_exhausted,
                      "insufficient memory while parsing declarative configuration"};
     }
 }
 
-[[nodiscard]] bool exact_fields(const Json& value,
-                                const std::set<std::string_view>& allowed) {
+[[nodiscard]] bool exact_fields(const Json& value, const std::set<std::string_view>& allowed) {
     if (!value.is_object()) {
         return false;
     }
@@ -255,8 +257,7 @@ struct ParseLimits final {
         return std::optional<std::string>{};
     }
     if (!value->is_string()) {
-        return Error{ErrorCode::invalid_argument,
-                     std::string{field} + " must be a string or null"};
+        return Error{ErrorCode::invalid_argument, std::string{field} + " must be a string or null"};
     }
     const auto text = value->get<std::string>();
     if (text.empty() || text.size() > kMaximumJsonStringBytes ||
@@ -302,6 +303,33 @@ struct ParseLimits final {
                      std::string{field} + " must be between 1 and 65535"};
     }
     return static_cast<std::uint16_t>(port);
+}
+
+[[nodiscard]] Result<std::optional<std::uint16_t>> optional_port(const Json& object,
+                                                                 const std::string_view field) {
+    const auto value = object.find(field);
+    if (value == object.end() || value->is_null()) {
+        return std::optional<std::uint16_t>{};
+    }
+    auto port = required_port(object, field);
+    if (!port) {
+        return port.error();
+    }
+    return std::optional<std::uint16_t>{*port};
+}
+
+[[nodiscard]] Result<void> validate_protocol_binding(const storage::TunnelProtocol protocol,
+                                                     const common::Endpoint& remote_endpoint) {
+    if (protocol != storage::TunnelProtocol::socks5) {
+        return Result<void>::success();
+    }
+    asio::error_code error;
+    const auto address = asio::ip::make_address(remote_endpoint.host(), error);
+    if (error || !address.is_loopback()) {
+        return Error{ErrorCode::permission_denied,
+                     "SOCKS5 tunnels must bind a numeric loopback address"};
+    }
+    return Result<void>::success();
 }
 
 [[nodiscard]] std::string endpoint_text(const std::string_view host, const std::uint16_t port) {
@@ -515,9 +543,10 @@ void add_change(std::vector<std::string>& changes, const bool changed,
     return Result<void>::success();
 }
 
-[[nodiscard]] Result<PreparedPlan>
-prepare_plan(storage::StateRepository& repository, storage::CredentialStore& credentials,
-             const std::string_view config_path, const bool prune) {
+[[nodiscard]] Result<PreparedPlan> prepare_plan(storage::StateRepository& repository,
+                                                storage::CredentialStore& credentials,
+                                                const std::string_view config_path,
+                                                const bool prune) {
     if (config_path.empty() || config_path.size() > kMaximumPathBytes ||
         config_path.find('\0') != std::string_view::npos) {
         return Error{ErrorCode::invalid_argument, "declarative configuration path is invalid"};
@@ -532,7 +561,8 @@ prepare_plan(storage::StateRepository& repository, storage::CredentialStore& cre
         return document.error();
     }
     if (!exact_fields(*document, {"format_version", "servers", "tunnels"}) ||
-        !document->contains("format_version") || !document->at("format_version").is_number_unsigned() ||
+        !document->contains("format_version") ||
+        !document->at("format_version").is_number_unsigned() ||
         document->at("format_version").get<std::uint64_t>() != 1U ||
         !document->contains("servers") || !document->at("servers").is_array() ||
         !document->contains("tunnels") || !document->at("tunnels").is_array()) {
@@ -548,16 +578,18 @@ prepare_plan(storage::StateRepository& repository, storage::CredentialStore& cre
     if (!current_tunnels) {
         return current_tunnels.error();
     }
-    current_servers->erase(
-        std::remove_if(current_servers->begin(), current_servers->end(), [](const auto& server) {
-            return server.desired_state == ServerDesiredState::removed;
-        }),
-        current_servers->end());
-    current_tunnels->erase(
-        std::remove_if(current_tunnels->begin(), current_tunnels->end(), [](const auto& tunnel) {
-            return tunnel.desired_state == TunnelDesiredState::removed;
-        }),
-        current_tunnels->end());
+    current_servers->erase(std::remove_if(current_servers->begin(), current_servers->end(),
+                                          [](const auto& server) {
+                                              return server.desired_state ==
+                                                     ServerDesiredState::removed;
+                                          }),
+                           current_servers->end());
+    current_tunnels->erase(std::remove_if(current_tunnels->begin(), current_tunnels->end(),
+                                          [](const auto& tunnel) {
+                                              return tunnel.desired_state ==
+                                                     TunnelDesiredState::removed;
+                                          }),
+                           current_tunnels->end());
 
     PreparedPlan prepared;
     prepared.servers.reserve(document->at("servers").size() + current_servers->size());
@@ -565,12 +597,13 @@ prepare_plan(storage::StateRepository& repository, storage::CredentialStore& cre
     std::unordered_set<std::string> matched_server_ids;
     std::unordered_set<std::string> desired_server_ids;
     std::unordered_set<std::string> desired_server_names;
-    const auto base_directory = path.has_parent_path() ? path.parent_path() : std::filesystem::path{"."};
+    const auto base_directory =
+        path.has_parent_path() ? path.parent_path() : std::filesystem::path{"."};
 
     for (const auto& entry : document->at("servers")) {
-        if (!exact_fields(entry, {"id", "name", "endpoint", "tls_server_name", "enabled",
-                                  "psk_file", "ca_file", "client_cert_file", "client_key_file",
-                                  "credentials"})) {
+        if (!exact_fields(entry,
+                          {"id", "name", "endpoint", "tls_server_name", "enabled", "psk_file",
+                           "ca_file", "client_cert_file", "client_key_file", "credentials"})) {
             return Error{ErrorCode::invalid_argument,
                          "a declarative server contains an unknown field"};
         }
@@ -580,11 +613,11 @@ prepare_plan(storage::StateRepository& repository, storage::CredentialStore& cre
         auto tls_server_name = nullable_string(entry, "tls_server_name");
         auto enabled = optional_enabled(entry);
         if (!id_text || !name || !endpoint_value || !tls_server_name || !enabled) {
-            return !id_text          ? id_text.error()
-                   : !name           ? name.error()
-                   : !endpoint_value ? endpoint_value.error()
+            return !id_text           ? id_text.error()
+                   : !name            ? name.error()
+                   : !endpoint_value  ? endpoint_value.error()
                    : !tls_server_name ? tls_server_name.error()
-                                     : enabled.error();
+                                      : enabled.error();
         }
         if (!id_text->has_value() && !name->has_value()) {
             return Error{ErrorCode::invalid_argument,
@@ -605,18 +638,16 @@ prepare_plan(storage::StateRepository& repository, storage::CredentialStore& cre
         }
         const ServerRecord* matched = nullptr;
         if (specified_id.has_value()) {
-            const auto found = std::find_if(current_servers->begin(), current_servers->end(),
-                                            [&specified_id](const auto& server) {
-                                                return server.id == *specified_id;
-                                            });
+            const auto found = std::find_if(
+                current_servers->begin(), current_servers->end(),
+                [&specified_id](const auto& server) { return server.id == *specified_id; });
             if (found != current_servers->end()) {
                 matched = &*found;
             }
         } else {
-            const auto found = std::find_if(current_servers->begin(), current_servers->end(),
-                                            [&name](const auto& server) {
-                                                return server.name == *name;
-                                            });
+            const auto found =
+                std::find_if(current_servers->begin(), current_servers->end(),
+                             [&name](const auto& server) { return server.name == *name; });
             if (found != current_servers->end()) {
                 matched = &*found;
             }
@@ -640,36 +671,36 @@ prepare_plan(storage::StateRepository& repository, storage::CredentialStore& cre
         }
 
         const std::int64_t now = common::unix_milliseconds_now();
-        ServerRecord desired = matched != nullptr
-                                   ? *matched
-                                   : ServerRecord{.id = desired_id,
-                                                  .name = std::nullopt,
-                                                  .endpoint = *endpoint,
-                                                  .credential_ref = std::nullopt,
-                                                  .remote_server_id = std::nullopt,
-                                                  .desired_state = ServerDesiredState::enabled,
-                                                  .actual_state = ServerActualState::not_authenticated,
-                                                  .last_error_code = std::nullopt,
-                                                  .last_error_message = std::nullopt,
-                                                  .reconnect_attempt = 0U,
-                                                  .latency_ms = std::nullopt,
-                                                  .created_at_unix_ms = now,
-                                                  .updated_at_unix_ms = now,
-                                                  .tls_server_name = std::nullopt,
-                                                  .ca_credential_ref = std::nullopt,
-                                                  .client_certificate_ref = std::nullopt,
-                                                  .client_private_key_ref = std::nullopt,
-                                                  .config_revision = 1U,
-                                                  .managed_by_config = false};
+        ServerRecord desired =
+            matched != nullptr ? *matched
+                               : ServerRecord{.id = desired_id,
+                                              .name = std::nullopt,
+                                              .endpoint = *endpoint,
+                                              .credential_ref = std::nullopt,
+                                              .remote_server_id = std::nullopt,
+                                              .desired_state = ServerDesiredState::enabled,
+                                              .actual_state = ServerActualState::not_authenticated,
+                                              .last_error_code = std::nullopt,
+                                              .last_error_message = std::nullopt,
+                                              .reconnect_attempt = 0U,
+                                              .latency_ms = std::nullopt,
+                                              .created_at_unix_ms = now,
+                                              .updated_at_unix_ms = now,
+                                              .tls_server_name = std::nullopt,
+                                              .ca_credential_ref = std::nullopt,
+                                              .client_certificate_ref = std::nullopt,
+                                              .client_private_key_ref = std::nullopt,
+                                              .config_revision = 1U,
+                                              .managed_by_config = false};
         desired.name = *name;
         desired.endpoint = *endpoint;
         desired.tls_server_name = *tls_server_name;
-        desired.desired_state = *enabled ? ServerDesiredState::enabled
-                                         : ServerDesiredState::disabled;
+        desired.desired_state =
+            *enabled ? ServerDesiredState::enabled : ServerDesiredState::disabled;
         desired.managed_by_config = true;
 
         PreparedServer item{.original = matched != nullptr ? std::optional<ServerRecord>{*matched}
-                                                            : std::nullopt,
+                                                           : std::nullopt,
                             .desired = std::move(desired),
                             .action_id = specified_id.has_value() || matched != nullptr
                                              ? std::optional<std::string>{desired_id.str()}
@@ -679,14 +710,13 @@ prepare_plan(storage::StateRepository& repository, storage::CredentialStore& cre
                             .changes = {},
                             .transport_changed = false,
                             .desired_state_changed = false};
-        constexpr std::array kinds{ServerCredentialKind::psk,
-                                   ServerCredentialKind::ca_certificate,
+        constexpr std::array kinds{ServerCredentialKind::psk, ServerCredentialKind::ca_certificate,
                                    ServerCredentialKind::client_certificate,
                                    ServerCredentialKind::client_private_key};
         for (std::size_t index = 0U; index < kinds.size(); ++index) {
-            auto material = prepare_credential(entry, base_directory, credentials,
-                                               matched != nullptr ? *matched : item.desired,
-                                               kinds[index]);
+            auto material =
+                prepare_credential(entry, base_directory, credentials,
+                                   matched != nullptr ? *matched : item.desired, kinds[index]);
             if (!material) {
                 return material.error();
             }
@@ -712,8 +742,7 @@ prepare_plan(storage::StateRepository& repository, storage::CredentialStore& cre
 
         for (const auto& material : item.credentials) {
             item.transport_changed = item.transport_changed || material.changed;
-            add_change(item.changes, material.changed,
-                       *credential_path_field(material.kind));
+            add_change(item.changes, material.changed, *credential_path_field(material.kind));
         }
         if (matched == nullptr) {
             item.mutation = MutationKind::create;
@@ -756,27 +785,39 @@ prepare_plan(storage::StateRepository& repository, storage::CredentialStore& cre
     std::unordered_set<std::string> desired_tunnel_ids;
     std::unordered_set<std::string> desired_tunnel_names;
     for (const auto& entry : document->at("tunnels")) {
-        if (!exact_fields(entry, {"id", "name", "server", "local_host", "local_port",
-                                  "remote_port", "enabled"})) {
+        if (!exact_fields(entry, {"id", "name", "server", "protocol", "local_host", "local_port",
+                                  "remote_host", "remote_port", "enabled"})) {
             return Error{ErrorCode::invalid_argument,
                          "a declarative tunnel contains an unknown field"};
         }
         auto id_text = nullable_string(entry, "id");
         auto name = nullable_string(entry, "name");
         auto server_reference = required_string(entry, "server");
+        auto protocol_text = nullable_string(entry, "protocol");
         auto local_host = nullable_string(entry, "local_host");
-        auto local_port = required_port(entry, "local_port");
+        auto local_port = optional_port(entry, "local_port");
+        auto remote_host = nullable_string(entry, "remote_host");
         auto remote_port = required_port(entry, "remote_port");
         auto enabled = optional_enabled(entry);
-        if (!id_text || !name || !server_reference || !local_host || !local_port || !remote_port ||
-            !enabled) {
-            return !id_text          ? id_text.error()
-                   : !name           ? name.error()
+        if (!id_text || !name || !server_reference || !protocol_text || !local_host ||
+            !local_port || !remote_host || !remote_port || !enabled) {
+            return !id_text            ? id_text.error()
+                   : !name             ? name.error()
                    : !server_reference ? server_reference.error()
-                   : !local_host     ? local_host.error()
-                   : !local_port     ? local_port.error()
-                   : !remote_port    ? remote_port.error()
-                                     : enabled.error();
+                   : !protocol_text    ? protocol_text.error()
+                   : !local_host       ? local_host.error()
+                   : !local_port       ? local_port.error()
+                   : !remote_host      ? remote_host.error()
+                   : !remote_port      ? remote_port.error()
+                                       : enabled.error();
+        }
+        auto protocol = storage::tunnel_protocol_from_string(protocol_text->value_or("tcp"));
+        if (!protocol) {
+            return protocol.error();
+        }
+        if (*protocol != storage::TunnelProtocol::socks5 && !local_port->has_value()) {
+            return Error{ErrorCode::invalid_argument,
+                         "local_port is required for tcp, udp, and p2p tunnels"};
         }
         if (!id_text->has_value() && !name->has_value()) {
             return Error{ErrorCode::invalid_argument,
@@ -810,26 +851,23 @@ prepare_plan(storage::StateRepository& repository, storage::CredentialStore& cre
         }
         const TunnelRecord* matched = nullptr;
         if (specified_id.has_value()) {
-            const auto found = std::find_if(current_tunnels->begin(), current_tunnels->end(),
-                                            [&specified_id](const auto& tunnel) {
-                                                return tunnel.id == *specified_id;
-                                            });
+            const auto found = std::find_if(
+                current_tunnels->begin(), current_tunnels->end(),
+                [&specified_id](const auto& tunnel) { return tunnel.id == *specified_id; });
             if (found != current_tunnels->end()) {
                 matched = &*found;
             }
         } else {
-            const auto matches = std::count_if(current_tunnels->begin(), current_tunnels->end(),
-                                               [&name](const auto& tunnel) {
-                                                   return tunnel.name == *name;
-                                               });
+            const auto matches =
+                std::count_if(current_tunnels->begin(), current_tunnels->end(),
+                              [&name](const auto& tunnel) { return tunnel.name == *name; });
             if (matches > 1) {
                 return Error{ErrorCode::invalid_argument,
                              "a declarative tunnel name matches multiple existing tunnels"};
             }
-            const auto found = std::find_if(current_tunnels->begin(), current_tunnels->end(),
-                                            [&name](const auto& tunnel) {
-                                                return tunnel.name == *name;
-                                            });
+            const auto found =
+                std::find_if(current_tunnels->begin(), current_tunnels->end(),
+                             [&name](const auto& tunnel) { return tunnel.name == *name; });
             if (found != current_tunnels->end()) {
                 matched = &*found;
             }
@@ -856,13 +894,19 @@ prepare_plan(storage::StateRepository& repository, storage::CredentialStore& cre
                          "a tunnel's server ownership and stable id cannot be changed"};
         }
         const std::string host = local_host->value_or("127.0.0.1");
-        auto local_endpoint = common::Endpoint::parse(endpoint_text(host, *local_port));
-        auto remote_endpoint = common::Endpoint::parse(endpoint_text("0.0.0.0", *remote_port));
+        const std::uint16_t target_port = local_port->value_or(1U);
+        const std::string bind_host = remote_host->value_or(
+            *protocol == storage::TunnelProtocol::socks5 ? "127.0.0.1" : "0.0.0.0");
+        auto local_endpoint = common::Endpoint::parse(endpoint_text(host, target_port));
+        auto remote_endpoint = common::Endpoint::parse(endpoint_text(bind_host, *remote_port));
         if (!local_endpoint) {
             return local_endpoint.error();
         }
         if (!remote_endpoint) {
             return remote_endpoint.error();
+        }
+        if (auto valid = validate_protocol_binding(*protocol, *remote_endpoint); !valid) {
+            return valid.error();
         }
         const std::int64_t now = common::unix_milliseconds_now();
         TunnelRecord desired = matched != nullptr
@@ -870,7 +914,7 @@ prepare_plan(storage::StateRepository& repository, storage::CredentialStore& cre
                                    : TunnelRecord{.id = desired_id,
                                                   .name = std::nullopt,
                                                   .server_id = parent->desired.id,
-                                                  .protocol = storage::TunnelProtocol::tcp,
+                                                  .protocol = *protocol,
                                                   .local_endpoint = *local_endpoint,
                                                   .remote_endpoint = *remote_endpoint,
                                                   .desired_state = TunnelDesiredState::active,
@@ -883,13 +927,14 @@ prepare_plan(storage::StateRepository& repository, storage::CredentialStore& cre
                                                   .config_revision = 1U,
                                                   .managed_by_config = false};
         desired.name = *name;
+        desired.protocol = *protocol;
         desired.local_endpoint = *local_endpoint;
         desired.remote_endpoint = *remote_endpoint;
-        desired.desired_state = *enabled ? TunnelDesiredState::active
-                                         : TunnelDesiredState::disabled;
+        desired.desired_state =
+            *enabled ? TunnelDesiredState::active : TunnelDesiredState::disabled;
         desired.managed_by_config = true;
         PreparedTunnel item{.original = matched != nullptr ? std::optional<TunnelRecord>{*matched}
-                                                            : std::nullopt,
+                                                           : std::nullopt,
                             .desired = std::move(desired),
                             .action_id = specified_id.has_value() || matched != nullptr
                                              ? std::optional<std::string>{desired_id.str()}
@@ -905,13 +950,15 @@ prepare_plan(storage::StateRepository& repository, storage::CredentialStore& cre
                                             : TunnelActualState::disabled;
         } else {
             add_change(item.changes, matched->name != item.desired.name, "name");
+            add_change(item.changes, matched->protocol != item.desired.protocol, "protocol");
             add_change(item.changes, matched->local_endpoint != item.desired.local_endpoint,
                        "local_endpoint");
             add_change(item.changes, matched->remote_endpoint != item.desired.remote_endpoint,
                        "remote_port");
             add_change(item.changes, !matched->managed_by_config, "ownership");
             item.endpoint_changed = matched->local_endpoint != item.desired.local_endpoint ||
-                                    matched->remote_endpoint != item.desired.remote_endpoint;
+                                    matched->remote_endpoint != item.desired.remote_endpoint ||
+                                    matched->protocol != item.desired.protocol;
             item.desired_state_changed = matched->desired_state != item.desired.desired_state;
             add_change(item.changes, item.desired_state_changed, "enabled");
             if (!item.changes.empty()) {
@@ -965,16 +1012,14 @@ prepare_plan(storage::StateRepository& repository, storage::CredentialStore& cre
 
     for (const auto& server : prepared.servers) {
         if (server.mutation != MutationKind::none) {
-            prepared.actions.push_back(action_json(server.mutation, "server",
-                                                   server.action_id, server.desired.name,
-                                                   server.changes));
+            prepared.actions.push_back(action_json(server.mutation, "server", server.action_id,
+                                                   server.desired.name, server.changes));
         }
     }
     for (const auto& tunnel : prepared.tunnels) {
         if (tunnel.mutation != MutationKind::none) {
-            prepared.actions.push_back(action_json(tunnel.mutation, "tunnel",
-                                                   tunnel.action_id, tunnel.desired.name,
-                                                   tunnel.changes));
+            prepared.actions.push_back(action_json(tunnel.mutation, "tunnel", tunnel.action_id,
+                                                   tunnel.desired.name, tunnel.changes));
         }
     }
     auto& actions = prepared.actions.get_ref<Json::array_t&>();
@@ -1088,12 +1133,10 @@ Result<Json> DeclarativeConfig::export_config() const {
     if (!committed) {
         return committed.error();
     }
-    std::sort(servers->begin(), servers->end(), [](const auto& left, const auto& right) {
-        return left.id.str() < right.id.str();
-    });
-    std::sort(tunnels->begin(), tunnels->end(), [](const auto& left, const auto& right) {
-        return left.id.str() < right.id.str();
-    });
+    std::sort(servers->begin(), servers->end(),
+              [](const auto& left, const auto& right) { return left.id.str() < right.id.str(); });
+    std::sort(tunnels->begin(), tunnels->end(),
+              [](const auto& left, const auto& right) { return left.id.str() < right.id.str(); });
     Json exported_servers = Json::array();
     for (const auto& server : *servers) {
         if (server.desired_state == ServerDesiredState::removed) {
@@ -1122,8 +1165,12 @@ Result<Json> DeclarativeConfig::export_config() const {
             {"id", tunnel.id.str()},
             {"name", tunnel.name.has_value() ? Json(*tunnel.name) : Json(nullptr)},
             {"server", tunnel.server_id.str()},
+            {"protocol", std::string{storage::to_string(tunnel.protocol)}},
             {"local_host", tunnel.local_endpoint.host()},
-            {"local_port", tunnel.local_endpoint.port()},
+            {"local_port", tunnel.protocol == storage::TunnelProtocol::socks5
+                               ? Json(nullptr)
+                               : Json(tunnel.local_endpoint.port())},
+            {"remote_host", tunnel.remote_endpoint.host()},
             {"remote_port", tunnel.remote_endpoint.port()},
             {"enabled", tunnel.desired_state == TunnelDesiredState::active},
         });
@@ -1139,9 +1186,8 @@ Result<Json> DeclarativeConfig::plan(const std::string_view path, const bool pru
         return prepared.error();
     }
     const std::size_t action_count = prepared->actions.size();
-    return Json{{"actions", std::move(prepared->actions)},
-                {"changed", action_count},
-                {"prune", prune}};
+    return Json{
+        {"actions", std::move(prepared->actions)}, {"changed", action_count}, {"prune", prune}};
 }
 
 Result<Json> DeclarativeConfig::apply(const std::string_view path, const bool prune) {
@@ -1210,11 +1256,11 @@ Result<Json> DeclarativeConfig::apply(const std::string_view path, const bool pr
             return revision.error();
         }
         if (server.transport_changed || server.desired_state_changed) {
-            live->actual_state = live->desired_state == ServerDesiredState::disabled
-                                     ? ServerActualState::disabled
-                                     : (live->credential_ref.has_value()
-                                            ? ServerActualState::disconnected
-                                            : ServerActualState::not_authenticated);
+            live->actual_state =
+                live->desired_state == ServerDesiredState::disabled
+                    ? ServerActualState::disabled
+                    : (live->credential_ref.has_value() ? ServerActualState::disconnected
+                                                        : ServerActualState::not_authenticated);
             live->remote_server_id.reset();
             live->last_error_code.reset();
             live->last_error_message.reset();
@@ -1249,6 +1295,7 @@ Result<Json> DeclarativeConfig::apply(const std::string_view path, const bool pr
                          "tunnel configuration changed while declarative apply was preparing"};
         }
         live->name = tunnel.desired.name;
+        live->protocol = tunnel.desired.protocol;
         live->local_endpoint = tunnel.desired.local_endpoint;
         live->remote_endpoint = tunnel.desired.remote_endpoint;
         live->desired_state = tunnel.desired.desired_state;
@@ -1328,9 +1375,8 @@ Result<Json> DeclarativeConfig::apply(const std::string_view path, const bool pr
         }
     }
     const std::size_t action_count = prepared->actions.size();
-    return Json{{"actions", std::move(prepared->actions)},
-                {"changed", action_count},
-                {"prune", prune}};
+    return Json{
+        {"actions", std::move(prepared->actions)}, {"changed", action_count}, {"prune", prune}};
 }
 
 } // namespace minitun::daemon

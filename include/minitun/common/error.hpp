@@ -49,8 +49,8 @@ class Error final { // NOLINT(clang-analyzer-core.uninitialized.Assign)
   public:
     explicit Error(ErrorCode code, std::string message = {});
 
-    [[nodiscard]] ErrorCode code() const noexcept;
-    [[nodiscard]] const std::string& message() const noexcept;
+    [[nodiscard]] ErrorCode code() const noexcept { return code_; }
+    [[nodiscard]] const std::string& message() const noexcept { return message_; }
 
     /// Returns a copy with a short, non-sensitive context prefix.
     [[nodiscard]] Error with_context(std::string_view context) const;

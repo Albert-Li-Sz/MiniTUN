@@ -12,11 +12,13 @@ template <typename Enum> struct EnumEntry final {
     std::string_view text;
 };
 
-template <typename Enum>
-EnumEntry(Enum, std::string_view) -> EnumEntry<Enum>;
+template <typename Enum> EnumEntry(Enum, std::string_view) -> EnumEntry<Enum>;
 
 constexpr std::array kTunnelProtocols{
     EnumEntry{TunnelProtocol::tcp, std::string_view{"tcp"}},
+    EnumEntry{TunnelProtocol::udp, std::string_view{"udp"}},
+    EnumEntry{TunnelProtocol::socks5, std::string_view{"socks5"}},
+    EnumEntry{TunnelProtocol::p2p, std::string_view{"p2p"}},
 };
 
 constexpr std::array kServerDesiredStates{

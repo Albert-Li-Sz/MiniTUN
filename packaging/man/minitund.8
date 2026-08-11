@@ -1,4 +1,4 @@
-.TH MINITUND 8 "2026-08-09" "MiniTun 1.0.0" "系统管理"
+.TH MINITUND 8 "2026-08-12" "MiniTun 1.1.0" "系统管理"
 .SH NAME
 minitund \- MiniTun 客户端守护进程
 .SH 用法
@@ -6,9 +6,10 @@ minitund \- MiniTun 客户端守护进程
 .RI [ options ]
 .SH 描述
 .B minitund
-持久化 schema v4 资源与凭据，
+持久化 schema v5 资源与凭据，
 维护相互隔离的 Protocol v2 server session、TunnelReconciler 和 Worker Pool，
-并把已认证 tunnel 连接到本地 TCP 目标。
+并把已认证 tunnel 连接到本地 TCP/UDP 目标、SOCKS5 CONNECT 目的或 P2P direct/relay
+数据面。
 .SH 选项
 .TP
 .BI --socket " path"
@@ -63,7 +64,8 @@ trace、debug、info、warn、error、critical
 .B --version
 打印版本、提交、构建和协议号。
 .SH 启动恢复
-首次打开 v0.4.1 schema v3 数据会在事务中迁移到 schema v4。
+首次打开旧数据会按顺序以事务迁移 schema v3 到 v4、再到 schema v5；旧 tunnel 默认为
+tcp mode 和 0.0.0.0 公开 bind host。
 启动时将残留 tunnel 状态收敛为 pending，
 验证所有凭据引用并清理崩溃留下的不可达轮换槽。
 旧程序不能打开迁移后数据库；回滚必须恢复升级前备份。
@@ -83,11 +85,13 @@ trace、debug、info、warn、error、critical
 本地控制 socket，默认模式 0660。
 .TP
 .I /var/lib/minitun/state.db
-schema v4 状态数据库，模式 0600。
+schema v5 状态数据库，模式 0600。
 .TP
 .I /var/lib/minitun/credentials.db
 私有凭据数据库，模式 0600。
 .SH 另请参阅
 .BR minitun (1),
 .BR minitun-server (8),
+.BR minitun-gui (1),
+.BR minitun-p2p (1),
 .BR systemd.service (5)

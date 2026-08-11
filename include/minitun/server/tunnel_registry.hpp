@@ -12,6 +12,7 @@
 
 #include <minitun/common/port_range.hpp>
 #include <minitun/common/result.hpp>
+#include <minitun/protocol/messages.hpp>
 
 namespace minitun::server {
 
@@ -22,6 +23,7 @@ struct TunnelBinding final {
     std::string bind_host;
     std::uint16_t bind_port{0U};
     std::uint64_t config_revision{1U};
+    protocol::TunnelMode mode{protocol::TunnelMode::tcp};
 
     friend bool operator==(const TunnelBinding&, const TunnelBinding&) = default;
 };
@@ -54,8 +56,7 @@ class TunnelRegistry final {
     [[nodiscard]] common::Result<void> register_tunnel(const TunnelBinding& binding,
                                                        std::size_t max_for_client = 0U);
     void unregister_tunnel(std::string_view client_id, std::uint64_t session_generation,
-                           std::string_view tunnel_id,
-                           std::uint64_t config_revision = 0U) noexcept;
+                           std::string_view tunnel_id, std::uint64_t config_revision = 0U) noexcept;
     void remove_session(std::string_view client_id, std::uint64_t session_generation) noexcept;
     void remove_client(std::string_view client_id) noexcept;
     void clear() noexcept;

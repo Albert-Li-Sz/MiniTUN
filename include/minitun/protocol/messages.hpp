@@ -32,6 +32,9 @@ enum class Capability : CapabilitySet {
     tunnel_revisions = 1ULL << 2U,
     client_certificate_binding = 1ULL << 3U,
     multiplexed_streams = 1ULL << 4U,
+    udp_datagrams = 1ULL << 5U,
+    socks5_proxy = 1ULL << 6U,
+    p2p_rendezvous = 1ULL << 7U,
 };
 
 [[nodiscard]] constexpr CapabilitySet capability_bit(const Capability capability) noexcept {
@@ -39,11 +42,39 @@ enum class Capability : CapabilitySet {
 }
 
 inline constexpr CapabilitySet kRequiredCapabilities =
-    capability_bit(Capability::pipelined_control) |
-    capability_bit(Capability::per_client_policy) |
+    capability_bit(Capability::pipelined_control) | capability_bit(Capability::per_client_policy) |
     capability_bit(Capability::tunnel_revisions);
 inline constexpr CapabilitySet kSupportedCapabilities =
-    kRequiredCapabilities | capability_bit(Capability::client_certificate_binding);
+    kRequiredCapabilities | capability_bit(Capability::client_certificate_binding) |
+    capability_bit(Capability::udp_datagrams) | capability_bit(Capability::socks5_proxy) |
+    capability_bit(Capability::p2p_rendezvous);
+
+enum class TunnelMode : std::uint8_t {
+    tcp = 0U,
+    udp = 1U,
+    socks5 = 2U,
+    p2p = 3U,
+};
+
+[[nodiscard]] constexpr Capability required_capability(const TunnelMode mode) noexcept {
+    switch (mode) {
+    case TunnelMode::udp:
+        return Capability::udp_datagrams;
+    case TunnelMode::socks5:
+        return Capability::socks5_proxy;
+    case TunnelMode::p2p:
+        return Capability::p2p_rendezvous;
+    case TunnelMode::tcp:
+        return Capability::pipelined_control;
+    }
+    return Capability::pipelined_control;
+}
+
+[[nodiscard]] constexpr bool supports_tunnel_mode(const CapabilitySet capabilities,
+                                                  const TunnelMode mode) noexcept {
+    const auto required = capability_bit(required_capability(mode));
+    return (capabilities & required) == required;
+}
 
 using AuthenticationNonce = std::array<std::uint8_t, kAuthenticationNonceSize>;
 using AuthenticationData = std::array<std::uint8_t, kAuthenticationDataSize>;
@@ -100,6 +131,7 @@ struct RegisterTunnelMessage final {
     std::string bind_host;
     std::uint16_t bind_port{0U};
     std::uint64_t desired_revision{1U};
+    TunnelMode mode{TunnelMode::tcp};
 
     friend bool operator==(const RegisterTunnelMessage&, const RegisterTunnelMessage&) = default;
 };
@@ -157,6 +189,7 @@ struct WorkerAcceptedMessage final {
 struct StartRelayMessage final {
     std::string tunnel_id;
     std::string connection_id;
+    TunnelMode mode{TunnelMode::tcp};
 
     friend bool operator==(const StartRelayMessage&, const StartRelayMessage&) = default;
 };

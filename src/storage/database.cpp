@@ -174,7 +174,7 @@ CREATE TABLE tunnels (
             AND substr(server_id, 5) NOT GLOB '*[^0-9a-f]*'
         ),
 
-    protocol TEXT NOT NULL CHECK(protocol = 'tcp'),
+    protocol TEXT NOT NULL CHECK(protocol IN ('tcp', 'udp', 'socks5', 'p2p')),
     local_host TEXT NOT NULL
         CHECK(
             typeof(local_host) = 'text'
@@ -502,9 +502,9 @@ CREATE TABLE daemon_identity (
     if (!servers) {
         return migration_error(servers.error());
     }
-    auto server_column_count = internal::query_single_int64(
-        database, "SELECT COUNT(*) FROM pragma_table_info('servers')",
-        "validate servers column count");
+    auto server_column_count =
+        internal::query_single_int64(database, "SELECT COUNT(*) FROM pragma_table_info('servers')",
+                                     "validate servers column count");
     if (!server_column_count || *server_column_count != 19) {
         return common::Error{common::ErrorCode::database_error,
                              "servers schema has an unexpected column layout"};
@@ -521,9 +521,9 @@ CREATE TABLE daemon_identity (
     if (!tunnels) {
         return migration_error(tunnels.error());
     }
-    auto tunnel_column_count = internal::query_single_int64(
-        database, "SELECT COUNT(*) FROM pragma_table_info('tunnels')",
-        "validate tunnels column count");
+    auto tunnel_column_count =
+        internal::query_single_int64(database, "SELECT COUNT(*) FROM pragma_table_info('tunnels')",
+                                     "validate tunnels column count");
     if (!tunnel_column_count || *tunnel_column_count != 17) {
         return common::Error{common::ErrorCode::database_error,
                              "tunnels schema has an unexpected column layout"};
@@ -755,10 +755,12 @@ CREATE TABLE daemon_identity (
 
     for (const auto& [sql, operation] : additions) {
         const std::size_t table_end = sql.find(' ', std::string_view{"ALTER TABLE "}.size());
-        const std::size_t column_start = sql.find("ADD COLUMN ") + std::string_view{"ADD COLUMN "}.size();
+        const std::size_t column_start =
+            sql.find("ADD COLUMN ") + std::string_view{"ADD COLUMN "}.size();
         const std::size_t column_end = sql.find(' ', column_start);
-        const std::string_view table = sql.substr(std::string_view{"ALTER TABLE "}.size(),
-                                                  table_end - std::string_view{"ALTER TABLE "}.size());
+        const std::string_view table =
+            sql.substr(std::string_view{"ALTER TABLE "}.size(),
+                       table_end - std::string_view{"ALTER TABLE "}.size());
         const std::string_view column = sql.substr(column_start, column_end - column_start);
         auto exists = column_exists(database, table, column);
         if (!exists) {
@@ -774,6 +776,49 @@ CREATE TABLE daemon_identity (
 
     auto insert = internal::Statement::prepare(
         database, "INSERT INTO schema_version(version, applied_at) VALUES(4, ?1)",
+        "record schema migration");
+    if (!insert) {
+        return migration_error(insert.error());
+    }
+    if (auto result = insert->bind_int64(1, common::unix_milliseconds_now()); !result) {
+        return migration_error(result.error());
+    }
+    auto step = insert->step();
+    if (!step || *step != internal::StepResult::done) {
+        return !step ? migration_error(step.error())
+                     : common::Error{common::ErrorCode::database_error,
+                                     "schema migration did not complete"};
+    }
+    return common::Result<void>::success();
+}
+
+[[nodiscard]] common::Result<void> apply_version_five(sqlite3* database) {
+    constexpr std::pair<std::string_view, std::string_view> statements[]{
+        {"ALTER TABLE tunnels RENAME TO tunnels_v4", "stage protocol-aware tunnel migration"},
+        {kCreateTunnels, "create protocol-aware tunnels table"},
+        {"INSERT INTO tunnels("
+         "id, name, server_id, protocol, local_host, local_port, remote_host, remote_port, "
+         "desired_state, actual_state, last_error_code, last_error_message, created_at, "
+         "updated_at, last_synced_at, config_revision, managed_by_config"
+         ") SELECT "
+         "id, name, server_id, protocol, local_host, local_port, remote_host, remote_port, "
+         "desired_state, actual_state, last_error_code, last_error_message, created_at, "
+         "updated_at, last_synced_at, config_revision, managed_by_config FROM tunnels_v4",
+         "copy tunnels into protocol-aware schema"},
+        {"DROP TABLE tunnels_v4", "finish protocol-aware tunnel migration"},
+        {kCreateTunnelReconcileIndex, "recreate tunnel reconciliation index"},
+        {kCreateTunnelNameIndex, "recreate tunnel name index"},
+    };
+
+    for (const auto& [sql, operation] : statements) {
+        auto result = internal::execute(database, sql, operation);
+        if (!result) {
+            return migration_error(result.error());
+        }
+    }
+
+    auto insert = internal::Statement::prepare(
+        database, "INSERT INTO schema_version(version, applied_at) VALUES(5, ?1)",
         "record schema migration");
     if (!insert) {
         return migration_error(insert.error());
@@ -910,8 +955,7 @@ common::Result<std::unique_ptr<Database>> Database::open(const std::string_view 
         owned_path.c_str(), &handle,
         SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr);
     if (result != SQLITE_OK) {
-        common::Error error =
-            internal::sqlite_error(handle, result, "open SQLite state database");
+        common::Error error = internal::sqlite_error(handle, result, "open SQLite state database");
         if (handle != nullptr) {
             sqlite3_close_v2(handle);
         }
@@ -1084,6 +1128,12 @@ common::Result<void> Database::migrate() {
             return fail(applied.error());
         }
         version = 4;
+    }
+    if (version == 4) {
+        if (auto applied = apply_version_five(handle_); !applied) {
+            return fail(applied.error());
+        }
+        version = 5;
     }
     if (version != kCurrentSchemaVersion) {
         return fail(common::Error{

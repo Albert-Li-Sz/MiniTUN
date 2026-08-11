@@ -1,22 +1,27 @@
 # 系统架构
 
-MiniTun v1 由四个公开交付面组成：
+当前 MiniTun 源码由七个公开交付面组成：
 
 - `minitun-server`：公网 TLS/control listener、客户端策略、公开 tunnel listener 与 relay；
 - `minitund`：本地状态、凭据、远程 session、TunnelReconciler 和本地目标连接；
 - `minitun`：无状态 CLI，只通过本地 Unix IPC 调用 daemon；
-- `libminitun-client.so.1`：与 CLI 使用同一 IPC 的稳定 C ABI/C++20 控制 SDK。
+- `minitun-p2p`：面向 P2P tunnel 的本地 connector，直连失败时自动使用 TLS relay；
+- `minitun-gui`：只监听数值 loopback、通过同一 IPC 管理 daemon 的 Web 控制台；
+- `libminitun-client.so.1`：与 CLI 使用同一 IPC 的稳定 C ABI/C++20 控制 SDK；
+- `libminitun-remote-protocol.so.1`：独立的 Remote Protocol v2 C++20 codec、增量 decoder
+  与认证摘要 helper。
 
 ```mermaid
 flowchart LR
-    operator["操作者 / 自动化"] --> cli["minitun / SDK"]
-    cli -->|"Unix IPC envelope v1"| daemon["minitund"]
-    daemon --> state[("state.db / schema v4")]
+    operator["操作者 / 自动化"] --> control["minitun / GUI / Local SDK"]
+    control -->|"Unix IPC envelope v1"| daemon["minitund"]
+    daemon --> state[("state.db / schema v5")]
     daemon --> secrets[("credentials.db")]
     daemon <-->|"TLS / Remote Protocol v2"| server["minitun-server"]
-    public["公网 TCP 客户端"] --> server
-    server <-->|"一 relay 一 TLS Worker"| daemon
-    daemon --> local["本地 TCP 目标"]
+    public["公网 TCP / UDP / SOCKS5 / P2P 客户端"] --> server
+    server <-->|"一 relay 一认证 Worker"| daemon
+    daemon --> local["TCP / UDP 目标或 SOCKS5 CONNECT"]
+    p2p["minitun-p2p"] -.->|"候选可达时 direct"| daemon
 ```
 
 CLI 与 SDK 不直接打开数据库；server 不知道本地目标地址。只有 daemon 能把认证后的
@@ -29,36 +34,39 @@ CLI 与 SDK 不直接打开数据库；server 不知道本地目标地址。只�
 | 模块 | 责任 |
 | --- | --- |
 | `common` | 有界 ID/endpoint/port range、错误、日志、秘密内存、版本、failpoint |
-| `protocol` | v2 帧、消息、HMAC、TLS、状态机、固定缓冲 relay |
+| `protocol` | v2 帧、消息、HMAC、TLS、UDP framing、SOCKS5、P2P 协商与固定缓冲 relay |
 | `storage` | schema 迁移、仓库、事务、在线备份与凭据库 |
 | `ipc` | envelope v1、Unix transport、dispatcher、客户端 |
 | `daemon` | control service、声明式配置、server session、worker pool、reconciler |
 | `server` | 客户端策略、认证/session、tunnel registry、quota、worker pool |
 | `admin` | 有界 HTTP 健康、就绪与 Prometheus 端点 |
-| `sdk` | 稳定 C ABI 和 C++ wrapper，不泄露内部类型 |
+| `gui` | 有界 localhost HTTP、静态资源、安全响应头和 IPC gateway |
+| `sdk` | 稳定本地 C ABI/C++ wrapper，以及独立 Remote Protocol C++ API |
 
 `server.cpp` 与 `server_manager.cpp` 仍是异步生命周期编排器；策略解析、listener 所有权、
 quota、worker pool、状态收敛、声明式配置和 admin HTTP 已分别位于独立模块中。网络异步
 路径不跨 `co_await` 持有数据库事务。
 
-## schema v4 与凭据
+## schema v5 与凭据
 
-`state.db` 的 schema v4 包含：
+`state.db` 的 schema v5 包含：
 
 - `daemon_identity`：跨重启稳定的 `client_...` ID；
 - `servers`：稳定 ID、可选唯一名称、endpoint、TLS server name、PSK/CA/client cert/key
   的不透明凭据引用、desired/actual state、remote server ID、重连信息、
   `config_revision` 和 `managed_by_config`；
-- `tunnels`：稳定 ID、可选名称、不可变 server 归属、TCP 本地/远程 endpoint、
-  desired/actual state、最后同步时间、`config_revision` 和 `managed_by_config`；
+- `tunnels`：稳定 ID、可选名称、不可变 server 归属、`tcp`/`udp`/`socks5`/`p2p`
+  mode、本地 endpoint、公开 bind host/port、desired/actual state、最后同步时间、
+  `config_revision` 和 `managed_by_config`；
 - 连续的 `schema_version` 迁移历史和约束/索引。
 
 打开连接后强制验证 WAL、foreign keys、同步模式、busy timeout、schema 定义、完整性和
 外键。未来 schema、漂移对象、断裂迁移历史或无版本的非空数据库都会拒绝启动，不会被
 自动删除或重建。
 
-v0.4.1 的 schema v3 会在一个事务中原地迁移，保留 ID、名称、endpoint、tunnel 和原
-PSK 引用。迁移后旧程序不能打开 schema v4；回滚必须恢复升级前的成对备份。
+v0.4.1 的 schema v3 会先迁移到 v4；当前版本再以事务重建 tunnel 表并迁移到 v5，原有
+tunnel 默认为 `tcp`、公开 bind host 默认为 `0.0.0.0`。ID、名称、endpoint、tunnel 和
+原 PSK 引用保持不变。旧程序不能打开 schema v5；回滚必须恢复升级前的成对备份。
 
 秘密位于独立 `credentials.db`，状态库只保存不透明引用。每类 server 凭据使用两个有界
 轮换槽：先写非活动槽，再在状态事务中切换引用，最后清理旧槽。失败会清理暂存项；启动
@@ -137,16 +145,36 @@ server 在完整校验后原子替换 `clients.json` 快照。每个 `client_id`
 有界。策略变更会立即移除该 client 的 listener 和空闲容量，已分配 relay 最多排空
 `--shutdown-timeout`。
 
-## Worker、relay 与 backpressure
+## Worker、transport mode 与 backpressure
 
 daemon 按 server 和 generation 隔离 Worker Pool，在 server 通告的最小/最大范围内自适应
 补充；server 同时执行 per-client 和 global idle Worker 配额。公网连接只有取得 connection
 quota lease 后才等待 Worker。
 
-每个 relay 使用一条 TLS Worker。daemon 查库确认 tunnel 仍 active 后才连接本地目标。
-成功后双方退出分帧模式，两个方向各使用固定 16 KiB 缓冲；当前写入完成前不继续读取。
-half-close、reset、空闲超时与取消都具有确定性资源释放路径。TLS session cache/resumption
-减少 Worker 重连握手成本，TCP socket 启用适合低延迟 relay 的有界设置。
+每个 relay 使用一条认证 TLS Worker。daemon 查库确认 tunnel 仍 active，并验证该 mode
+对应的 capability 已协商，才建立数据面：
+
+- `tcp`：连接固定本地 TCP 目标；握手后传输原始字节，双向固定 16 KiB 缓冲；
+- `udp`：server 按公网 UDP peer 建立有界会话，在 TLS Worker 上使用 2 字节大端长度和
+  最多 65,507 字节 payload 的 datagram record；daemon 连接固定本地 UDP 目标；
+- `socks5`：公开 TCP listener 只接受 SOCKS5 no-auth `CONNECT`，支持 IPv4、IPv6 和
+  domain；解析与目的连接发生在 daemon 侧，公开 bind host 强制为数值 loopback；
+- `p2p`：TLS Worker 提供一次性 token 和 direct candidate；双方确认直连后 server 退出
+  数据路径，失败则在原 TLS Worker 上继续 relay。
+
+所有 queue、peer session、record、握手与空闲期限均有显式上限。TCP half-close、reset、
+超时与取消具有确定性资源释放路径；TLS session cache/resumption 减少 Worker 重连握手
+成本。
+
+P2P direct 适用于 LAN 或可路由地址，不实现 ICE、STUN、TURN 或 NAT 打洞。一次性 token
+只验证候选连接，direct path 不额外加密应用数据；需要机密性的应用必须自行使用 TLS。
+
+## 本地 GUI 边界
+
+`minitun-gui` 默认监听 `127.0.0.1:6500`，只接受数值 IPv4/IPv6 loopback，不提供公网
+认证层。HTTP parser 对 method、header/body/path、并发和超时设上限；JSON 写操作校验
+同源 `Origin`，静态文件路径规范化并拒绝 traversal。响应包含 CSP、`nosniff`、frame 和
+referrer 策略。后端只把允许的 API 映射为 IPC 方法，不直接打开状态库或凭据库。
 
 ## 管理端点与指标
 
@@ -172,7 +200,7 @@ SIGHUP 在 server 侧完整重读 TLS 和 client policy；在 daemon 侧触发�
 
 ## 非目标
 
-- 不支持 UDP、P2P、NAT 穿透、SOCKS5 或 GUI；
+- 不提供 ICE/STUN/TURN/NAT 打洞或 P2P direct path 的附加传输加密；
 - 不承诺非 Linux 运行时；macOS 仅做编译测试；
-- SDK 只控制本地 daemon，不嵌入运行时或暴露 Remote Protocol；
+- SDK 不嵌入 daemon/server 运行时；Remote SDK 只提供协议 codec/decoder/helper；
 - 默认不支持 multiplexed relay；可选性能验证可为后续是否启用提供工程依据。

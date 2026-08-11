@@ -1,6 +1,6 @@
 # Remote Protocol v2
 
-MiniTun v1 只接受 Remote Protocol v2。它与 v0.4.x 的 v1 不兼容，升级必须协调停机。
+MiniTun 1.x 只接受 Remote Protocol v2。它与 v0.4.x 的 v1 不兼容，升级必须协调停机。
 全部远程消息都在 TLS 1.2+ 内传输；不存在明文回退。C/C++ 对象布局不会直接上网，所有
 整数、长度和字段都使用显式网络字节序编码。
 
@@ -44,6 +44,9 @@ v2 定义以下 capability bits：
 | `per_client_policy` | 必需 |
 | `tunnel_revisions` | 必需 |
 | `client_certificate_binding` | 双方支持，按策略使用 |
+| `udp_datagrams` | 双方支持，使用 UDP mode 时必需 |
+| `socks5_proxy` | 双方支持，使用 SOCKS5 mode 时必需 |
+| `p2p_rendezvous` | 双方支持，使用 P2P mode 时必需 |
 | `multiplexed_streams` | 已保留，但默认不支持也不通告 |
 
 server 只能选择客户端提供且自己支持的集合，并必须包含三个必需能力。控制认证摘要是以
@@ -64,7 +67,7 @@ listener、Worker 或响应不得修改当前状态。心跳使用匹配的 `PIN
 ## 隧道注册
 
 ```text
-client -> REGISTER_TUNNEL(tunnel_id, bind_host, bind_port, desired_revision)
+client -> REGISTER_TUNNEL(tunnel_id, bind_host, bind_port, desired_revision[, mode])
 server -> REGISTER_TUNNEL_OK(tunnel_id, desired_revision)
        or REGISTER_TUNNEL_ERROR(tunnel_id, error_code, desired_revision)
 
@@ -72,8 +75,11 @@ client -> UNREGISTER_TUNNEL(tunnel_id, desired_revision)
 server -> UNREGISTER_TUNNEL_OK(tunnel_id, desired_revision)
 ```
 
-`local_host` 和 `local_port` 永远不进入远程协议；server 只看到公开绑定。注册前会检查
-数值 bind address、客户端 ACL、逐客户端/全局 tunnel 配额和操作系统绑定结果。
+`local_host` 和 `local_port` 永远不进入远程协议；server 只看到公开绑定和 transport
+mode。TCP 沿用原有 payload，不追加 mode 字节；UDP、SOCKS5 和 P2P 分别追加一个显式
+mode byte，并要求当前 session 已协商对应 capability。注册前会检查数值 bind address、
+客户端 ACL、逐客户端/全局 tunnel 配额和操作系统绑定结果。SOCKS5 的 bind address 还
+必须是数值 loopback，避免产生未认证的公网开放代理。
 
 daemon 只有在 session generation、frame request ID、tunnel ID 和当前
 `config_revision` 全部匹配时才提交响应。重复响应和旧响应被忽略。超时或断线会把该
@@ -91,7 +97,7 @@ client -> WORKER_HELLO(client_id, generation, worker_id, timestamp, nonce, HMAC)
 server -> WORKER_ACCEPTED(worker_id)
 
 server -> REQUEST_WORKERS(count)                 # 控制连接
-server -> START_RELAY(tunnel_id, connection_id) # 已分配 Worker
+server -> START_RELAY(tunnel_id, connection_id[, mode]) # 已分配 Worker
 client -> LOCAL_CONNECT_OK(connection_id)
        or LOCAL_CONNECT_ERROR(connection_id, local_connect_failed)
 ```
@@ -102,10 +108,23 @@ nonce。server 要求当前控制 generation、同一策略、同一 PSK 和同�
 公网连接在等待 Worker 前占用逐客户端和全局 connection quota。空闲 Worker 数同时受
 客户端策略、server 上限和 daemon 上限控制，并按需求在最小值和最大值之间自适应补充。
 
-收到 `LOCAL_CONNECT_OK` 后，该 TLS 连接永久离开分帧模式，仅承载一条 relay 的原始 TCP
-字节。每个方向使用固定 16 KiB 缓冲，写完当前块后才继续读，形成有界 backpressure。
-EOF 传播为 half-close，反向数据可以继续；空闲超时或 reset 会关闭该 relay，并恰好释放
-一次 quota。
+TCP `START_RELAY` 保持既有 wire image；非 TCP mode 追加同一枚举字节。收到
+`LOCAL_CONNECT_OK` 后，该 Worker 永久离开 Remote Protocol 帧模式，只承载一条数据面：
+
+| mode | Worker 数据面 |
+| --- | --- |
+| `tcp` | 原始 TLS application bytes；daemon 连接固定本地 TCP 目标。 |
+| `udp` | `uint16` 大端 payload length + 0..65,507 字节 payload；每条 record 保留一个 UDP datagram 边界。 |
+| `socks5` | TLS 内的 SOCKS5 no-auth CONNECT 握手，支持 IPv4/IPv6/domain；成功后为原始 TCP bytes。 |
+| `p2p` | 一次性 token 和 direct candidate 协商；成功后改走直连 TCP，否则确认并继续 TLS relay。 |
+
+TCP relay 每个方向使用固定 16 KiB 缓冲，写完当前块后才继续读，形成有界
+backpressure。EOF 传播为 half-close，反向数据可以继续；空闲超时或 reset 会关闭该
+relay，并恰好释放一次 quota。UDP 的公网 peer session、待发送 datagram 数量和总字节数
+也有界，空闲后自动释放。
+
+P2P candidate 以随机一次性 token 认证并绑定单次协商。当前实现不做 ICE、STUN、TURN、
+NAT 打洞，也不为 direct path 附加 TLS；无法连接或确认时自动回退到原认证 TLS Worker。
 
 ## 重载与关闭
 
@@ -123,7 +142,10 @@ EOF 传播为 half-close，反向数据可以继续；空闲超时或 reset 会�
 
 ## 兼容性边界
 
-- v1.0 只接受协议号 2，不尝试降级或宽松解析 v1。
-- v1 保持“一条 relay 一条 TLS Worker”，不提供远程协议 SDK。
-- 可选性能验证可为后续是否实现 `multiplexed_streams` 提供工程依据；若冻结后改变协议
-  表面，仍必须增加 RC，确保 GA 与最终 RC 指向同一提交。
+- 所有 1.x 版本只接受协议号 2，不尝试降级或宽松解析 v1。
+- 1.1 的 TCP REGISTER/START payload 与 1.0 完全相同；新 mode 只在双方协商对应
+  capability 后使用追加扩展，因此 1.0 对端不会收到无法解析的非 TCP tunnel。
+- 仍保持“一条 relay 一条 TLS Worker”，不实现 `multiplexed_streams`。
+- `libminitun-remote-protocol.so.1` 暴露与 wire codec 共用的强类型 message variant、
+  增量 frame decoder、frame/message codec 和 control/Worker 认证摘要 helper；它不创建
+  socket、TLS session、daemon 或 server runtime。

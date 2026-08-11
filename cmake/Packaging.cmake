@@ -6,7 +6,7 @@ set(CPACK_PACKAGE_NAME "minitun")
 set(CPACK_PACKAGE_VENDOR "MiniTun")
 set(CPACK_PACKAGE_CONTACT "MiniTun maintainers")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
-    "Small, high-performance TCP reverse-tunnelling system"
+    "Small, high-performance multi-transport reverse-tunnelling system"
 )
 set(CPACK_PACKAGE_HOMEPAGE_URL "${PROJECT_HOMEPAGE_URL}")
 set(minitun_debian_version "${MINITUN_PACKAGE_VERSION}")
@@ -39,19 +39,19 @@ set(CPACK_COMPONENTS_ALL Client Server ClientLibrary ClientDevelopment)
 
 set(CPACK_COMPONENT_CLIENT_DISPLAY_NAME "MiniTun Client")
 set(CPACK_COMPONENT_CLIENT_DESCRIPTION
-    "CLI and local daemon for connecting to MiniTun public servers"
+    "CLI, daemon, localhost GUI, and P2P connector for MiniTun public servers"
 )
 set(CPACK_COMPONENT_SERVER_DISPLAY_NAME "MiniTun Server")
 set(CPACK_COMPONENT_SERVER_DESCRIPTION
-    "Public TLS server for MiniTun reverse TCP tunnels"
+    "Public TLS server for MiniTun TCP, UDP, SOCKS5, and P2P tunnels"
 )
 set(CPACK_COMPONENT_CLIENTLIBRARY_DISPLAY_NAME "MiniTun Client SDK Runtime")
 set(CPACK_COMPONENT_CLIENTLIBRARY_DESCRIPTION
-    "Stable C ABI runtime library for controlling the local MiniTun daemon"
+    "Local C ABI and Remote Protocol C++20 SDK runtime libraries"
 )
 set(CPACK_COMPONENT_CLIENTDEVELOPMENT_DISPLAY_NAME "MiniTun Client SDK Development")
 set(CPACK_COMPONENT_CLIENTDEVELOPMENT_DESCRIPTION
-    "C11/C++20 headers, CMake target, and pkg-config metadata for the MiniTun SDK"
+    "C11/C++20 headers, CMake targets, and pkg-config metadata for both MiniTun SDKs"
 )
 set(CPACK_COMPONENT_CLIENTDEVELOPMENT_DEPENDS ClientLibrary)
 

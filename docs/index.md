@@ -3,8 +3,8 @@ layout: home
 
 hero:
   name: MiniTun
-  text: 团队自托管的 TCP 反向隧道
-  tagline: Remote Protocol v2、每客户端策略、确定性状态收敛、声明式配置与稳定本地 SDK。
+  text: 团队自托管的多传输反向隧道
+  tagline: TCP、UDP、SOCKS5、P2P、localhost GUI 与两个稳定 SDK，共用安全的 Remote Protocol v2 控制面。
   image:
     src: /logo.svg
     alt: MiniTun
@@ -20,9 +20,13 @@ features:
   - title: 安全传输
     details: TLS 1.2+ 与 Protocol v2；每客户端 PSK、可选证书绑定、端口 ACL、配额、重放防护与认证限速。
   - title: 持久控制面
-    details: schema v4 保存稳定身份、配置 revision 和 ownership；generation-scoped reconciler 在断线与乱序响应后确定性收敛。
+    details: schema v5 保存稳定身份、transport mode、配置 revision 和 ownership；generation-scoped reconciler 在断线与乱序响应后确定性收敛。
   - title: 多服务器会话
     details: 一个客户端守护进程可同时连接多个公网服务器，会话、隧道与 Worker Pool 相互隔离。
+  - title: 四种数据面
+    details: TCP、UDP datagram、SOCKS5 CONNECT，以及具备自动 TLS relay 回退的 P2P direct path。
+  - title: GUI 与 SDK
+    details: localhost-only Web 控制台、本地控制 C/C++ SDK，以及独立 Remote Protocol v2 C++ codec/decoder SDK。
   - title: 生产运维
     details: client/server 都可启用 health、readiness 与 Prometheus 指标，并提供审计、热加载、诊断和成对备份。
   - title: 多架构交付
@@ -34,11 +38,12 @@ features:
 ## 工作原理
 
 MiniTun 由公网服务端 <code>minitun-server</code>、客户端守护进程 <code>minitund</code>、
-命令行工具 <code>minitun</code> 和 <code>libminitun-client.so.1</code> 组成。CLI/SDK 只通过
-受权限保护的 Unix IPC 管理 daemon；远程控制和 Worker 使用 TLS 下的 Protocol v2。
+命令行工具 <code>minitun</code>、P2P connector <code>minitun-p2p</code>、Web 控制台
+<code>minitun-gui</code> 和两个 SDK 组成。CLI、GUI 和本地 SDK 只通过受权限保护的 Unix
+IPC 管理 daemon；远程控制和 Worker 使用 TLS 下的 Protocol v2。
 
 <div class="minitun-flow">
-  <div class="flow-node">公网 TCP 客户端</div>
+  <div class="flow-node">公网 TCP / UDP / SOCKS5 / P2P 客户端</div>
   <div class="flow-link">→</div>
   <div class="flow-node">minitun-server<br>公网端口</div>
   <div class="flow-link">⇄ TLS Worker</div>
@@ -48,7 +53,7 @@ MiniTun 由公网服务端 <code>minitun-server</code>、客户端守护进程 <
 ## 生产部署
 
 部署前请准备一台公网服务器、一台可以访问目标服务的内网主机、服务端域名与有效 TLS
-证书，并确定实际需要对外开放的 TCP 端口。
+证书，并确定实际需要对外开放的 TCP/UDP 端口。
 
 | 软件包 | 运行环境 | 发布架构 |
 | --- | --- | --- |
@@ -76,6 +81,8 @@ minitun server list
 minitun server inspect primary --json
 minitun tun list primary
 minitun tun inspect web --json
+minitun-gui
+minitun-p2p tunnel.example.com:6003 --listen 127.0.0.1:6501
 ~~~
 
 </div>
@@ -86,9 +93,9 @@ minitun tun inspect web --json
 
 - [命令行界面](/cli)：生命周期命令、PSK 输入、JSON 输出与退出码。
 - [配置与策略](/configuration)：每客户端策略和声明式资源。
-- [系统架构](/architecture)：schema v4、reconciler、session、Worker 与 relay。
+- [系统架构](/architecture)：schema v5、reconciler、session、Worker 与多种数据面。
 - [Remote Protocol v2](/protocol)：能力协商、认证、注册与数据中继。
-- [本地控制 SDK](/sdk)：C11 ABI、C++20 wrapper 和安装方式。
+- [SDK](/sdk)：本地控制 C11/C++20 API 与 Remote Protocol C++20 codec/decoder。
 - [运维与可观测性](/operations)：管理端点、指标、审计和备份。
 - [v1 迁移](/migration-v1)：从 v0.4.1 协调升级与离线回滚。
 - [性能与浸泡验证](/performance)：可选三轮基准、24 小时压力与 7 天浸泡。

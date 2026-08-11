@@ -317,6 +317,7 @@ request_daemon(const std::string& socket_path, std::string method, minitun::ipc:
     const auto server_actual_state = tunnel.find("server_actual_state");
     const auto local = tunnel.find("local_endpoint");
     const auto remote = tunnel.find("remote_endpoint");
+    const auto protocol = tunnel.find("protocol");
     const auto actual_state = tunnel.find("actual_state");
     const auto desired_state = tunnel.find("desired_state");
     const auto pending_reason = tunnel.find("pending_reason");
@@ -325,11 +326,11 @@ request_daemon(const std::string& socket_path, std::string method, minitun::ipc:
            nullable_string(*name) && server_id != tunnel.end() && server_id->is_string() &&
            server_name != tunnel.end() && nullable_string(*server_name) && local != tunnel.end() &&
            local->is_string() && remote != tunnel.end() && remote->is_string() &&
-           actual_state != tunnel.end() && actual_state->is_string() &&
-           desired_state != tunnel.end() && desired_state->is_string() &&
-           server_actual_state != tunnel.end() && nullable_string(*server_actual_state) &&
-           pending_reason != tunnel.end() && nullable_string(*pending_reason) &&
-           last_synced_at != tunnel.end() &&
+           protocol != tunnel.end() && protocol->is_string() && actual_state != tunnel.end() &&
+           actual_state->is_string() && desired_state != tunnel.end() &&
+           desired_state->is_string() && server_actual_state != tunnel.end() &&
+           nullable_string(*server_actual_state) && pending_reason != tunnel.end() &&
+           nullable_string(*pending_reason) && last_synced_at != tunnel.end() &&
            (last_synced_at->is_null() || nonnegative_integer(*last_synced_at));
 }
 
@@ -443,6 +444,7 @@ void print_table(const std::vector<std::vector<std::string>>& rows) {
               << "  ID      " << tunnel->at("id").get<std::string>() << '\n'
               << "  Name    " << nullable_text(*tunnel, "name") << '\n'
               << "  Server  " << tunnel_server_label(*tunnel) << '\n'
+              << "  Mode    " << tunnel->at("protocol").get<std::string>() << '\n'
               << "  Local   " << tunnel->at("local_endpoint").get<std::string>() << '\n'
               << "  Remote  " << tunnel->at("remote_endpoint").get<std::string>() << '\n'
               << "  Status  " << tunnel->at("actual_state").get<std::string>() << '\n';
@@ -464,10 +466,11 @@ void print_table(const std::vector<std::vector<std::string>>& rows) {
         return true;
     }
     std::vector<std::vector<std::string>> rows{
-        {"ID", "NAME", "SERVER", "LOCAL", "REMOTE", "STATUS"}};
+        {"ID", "NAME", "MODE", "SERVER", "LOCAL", "REMOTE", "STATUS"}};
     for (const auto& tunnel : *tunnels) {
         rows.push_back({tunnel.at("id").get<std::string>(), nullable_text(tunnel, "name"),
-                        tunnel_server_label(tunnel), tunnel.at("local_endpoint").get<std::string>(),
+                        tunnel.at("protocol").get<std::string>(), tunnel_server_label(tunnel),
+                        tunnel.at("local_endpoint").get<std::string>(),
                         tunnel.at("remote_endpoint").get<std::string>(),
                         tunnel.at("actual_state").get<std::string>()});
     }
@@ -489,6 +492,7 @@ void print_table(const std::vector<std::vector<std::string>>& rows) {
               << "  ID             " << tunnel->at("id").get<std::string>() << '\n'
               << "  Name           " << nullable_text(*tunnel, "name") << '\n'
               << "  Server         " << tunnel_server_label(*tunnel) << '\n'
+              << "  Mode           " << tunnel->at("protocol").get<std::string>() << '\n'
               << "  Local          " << tunnel->at("local_endpoint").get<std::string>() << '\n'
               << "  Remote         " << tunnel->at("remote_endpoint").get<std::string>() << '\n'
               << "  Desired state  " << tunnel->at("desired_state").get<std::string>() << '\n'
@@ -931,33 +935,44 @@ int main(int argc, char** argv) {
         ->required();
     server_command->require_subcommand(1);
 
-    CLI::App* const tunnel_command = app.add_subcommand("tun", "Manage TCP tunnels");
-    CLI::App* const tunnel_add_command = tunnel_command->add_subcommand("add", "Add a TCP tunnel");
+    CLI::App* const tunnel_command = app.add_subcommand("tun", "Manage tunnels and proxies");
+    CLI::App* const tunnel_add_command = tunnel_command->add_subcommand("add", "Add a tunnel");
     std::string tunnel_add_server;
     int tunnel_add_local_port = 0;
     int tunnel_add_remote_port = 0;
     std::string tunnel_add_local_host{"127.0.0.1"};
+    std::string tunnel_add_remote_host;
+    std::string tunnel_add_protocol{"tcp"};
     std::string tunnel_add_name;
     tunnel_add_command->add_option("server-id-or-name", tunnel_add_server, "Server ID or name")
         ->required();
-    tunnel_add_command->add_option("local-port", tunnel_add_local_port, "Local TCP port")
+    tunnel_add_command
+        ->add_option("local-port", tunnel_add_local_port, "Local target port (ignored by SOCKS5)")
         ->required()
         ->check(CLI::Range(1, 65'535));
-    tunnel_add_command->add_option("server-port", tunnel_add_remote_port, "Public server TCP port")
+    tunnel_add_command->add_option("server-port", tunnel_add_remote_port, "Public server port")
         ->required()
         ->check(CLI::Range(1, 65'535));
     tunnel_add_command->add_option("--local-host", tunnel_add_local_host, "Local target host")
+        ->capture_default_str();
+    CLI::Option* const tunnel_add_remote_host_option = tunnel_add_command->add_option(
+        "--remote-host", tunnel_add_remote_host, "Server bind address");
+    tunnel_add_command
+        ->add_option("--protocol", tunnel_add_protocol, "Tunnel mode: tcp, udp, socks5, or p2p")
+        ->check(CLI::IsMember({"tcp", "udp", "socks5", "p2p"}))
         ->capture_default_str();
     CLI::Option* const tunnel_add_name_option =
         tunnel_add_command->add_option("--name", tunnel_add_name, "Tunnel name");
 
     CLI::App* const tunnel_update_command =
-        tunnel_command->add_subcommand("update", "Update one TCP tunnel");
+        tunnel_command->add_subcommand("update", "Update one tunnel");
     std::string tunnel_update_identifier;
     std::string tunnel_update_name;
     std::string tunnel_update_local_host;
     int tunnel_update_local_port = 0;
     int tunnel_update_remote_port = 0;
+    std::string tunnel_update_remote_host;
+    std::string tunnel_update_protocol;
     bool tunnel_update_clear_name = false;
     tunnel_update_command
         ->add_option("tun-id-or-name", tunnel_update_identifier, "Tunnel ID or name")
@@ -974,17 +989,24 @@ int main(int argc, char** argv) {
         tunnel_update_command
             ->add_option("--server-port", tunnel_update_remote_port, "New public server port")
             ->check(CLI::Range(1, 65'535));
+    CLI::Option* const tunnel_update_remote_host_option = tunnel_update_command->add_option(
+        "--remote-host", tunnel_update_remote_host, "New server bind address");
+    CLI::Option* const tunnel_update_protocol_option =
+        tunnel_update_command
+            ->add_option("--protocol", tunnel_update_protocol,
+                         "New tunnel mode: tcp, udp, socks5, or p2p")
+            ->check(CLI::IsMember({"tcp", "udp", "socks5", "p2p"}));
     tunnel_update_command->add_flag("--clear-name", tunnel_update_clear_name,
                                     "Remove the optional tunnel name");
 
     CLI::App* const tunnel_enable_command =
-        tunnel_command->add_subcommand("enable", "Enable one TCP tunnel");
+        tunnel_command->add_subcommand("enable", "Enable one tunnel");
     std::string tunnel_enable_identifier;
     tunnel_enable_command
         ->add_option("tun-id-or-name", tunnel_enable_identifier, "Tunnel ID or name")
         ->required();
     CLI::App* const tunnel_disable_command =
-        tunnel_command->add_subcommand("disable", "Disable one TCP tunnel without removing it");
+        tunnel_command->add_subcommand("disable", "Disable one tunnel without removing it");
     std::string tunnel_disable_identifier;
     tunnel_disable_command
         ->add_option("tun-id-or-name", tunnel_disable_identifier, "Tunnel ID or name")
@@ -1231,11 +1253,13 @@ int main(int argc, char** argv) {
         }
         if (tunnel_add_command->parsed()) {
             minitun::ipc::Json params{
-                {"server", tunnel_add_server},
-                {"local_port", tunnel_add_local_port},
-                {"remote_port", tunnel_add_remote_port},
-                {"local_host", tunnel_add_local_host},
+                {"server", tunnel_add_server},           {"local_port", tunnel_add_local_port},
+                {"remote_port", tunnel_add_remote_port}, {"local_host", tunnel_add_local_host},
+                {"protocol", tunnel_add_protocol},
             };
+            if (tunnel_add_remote_host_option->count() != 0U) {
+                params["remote_host"] = tunnel_add_remote_host;
+            }
             if (tunnel_add_name_option->count() != 0U) {
                 params["name"] = tunnel_add_name;
             }
@@ -1258,6 +1282,12 @@ int main(int argc, char** argv) {
             }
             if (tunnel_update_remote_port_option->count() != 0U) {
                 params["remote_port"] = tunnel_update_remote_port;
+            }
+            if (tunnel_update_remote_host_option->count() != 0U) {
+                params["remote_host"] = tunnel_update_remote_host;
+            }
+            if (tunnel_update_protocol_option->count() != 0U) {
+                params["protocol"] = tunnel_update_protocol;
             }
             return execute_request(
                 socket_path, "tun.update", std::move(params),

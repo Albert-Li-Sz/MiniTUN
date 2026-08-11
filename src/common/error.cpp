@@ -113,10 +113,6 @@ std::optional<ErrorCode> error_code_from_string(const std::string_view value) no
 Error::Error(const ErrorCode code, std::string message)
     : code_(code), message_(std::move(message)) {}
 
-ErrorCode Error::code() const noexcept { return code_; }
-
-const std::string& Error::message() const noexcept { return message_; }
-
 Error Error::with_context(const std::string_view context) const {
     if (context.empty()) {
         return *this;

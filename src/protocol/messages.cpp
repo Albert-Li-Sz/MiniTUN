@@ -52,6 +52,52 @@ inline constexpr unsigned int kHeartbeatTimeoutShift = 39U;
     return common::Result<void>::success();
 }
 
+[[nodiscard]] bool valid_tunnel_mode(const TunnelMode mode) noexcept {
+    switch (mode) {
+    case TunnelMode::tcp:
+    case TunnelMode::udp:
+    case TunnelMode::socks5:
+    case TunnelMode::p2p:
+        return true;
+    }
+    return false;
+}
+
+[[nodiscard]] common::Result<TunnelMode> decode_tunnel_mode(PayloadReader& reader) {
+    if (reader.remaining() == 0U) {
+        return TunnelMode::tcp;
+    }
+    if (reader.remaining() != 1U) {
+        return common::Result<TunnelMode>::failure(common::ErrorCode::protocol_error,
+                                                   "remote tunnel mode extension is invalid");
+    }
+    auto value = reader.read_u8();
+    if (!value) {
+        return common::Result<TunnelMode>::failure(value.error());
+    }
+    const auto mode = static_cast<TunnelMode>(*value);
+    // TCP has one canonical wire image: absence of the extension byte. This
+    // keeps legacy payloads strict while reserving explicit values for modes
+    // that require a negotiated capability.
+    if (!valid_tunnel_mode(mode) || mode == TunnelMode::tcp) {
+        return common::Result<TunnelMode>::failure(common::ErrorCode::protocol_error,
+                                                   "remote tunnel mode is unknown");
+    }
+    return mode;
+}
+
+[[nodiscard]] common::Result<void> encode_tunnel_mode(PayloadWriter& writer,
+                                                      const TunnelMode mode) {
+    if (!valid_tunnel_mode(mode)) {
+        return common::Result<void>::failure(common::ErrorCode::invalid_argument,
+                                             "remote tunnel mode is unknown");
+    }
+    // TCP omits the extension byte so the original Protocol v2 wire image stays
+    // byte-for-byte compatible with v1.0 peers.
+    return mode == TunnelMode::tcp ? common::Result<void>::success()
+                                   : writer.write_u8(static_cast<std::uint8_t>(mode));
+}
+
 [[nodiscard]] common::Result<void> validate_offered_capabilities(const CapabilitySet value) {
     if ((value & kRequiredCapabilities) != kRequiredCapabilities) {
         return common::Error{common::ErrorCode::protocol_error,
@@ -280,8 +326,8 @@ common::Result<HelloAckMessage> decode_hello_ack(const std::vector<std::uint8_t>
     if (!ended) {
         return common::Result<HelloAckMessage>::failure(ended.error());
     }
-    return HelloAckMessage{std::move(*server_id), std::bit_cast<std::int64_t>(*timestamp),
-                           *nonce, *capabilities};
+    return HelloAckMessage{std::move(*server_id), std::bit_cast<std::int64_t>(*timestamp), *nonce,
+                           *capabilities};
 }
 
 common::Result<std::vector<std::uint8_t>> encode_auth(const AuthMessage& message) {
@@ -345,8 +391,8 @@ common::Result<AuthMessage> decode_auth(const std::vector<std::uint8_t>& payload
     if (!ended) {
         return common::Result<AuthMessage>::failure(ended.error());
     }
-    return AuthMessage{std::move(*client_id), std::bit_cast<std::int64_t>(*timestamp),
-                       *nonce, *authentication_data, *capabilities};
+    return AuthMessage{std::move(*client_id), std::bit_cast<std::int64_t>(*timestamp), *nonce,
+                       *authentication_data, *capabilities};
 }
 
 common::Result<std::vector<std::uint8_t>> encode_auth_ok(const AuthOkMessage& message) {
@@ -452,7 +498,8 @@ encode_register_tunnel(const RegisterTunnelMessage& message) {
         return common::Result<std::vector<std::uint8_t>>::failure(valid.error());
     }
     if (message.bind_host.empty() || message.bind_host.size() > kMaxTunnelBindHostBytes ||
-        message.bind_port == 0U || message.desired_revision == 0U) {
+        message.bind_port == 0U || message.desired_revision == 0U ||
+        !valid_tunnel_mode(message.mode)) {
         return common::Result<std::vector<std::uint8_t>>::failure(
             common::ErrorCode::invalid_argument, "remote tunnel binding is invalid");
     }
@@ -467,6 +514,9 @@ encode_register_tunnel(const RegisterTunnelMessage& message) {
         return common::Result<std::vector<std::uint8_t>>::failure(written.error());
     }
     if (auto written = writer.write_u64(message.desired_revision); !written) {
+        return common::Result<std::vector<std::uint8_t>>::failure(written.error());
+    }
+    if (auto written = encode_tunnel_mode(writer, message.mode); !written) {
         return common::Result<std::vector<std::uint8_t>>::failure(written.error());
     }
     return std::move(writer).finish();
@@ -491,12 +541,16 @@ decode_register_tunnel(const std::vector<std::uint8_t>& payload) {
         return common::Result<RegisterTunnelMessage>::failure(common::ErrorCode::protocol_error,
                                                               "REGISTER_TUNNEL binding is invalid");
     }
+    auto mode = decode_tunnel_mode(reader);
+    if (!mode) {
+        return common::Result<RegisterTunnelMessage>::failure(mode.error());
+    }
     auto ended = reader.require_end();
     if (!ended) {
         return common::Result<RegisterTunnelMessage>::failure(ended.error());
     }
     return RegisterTunnelMessage{std::move(*tunnel_id), std::move(*bind_host), *bind_port,
-                                 *revision};
+                                 *revision, *mode};
 }
 
 common::Result<std::vector<std::uint8_t>>
@@ -624,8 +678,7 @@ common::Result<std::vector<std::uint8_t>> encode_worker_hello(const WorkerHelloM
     if (auto written = writer.write_string(message.worker_id); !written) {
         return common::Result<std::vector<std::uint8_t>>::failure(written.error());
     }
-    if (auto written =
-            writer.write_u64(std::bit_cast<std::uint64_t>(message.timestamp_seconds));
+    if (auto written = writer.write_u64(std::bit_cast<std::uint64_t>(message.timestamp_seconds));
         !written) {
         return common::Result<std::vector<std::uint8_t>>::failure(written.error());
     }
@@ -646,15 +699,17 @@ common::Result<WorkerHelloMessage> decode_worker_hello(const std::vector<std::ui
     auto timestamp = reader.read_u64();
     auto nonce = read_fixed_bytes<kAuthenticationNonceSize>(reader);
     auto authentication_data = read_fixed_bytes<kAuthenticationDataSize>(reader);
-    if (!client_id || !generation || !worker_id || !timestamp || !nonce ||
-        !authentication_data || *generation == 0U ||
-        !validate_client_id(*client_id) || !validate_connection_id(*worker_id) ||
-        !reader.require_end()) {
+    if (!client_id || !generation || !worker_id || !timestamp || !nonce || !authentication_data ||
+        *generation == 0U || !validate_client_id(*client_id) ||
+        !validate_connection_id(*worker_id) || !reader.require_end()) {
         return common::Result<WorkerHelloMessage>::failure(common::ErrorCode::protocol_error,
                                                            "WORKER_HELLO payload is invalid");
     }
-    return WorkerHelloMessage{std::move(*client_id), *generation, std::move(*worker_id),
-                              std::bit_cast<std::int64_t>(*timestamp), *nonce,
+    return WorkerHelloMessage{std::move(*client_id),
+                              *generation,
+                              std::move(*worker_id),
+                              std::bit_cast<std::int64_t>(*timestamp),
+                              *nonce,
                               *authentication_data};
 }
 
@@ -683,7 +738,8 @@ decode_worker_accepted(const std::vector<std::uint8_t>& payload) {
 }
 
 common::Result<std::vector<std::uint8_t>> encode_start_relay(const StartRelayMessage& message) {
-    if (!validate_tunnel_id(message.tunnel_id) || !validate_connection_id(message.connection_id)) {
+    if (!validate_tunnel_id(message.tunnel_id) || !validate_connection_id(message.connection_id) ||
+        !valid_tunnel_mode(message.mode)) {
         return common::Result<std::vector<std::uint8_t>>::failure(
             common::ErrorCode::protocol_error, "START_RELAY identity is invalid");
     }
@@ -694,6 +750,9 @@ common::Result<std::vector<std::uint8_t>> encode_start_relay(const StartRelayMes
     if (auto written = writer.write_string(message.connection_id); !written) {
         return common::Result<std::vector<std::uint8_t>>::failure(written.error());
     }
+    if (auto written = encode_tunnel_mode(writer, message.mode); !written) {
+        return common::Result<std::vector<std::uint8_t>>::failure(written.error());
+    }
     return std::move(writer).finish();
 }
 
@@ -701,12 +760,13 @@ common::Result<StartRelayMessage> decode_start_relay(const std::vector<std::uint
     PayloadReader reader{payload};
     auto tunnel_id = reader.read_string(kMaxProtocolIdentifierBytes);
     auto connection_id = reader.read_string(kMaxProtocolIdentifierBytes);
-    if (!tunnel_id || !connection_id || !validate_tunnel_id(*tunnel_id) ||
+    auto mode = decode_tunnel_mode(reader);
+    if (!tunnel_id || !connection_id || !mode || !validate_tunnel_id(*tunnel_id) ||
         !validate_connection_id(*connection_id) || !reader.require_end()) {
         return common::Result<StartRelayMessage>::failure(common::ErrorCode::protocol_error,
                                                           "START_RELAY payload is invalid");
     }
-    return StartRelayMessage{std::move(*tunnel_id), std::move(*connection_id)};
+    return StartRelayMessage{std::move(*tunnel_id), std::move(*connection_id), *mode};
 }
 
 common::Result<std::vector<std::uint8_t>>

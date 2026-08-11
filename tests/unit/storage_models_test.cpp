@@ -11,7 +11,8 @@ namespace minitun::storage {
 namespace {
 
 TEST(StorageModelsTest, RoundTripsEveryPersistedEnumSpelling) {
-    constexpr std::array protocols{TunnelProtocol::tcp};
+    constexpr std::array protocols{TunnelProtocol::tcp, TunnelProtocol::udp, TunnelProtocol::socks5,
+                                   TunnelProtocol::p2p};
     for (const auto value : protocols) {
         const auto parsed = tunnel_protocol_from_string(to_string(value));
         ASSERT_TRUE(parsed);
@@ -69,7 +70,7 @@ TEST(StorageModelsTest, RoundTripsEveryPersistedEnumSpelling) {
 }
 
 TEST(StorageModelsTest, StrictlyRejectsUnknownPersistedValues) {
-    const auto protocol = tunnel_protocol_from_string("udp");
+    const auto protocol = tunnel_protocol_from_string("quic");
     const auto server_desired = server_desired_state_from_string("ENABLED");
     const auto server_actual = server_actual_state_from_string("unknown");
     const auto tunnel_desired = tunnel_desired_state_from_string("");

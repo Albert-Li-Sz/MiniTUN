@@ -32,6 +32,9 @@ struct StorageLimits final {
 
 enum class TunnelProtocol : std::uint8_t {
     tcp,
+    udp,
+    socks5,
+    p2p,
 };
 
 enum class ServerDesiredState : std::uint8_t {
