@@ -7,10 +7,10 @@
 
 > 面向 Linux 团队自托管的安全 TCP 反向隧道。
 
-> **发布状态：** v1.0.0 仍处于发布候选阶段，尚未发布 GA。GA 要求连续的 annotated
-> `rc.1`、`rc.2`（及后续 RC）、无未解决 P0/P1，并通过构建、打包、CodeQL/依赖安全、
-> 签名和 provenance 检查；`v1.0.0` 必须与最终 RC 指向同一提交。OCI High/Critical
-> 漏洞会完整报告但不阻断发布；三轮性能、24 小时压力和 7 天浸泡同样不是 GA 前置条件。
+> **发布状态：** [v1.0.0 GA](https://github.com/LMTINSUZHOU/MiniTUN/releases/tag/v1.0.0)
+> 已于 2026-08-11 发布，并与最终 `v1.0.0-rc.4` 指向同一提交。该版本通过构建、打包、
+> CodeQL/依赖安全、签名和 provenance 检查。OCI High/Critical 漏洞会完整报告但不阻断
+> 发布；三轮性能、24 小时压力和 7 天浸泡同样不是 GA 前置条件。
 
 MiniTun 将公网服务器上的 TCP 端口转发到内网主机的本地服务。v1.0 由公网服务端
 `minitun-server`、客户端守护进程 `minitund`、本地 CLI `minitun`，以及稳定的

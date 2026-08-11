@@ -8,7 +8,7 @@ title: 变更日志
 [CHANGELOG.md](https://github.com/LMTINSUZHOU/MiniTUN/blob/main/CHANGELOG.md) 为准。
 这里保留官网常用的近期版本摘要，方便从文档站快速了解最新能力。
 
-## [Unreleased] - v1.0.0
+## [1.0.0] - 2026-08-11
 
 ### 主要变化
 
@@ -20,11 +20,11 @@ title: 变更日志
 - client/server 管理端点、Prometheus 指标、故障注入、ABI/coverage/fuzz/security 门禁，
   可选的性能/浸泡证据，以及 SBOM、keyless 签名和 provenance 发布链。
 
-::: warning 尚未发布 GA
-`v1.0.0` tag 要求连续的 rc.1、rc.2（及后续 RC）、无未解决 P0/P1，并与最终 RC 指向
-同一 commit；构建、打包、CodeQL/依赖安全、签名和 provenance 门禁仍须通过。OCI
-High/Critical 漏洞会完整报告但不阻断发布；三轮性能、24 小时压力和 7 天浸泡也不是 GA
-前置条件。
+::: tip 已发布 GA
+`v1.0.0` 已于 2026-08-11 发布，并与最终 `v1.0.0-rc.4` 指向同一 commit。发布时无
+未解决 P0/P1，构建、打包、CodeQL/依赖安全、签名和 provenance 门禁均已通过。OCI
+High/Critical 漏洞会完整报告但不阻断发布；三轮性能、24 小时压力和 7 天浸泡是可选
+验证，不是 GA 前置条件。
 :::
 
 ## [0.4.1] - 2026-08-08

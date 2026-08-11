@@ -4,7 +4,7 @@ MiniTun 的所有重要变更都会记录在此文件中。本文档以
 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 的结构为基础，项目
 版本遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased] - v1.0.0
+## [1.0.0] - 2026-08-11
 
 ### 不兼容变更
 
@@ -43,10 +43,10 @@ MiniTun 的所有重要变更都会记录在此文件中。本文档以
 
 ### 发布状态
 
-- 代码版本已进入 1.0.0 开发线；GA 要求连续的 annotated rc.1、rc.2（及后续 RC）、
-  无未解决 P0/P1，并与最终 RC 指向同一 commit。构建、打包、CodeQL/依赖安全、签名和
-  provenance 门禁保持不变；OCI High/Critical 漏洞保留完整报告但不阻断发布，独立三轮
-  基准、24 小时压力和 7 天浸泡为可选验证。
+- `v1.0.0` GA 已于 2026-08-11 发布；tag 与最终 annotated `v1.0.0-rc.4` 指向同一
+  commit，且发布时无未解决 P0/P1。构建、打包、CodeQL/依赖安全、签名和 provenance
+  门禁均已通过；OCI High/Critical 漏洞保留完整报告但不阻断发布，独立三轮基准、
+  24 小时压力和 7 天浸泡为可选验证。
 
 ## [0.4.1] - 2026-08-08
 
