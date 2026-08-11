@@ -154,6 +154,7 @@ jobs:
           echo "not_before=${not_before}" >>"${GITHUB_OUTPUT}"
 
       - name: Download exact-commit performance evidence
+        if: needs.validate-tag.outputs.release_kind == 'ga'
         run: |
           ./benchmarks/download_release_evidence.sh \
             "${GITHUB_SHA}" performance release-evidence/performance
@@ -194,14 +195,15 @@ jobs:
         env:
           NOT_BEFORE: ${{ steps.freeze.outputs.not_before }}
         run: |
+          install -d release-evidence
           arguments=(
             release
             --tag "${GITHUB_REF_NAME}"
             --source-sha "${GITHUB_SHA}"
-            --performance release-evidence/performance/gate-summary.json
           )
           if [[ "${RELEASE_KIND}" == ga ]]; then
             arguments+=(
+              --performance release-evidence/performance/gate-summary.json
               --full-24h release-evidence/full-24h/full-24h.json
               --mixed-7d release-evidence/mixed-7d/mixed-7d.json
               --not-before "${NOT_BEFORE}"
@@ -213,13 +215,13 @@ jobs:
       - name: Assemble publishable gate evidence
         run: |
           install -d release-gate-assets
-          install -m 0644 release-evidence/performance/gate-summary.json \
-            release-gate-assets/performance-gate-summary.json
-          install -m 0644 release-evidence/performance/download-receipt.json \
-            release-gate-assets/performance-download-receipt.json
           install -m 0644 release-evidence/release-gate-result.json \
             release-gate-assets/release-gate-result.json
           if [[ "${RELEASE_KIND}" == ga ]]; then
+            install -m 0644 release-evidence/performance/gate-summary.json \
+              release-gate-assets/performance-gate-summary.json
+            install -m 0644 release-evidence/performance/download-receipt.json \
+              release-gate-assets/performance-download-receipt.json
             install -m 0644 release-evidence/full-24h/full-24h.json \
               release-gate-assets/full-24h.json
             install -m 0644 release-evidence/full-24h/download-receipt.json \
@@ -305,6 +307,7 @@ jobs:
       - name: Assemble and verify release assets
         env:
           PACKAGE_VERSION: ${{ needs.validate-tag.outputs.package_version }}
+          RELEASE_KIND: ${{ needs.validate-tag.outputs.release_kind }}
         run: |
           artifact_version=${PACKAGE_VERSION//~/-}
           dist_dir="release-assets/dist"
@@ -356,8 +359,12 @@ jobs:
             install -m 0644 "$evidence" "${dist_dir}/"
             gate_evidence_count=$((gate_evidence_count + 1))
           done
-          [ "$gate_evidence_count" -ge 3 ] || {
-            echo "expected verified release-gate evidence, found ${gate_evidence_count} files" >&2
+          minimum_gate_evidence=1
+          if [[ "${RELEASE_KIND}" == ga ]]; then
+            minimum_gate_evidence=8
+          fi
+          [ "$gate_evidence_count" -ge "$minimum_gate_evidence" ] || {
+            echo "expected at least ${minimum_gate_evidence} release-gate records, found ${gate_evidence_count}" >&2
             exit 1
           }
 

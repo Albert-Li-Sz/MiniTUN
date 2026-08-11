@@ -144,6 +144,32 @@ class EvidenceVerifierTest(unittest.TestCase):
         with self.assertRaisesRegex(VERIFIER.EvidenceError, "must start after"):
             VERIFIER.validate_release(arguments)
 
+    def test_accepts_rc_without_performance_evidence(self) -> None:
+        arguments = type("Arguments", (), {
+            "tag": "v1.0.0-rc.1",
+            "source_sha": SHA,
+            "performance": None,
+            "full_24h": None,
+            "mixed_7d": None,
+            "not_before": None,
+        })()
+        result = VERIFIER.validate_release(arguments)
+        self.assertEqual(result["release_kind"], "release-candidate")
+        self.assertEqual(result["performance"], "not-required")
+
+    def test_rejects_ga_without_performance_evidence(self) -> None:
+        arguments = type("Arguments", (), {
+            "tag": "v1.0.0",
+            "source_sha": SHA,
+            "performance": None,
+            "full_24h": None,
+            "mixed_7d": None,
+            "not_before": None,
+        })()
+        with self.assertRaisesRegex(VERIFIER.EvidenceError,
+                                    "GA requires performance evidence"):
+            VERIFIER.validate_release(arguments)
+
     def test_accepts_ordered_ga_evidence(self) -> None:
         perf_path = self.write("performance.json", performance())
         full_path = self.write("full.json", soak("full-24h", "2026-08-10T00:00:00Z"))

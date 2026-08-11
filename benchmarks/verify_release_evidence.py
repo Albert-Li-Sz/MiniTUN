@@ -218,18 +218,25 @@ def validate_soak(path: Path, source_sha: str, phase: str,
 def validate_release(args: argparse.Namespace) -> dict[str, Any]:
     match = TAG_RE.fullmatch(args.tag)
     require(match is not None, "release: invalid tag")
-    validate_performance(args.performance, args.source_sha)
     rc_number = int(match.group(1)) if match.group(1) else None
     result: dict[str, Any] = {
         "tag": args.tag,
         "source_commit": args.source_sha,
-        "performance": "passed",
     }
     if rc_number is not None:
+        if args.performance is not None:
+            validate_performance(args.performance, args.source_sha)
+            result["performance"] = "passed"
+        else:
+            result["performance"] = "not-required"
         result["release_kind"] = "release-candidate"
         result["rc_number"] = rc_number
         return result
 
+    require(args.performance is not None,
+            "release: GA requires performance evidence")
+    validate_performance(args.performance, args.source_sha)
+    result["performance"] = "passed"
     require(args.full_24h is not None and args.mixed_7d is not None,
             "release: GA requires both soak evidence files")
     full = validate_soak(args.full_24h, args.source_sha, "full-24h")
@@ -268,7 +275,7 @@ def build_parser() -> argparse.ArgumentParser:
     release = subcommands.add_parser("release")
     release.add_argument("--tag", required=True)
     release.add_argument("--source-sha", required=True)
-    release.add_argument("--performance", required=True, type=Path)
+    release.add_argument("--performance", type=Path)
     release.add_argument("--full-24h", type=Path)
     release.add_argument("--mixed-7d", type=Path)
     release.add_argument("--not-before")

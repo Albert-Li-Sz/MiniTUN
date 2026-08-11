@@ -35,6 +35,9 @@ RESULT_DIR=benchmark-results RUNS=3 \
 gh workflow run performance.yml --ref main -f operation=benchmark
 ```
 
+RC 可以在这份证据生成前发布，以便先冻结候选版本；GA 仍要求三轮基准来自最终 RC 的
+同一提交，并通过 OIDC attestation 验证。
+
 每次运行都会重新创建 100 个 daemon、2,000 条 tunnel 和 10,000 条并发 relay，并测量
 同机直连 TLS/TCP echo 基线。每条连接发送确定性数据并逐块校验回显。门禁检查：
 
@@ -44,7 +47,7 @@ gh workflow run performance.yml --ref main -f operation=benchmark
 - server 重启后 2,000 tunnel 在 30 秒内恢复。
 
 结果写入 `run-1.json`…`run-3.json`、每轮脱敏日志和 `gate-summary.json`。若三轮聚合门禁
-仍失败，RC 冻结前必须实现并重新验收 Protocol v2 `multiplexed_streams`；通过时 v1
+仍失败，GA 前必须实现并重新验收 Protocol v2 `multiplexed_streams`；通过时 v1
 继续使用一条 relay 对应一条 TLS Worker。
 
 ## 24 小时与 7 天连续浸泡

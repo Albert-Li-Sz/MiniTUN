@@ -318,22 +318,24 @@ rpmbuild 的 ELF 依赖扫描生成 soname 级 `Requires`。每个新架构都�
 
 v1.0 发布顺序是强制门禁，不是只创建 tag：
 
-1. 在独立 runner 完成三次 100 clients / 2,000 tunnels / 10,000 relay 基准；
-2. 发布 `v1.0.0-rc.1` 并冻结协议、schema、SDK ABI 和功能；
-3. 只修阻断项，发布 `v1.0.0-rc.2`；
-4. 在最终 RC tag 的同一 commit 上完成至少 24 小时满规模压力和随后 7 天混合负载浸泡；
+1. 发布 `v1.0.0-rc.1` 并冻结协议、schema、SDK ABI 和功能；
+2. 只修阻断项，发布 `v1.0.0-rc.2`；
+3. 在最终 RC tag 的同一 commit 上，由独立 runner 完成三次
+   100 clients / 2,000 tunnels / 10,000 relay 基准；
+4. 在该 commit 上完成至少 24 小时满规模压力和随后 7 天混合负载浸泡；
 5. 确认无 P0/P1，才在最终 RC 的同一 commit 创建 `v1.0.0`；冻结后任何变化都必须增加
    rc.N 并重跑两个浸泡阶段。
 
-候选版示例（只能在对应门禁证据已归档后执行）：
+候选版示例：
 
 ```bash
 git tag -s v1.0.0-rc.1 -m "MiniTun v1.0.0-rc.1"
 git push origin v1.0.0-rc.1
 ```
 
-release workflow 会自动下载并验证同提交的 OIDC-attested 门禁 JSON；缺少或缩短证据时
-在软件包构建前失败。具体启动/收集命令见[性能文档](performance.md)。
+RC 发布会记录其预发布状态，但不要求性能证据。GA 发布会自动下载并验证同提交的
+OIDC-attested 门禁 JSON；缺少或缩短证据时在软件包构建前失败。具体启动/收集命令见
+[性能文档](performance.md)。
 
 每个架构产生 client、server、SDK runtime 和 SDK development 四个包，因此完整矩阵为
 16 个 DEB 和 16 个 RPM，另有多架构 OCI。Release 还包含 SPDX/CycloneDX SBOM、
