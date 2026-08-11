@@ -286,7 +286,7 @@ TEST(ClientPolicyStoreTest, RejectsMalformedDocumentsEntriesBindingsAndQuotas) {
 
 TEST(ClientPolicyStoreTest, EnforcesPolicyAndPskFileSafetyAndParsingLimits) {
     TemporaryDatabaseFile temporary;
-    const auto directory = temporary.directory();
+    const auto& directory = temporary.directory();
     const auto config = directory / "clients.json";
     const auto psk = directory / "client.psk";
     write_private(psk, "secret", 0600);
