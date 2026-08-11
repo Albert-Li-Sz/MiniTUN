@@ -31,6 +31,7 @@ TEST(IdTest, DefinesStableNamesAndPrefixes) {
         EXPECT_EQ(id_prefix(expectation.kind), expectation.prefix);
     }
 
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     constexpr auto invalid_kind = static_cast<IdKind>(255);
     EXPECT_EQ(to_string(invalid_kind), "unknown");
     EXPECT_TRUE(id_prefix(invalid_kind).empty());
@@ -106,6 +107,7 @@ TEST(IdTest, RejectsAValidIdOfTheWrongKind) {
 }
 
 TEST(IdTest, RejectsInvalidEnumValues) {
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     constexpr auto invalid_kind = static_cast<IdKind>(255);
 
     const auto generated = Id::generate(invalid_kind);

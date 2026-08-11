@@ -208,6 +208,7 @@ TEST(StructuredLoggingTest, RoundTripsEveryLevelAndSupportsRuntimeThresholdChang
     shutdown_logging();
     EXPECT_FALSE(testing::internal::GetCapturedStdout().empty());
 
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     constexpr auto invalid = static_cast<LogLevel>(255);
     EXPECT_EQ(to_string(invalid), "off");
     set_log_level(invalid);

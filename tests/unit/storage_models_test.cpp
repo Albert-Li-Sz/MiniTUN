@@ -82,10 +82,15 @@ TEST(StorageModelsTest, StrictlyRejectsUnknownPersistedValues) {
     EXPECT_FALSE(tunnel_actual);
     EXPECT_EQ(protocol.error().code(), common::ErrorCode::invalid_argument);
 
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     constexpr auto invalid_protocol = static_cast<TunnelProtocol>(255);
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     constexpr auto invalid_server_desired = static_cast<ServerDesiredState>(255);
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     constexpr auto invalid_server_actual = static_cast<ServerActualState>(255);
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     constexpr auto invalid_tunnel_desired = static_cast<TunnelDesiredState>(255);
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     constexpr auto invalid_tunnel_actual = static_cast<TunnelActualState>(255);
     EXPECT_EQ(to_string(invalid_protocol), "unknown");
     EXPECT_EQ(to_string(invalid_server_desired), "unknown");
