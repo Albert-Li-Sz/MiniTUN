@@ -181,7 +181,7 @@ TEST(TunnelRegistryTest, EnforcesGlobalTunnelLimitAcrossClients) {
     const std::uint16_t second_port = available_port(io_context);
     auto allowed = common::PortRange::parse("1-65535");
     ASSERT_TRUE(allowed) << allowed.error();
-    TunnelRegistry registry{io_context.get_executor(), std::move(*allowed), 4U, 1U};
+    TunnelRegistry registry{io_context.get_executor(), *allowed, 4U, 1U};
 
     const std::string first_client = generated_id(common::IdKind::client);
     const std::string second_client = generated_id(common::IdKind::client);
@@ -204,7 +204,7 @@ TEST(TunnelRegistryTest, EnforcesAllowlistOwnershipLimitsAndIdempotentRemoval) {
     const std::uint16_t port = available_port(io_context);
     auto allowed = common::PortRange::parse(std::to_string(port));
     ASSERT_TRUE(allowed) << allowed.error();
-    TunnelRegistry registry{io_context.get_executor(), std::move(*allowed), 1U};
+    TunnelRegistry registry{io_context.get_executor(), *allowed, 1U};
 
     const std::string first_client = generated_id(common::IdKind::client);
     const std::string second_client = generated_id(common::IdKind::client);
@@ -241,7 +241,7 @@ TEST(TunnelRegistryTest, RejectsOutOfPolicyAndMalformedBindings) {
     asio::io_context io_context;
     auto allowed = common::PortRange::parse("6000-6001");
     ASSERT_TRUE(allowed);
-    TunnelRegistry registry{io_context.get_executor(), std::move(*allowed), 2U};
+    TunnelRegistry registry{io_context.get_executor(), *allowed, 2U};
     const std::string client_id = generated_id(common::IdKind::client);
     const std::string tunnel_id = generated_id(common::IdKind::tunnel);
 
@@ -286,7 +286,7 @@ TEST(TunnelRegistryTest, ReplacesChangedRevisionOnlyAfterWithdrawingOldListener)
     const std::uint16_t first_port = available_port(io_context);
     auto allowed = common::PortRange::parse("1-65535");
     ASSERT_TRUE(allowed) << allowed.error();
-    TunnelRegistry registry{io_context.get_executor(), std::move(*allowed), 2U};
+    TunnelRegistry registry{io_context.get_executor(), *allowed, 2U};
     const std::string client_id = generated_id(common::IdKind::client);
     const std::string tunnel_id = generated_id(common::IdKind::tunnel);
 
@@ -312,7 +312,7 @@ TEST(TunnelRegistryTest, RemovesOnlyMatchingSessionAndRevisionThenClearsRemainde
     asio::io_context io_context;
     auto allowed = common::PortRange::parse("1-65535");
     ASSERT_TRUE(allowed) << allowed.error();
-    TunnelRegistry registry{io_context.get_executor(), std::move(*allowed), 4U};
+    TunnelRegistry registry{io_context.get_executor(), *allowed, 4U};
     const std::string first_client = generated_id(common::IdKind::client);
     const std::string second_client = generated_id(common::IdKind::client);
     const std::string first_tunnel = generated_id(common::IdKind::tunnel);
@@ -345,8 +345,8 @@ TEST(TunnelRegistryTest, DispatchesPublicConnectionsAndContainsHandlerExceptions
     const std::string tunnel_id = generated_id(common::IdKind::tunnel);
     const std::uint16_t port = available_port(io_context);
     std::size_t calls = 0U;
-    TunnelRegistry registry{io_context.get_executor(), std::move(*allowed), 2U,
-                            [&calls](const TunnelBinding, asio::ip::tcp::socket socket) {
+    TunnelRegistry registry{io_context.get_executor(), *allowed, 2U,
+                            [&calls](const TunnelBinding&, asio::ip::tcp::socket socket) {
                                 ++calls;
                                 asio::error_code ignored;
                                 socket.close(ignored);

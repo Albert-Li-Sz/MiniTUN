@@ -596,8 +596,10 @@ TEST_F(SdkClientTest, RejectsInvalidArgumentsActionsAndCredentialFiles) {
     expect_error(sdk_call_status, error, MINITUN_ERROR_INVALID_ARGUMENT);
 }
     {
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
+    constexpr auto invalid_action = static_cast<minitun_server_action>(0);
     const int sdk_call_status = minitun_client_server_execute(
-                     client_, "primary", static_cast<minitun_server_action>(0), &server, &error);
+                     client_, "primary", invalid_action, &server, &error);
     expect_error(sdk_call_status, error, MINITUN_ERROR_INVALID_ARGUMENT);
 }
     {
@@ -671,8 +673,10 @@ TEST_F(SdkClientTest, RejectsInvalidArgumentsActionsAndCredentialFiles) {
     expect_error(sdk_call_status, error, MINITUN_ERROR_INVALID_ARGUMENT);
 }
     {
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
+    constexpr auto invalid_action = static_cast<minitun_tunnel_action>(0);
     const int sdk_call_status = minitun_client_tunnel_execute(
-                     client_, "ssh", static_cast<minitun_tunnel_action>(0), &tunnel, &error);
+                     client_, "ssh", invalid_action, &tunnel, &error);
     expect_error(sdk_call_status, error, MINITUN_ERROR_INVALID_ARGUMENT);
 }
     {

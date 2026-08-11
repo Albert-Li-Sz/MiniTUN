@@ -264,7 +264,7 @@ int run(const Options& options) {
     std::optional<minitun::common::Result<void>> outcome;
     asio::co_spawn(
         io_context, run_protocol(stream, options, *token),
-        [&outcome](const std::exception_ptr failure, minitun::common::Result<void> result) {
+        [&outcome](const std::exception_ptr& failure, minitun::common::Result<void> result) {
             if (failure) {
                 outcome = minitun::common::Result<void>::failure(
                     minitun::common::ErrorCode::internal_error, "test TLS client coroutine failed");

@@ -39,9 +39,14 @@ TEST(SecureStringTest, MovesExclusiveBufferAndEmptiesSource) {
 
     SecureString destination{std::move(source)};
 
+    // The class contract guarantees that moving clears the source object.
+    // NOLINTNEXTLINE(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
     EXPECT_TRUE(source.empty());
+    // NOLINTNEXTLINE(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
     EXPECT_EQ(source.size(), 0U);
+    // NOLINTNEXTLINE(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
     EXPECT_EQ(source.data(), nullptr);
+    // NOLINTNEXTLINE(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
     EXPECT_TRUE(source.view().empty());
     EXPECT_EQ(destination.data(), original_buffer);
     EXPECT_EQ(destination.view(), "move-only-secret");
@@ -54,6 +59,8 @@ TEST(SecureStringTest, MoveAssignmentReplacesExistingValueAndHandlesSelfMove) {
 
     destination = std::move(source);
 
+    // The class contract guarantees that moving clears the source object.
+    // NOLINTNEXTLINE(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
     EXPECT_TRUE(source.empty());
     EXPECT_EQ(destination.data(), source_buffer);
     EXPECT_EQ(destination.view(), "replacement");

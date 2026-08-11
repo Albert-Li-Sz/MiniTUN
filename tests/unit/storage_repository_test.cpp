@@ -252,15 +252,18 @@ TEST(ServerRepositoryTest, RejectsEveryInvalidRecordFieldBeforePersistence) {
         static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) + 1U;
     add(value);
     value = make_server(112, "valid");
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     value.desired_state = static_cast<ServerDesiredState>(255U);
     add(value);
     value = make_server(113, "valid");
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     value.actual_state = static_cast<ServerActualState>(255U);
     add(value);
     value = make_server(114, "valid");
     value.last_error_code = common::ErrorCode::ok;
     add(value);
     value = make_server(115, "valid");
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     value.last_error_code = static_cast<common::ErrorCode>(255U);
     add(value);
     value = make_server(116, "valid");
@@ -356,12 +359,15 @@ TEST(TunnelRepositoryTest, RejectsEveryInvalidRecordAndTransitionArgument) {
     value = make_tunnel(134, server.id, 7'004U, std::string{"\xff", 1U});
     add(value);
     value = make_tunnel(135, server.id, 7'005U, "valid");
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     value.protocol = static_cast<TunnelProtocol>(255U);
     add(value);
     value = make_tunnel(136, server.id, 7'006U, "valid");
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     value.desired_state = static_cast<TunnelDesiredState>(255U);
     add(value);
     value = make_tunnel(137, server.id, 7'007U, "valid");
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     value.actual_state = static_cast<TunnelActualState>(255U);
     add(value);
     value = make_tunnel(138, server.id, 7'008U, "valid");
@@ -1266,6 +1272,7 @@ TEST(StorageRepositoryTest, PerFieldInequalityCoversEveryRecordComparison) {
          }(),
          [&] {
              TunnelRecord value = tunnel;
+             // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
              value.protocol = static_cast<TunnelProtocol>(255U);
              return value;
          }(),

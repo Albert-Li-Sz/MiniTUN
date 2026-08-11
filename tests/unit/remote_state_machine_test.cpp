@@ -49,6 +49,7 @@ TEST(RemoteStateMachineTest, ReportsEveryStateAndInitialPeerProperty) {
     for (const auto& [state, name] : expected) {
         EXPECT_EQ(to_string(state), name);
     }
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     EXPECT_EQ(to_string(static_cast<ConnectionState>(0xffU)), "unknown");
 
     StateMachine client_control{PeerRole::client, ConnectionKind::control};
