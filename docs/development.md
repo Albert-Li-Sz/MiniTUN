@@ -337,6 +337,9 @@ RC 发布会记录其预发布状态，但不要求性能证据。GA 发布会�
 OIDC-attested 门禁 JSON；缺少或缩短证据时在软件包构建前失败。具体启动/收集命令见
 [性能文档](performance.md)。
 
+OCI 漏洞扫描在 RC 中完整报告 High/Critical 发现但不阻断候选版发布，便于在冻结后处理
+基础镜像问题；GA 中相同发现仍会使发布失败。
+
 每个架构产生 client、server、SDK runtime 和 SDK development 四个包，因此完整矩阵为
 16 个 DEB 和 16 个 RPM，另有多架构 OCI。Release 还包含 SPDX/CycloneDX SBOM、
 `SHA256SUMS`、每个 blob 的 Sigstore bundle 和 GitHub OIDC provenance/attestation。

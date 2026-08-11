@@ -874,10 +874,10 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Fail on high or critical vulnerabilities
+      - name: Report RC vulnerabilities and fail GA on high or critical findings
         uses: anchore/scan-action@v7
         with:
           image: ghcr.io/lmtinsuzhou/${{ matrix.image }}:${{ needs.resolve-version.outputs.artifact_version }}-linux-${{ matrix.suffix }}
-          fail-build: true
+          fail-build: ${{ !contains(needs.resolve-version.outputs.package_version, '-rc.') }}
           severity-cutoff: high
           output-format: table
