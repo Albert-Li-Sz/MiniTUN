@@ -231,16 +231,22 @@ TEST(RemoteFrameTest, RoundTripsAndNamesEveryDefinedMessageType) {
         EXPECT_EQ(to_string(types[index]), names[index]);
         EXPECT_EQ(message_type_from_wire(static_cast<std::uint16_t>(types[index])), types[index]);
     }
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     EXPECT_EQ(to_string(static_cast<MessageType>(0U)), "UNKNOWN");
     EXPECT_FALSE(message_type_from_wire(0U));
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     EXPECT_FALSE(is_control_message(static_cast<MessageType>(0U)));
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     EXPECT_FALSE(is_control_message(static_cast<MessageType>(0xffffU)));
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     EXPECT_FALSE(is_worker_message(static_cast<MessageType>(0U)));
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     EXPECT_FALSE(is_worker_message(static_cast<MessageType>(0xffffU)));
 }
 
 TEST(RemoteFrameTest, RejectsInvalidEncodeTypeAndRetainsSpecificDecoderFailures) {
     Frame invalid_type;
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     invalid_type.type = static_cast<MessageType>(0U);
     const auto encoded = encode_frame(invalid_type);
     ASSERT_FALSE(encoded);

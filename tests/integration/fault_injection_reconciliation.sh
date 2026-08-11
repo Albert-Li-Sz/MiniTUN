@@ -210,8 +210,19 @@ start_server "$server_failpoint"
     >/dev/null
 printf '%s\n' "$token" |
     "$minitun_bin" --socket "$socket_path" server login primary --token-stdin >/dev/null
+# The injected daemon failpoint can fire between the state commit and the IPC
+# response write, which is the exact half-write fault under test. When the
+# daemon is the victim, accept the connection being cut before the response;
+# wait_for_injected_exit still verifies the daemon terminated with 86 and the
+# restart/recovery steps verify the committed tunnel state.
+set +e
 "$minitun_bin" --socket "$socket_path" tun add primary 9 "$remote_port" --name faulted \
-    >/dev/null
+    >/dev/null 2>&1
+tun_add_status=$?
+set -e
+if [[ "$victim" == server && $tun_add_status -ne 0 ]]; then
+    exit "$tun_add_status"
+fi
 
 if [[ "$victim" == daemon ]]; then
     wait_for_injected_exit "$daemon_pid"
