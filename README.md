@@ -7,9 +7,10 @@
 
 > 面向 Linux 团队自托管的安全 TCP 反向隧道。
 
-> **发布状态：** v1.0.0 仍处于发布候选准备阶段，尚未发布 GA。只有完成绑定同一提交的
-> 三轮性能门禁、`rc.1`、`rc.2`、24 小时满负载与随后 7 天混合负载浸泡后，才会创建
-> `v1.0.0` 标签和发布物；当前源码与文档描述的是冻结目标表面。
+> **发布状态：** v1.0.0 仍处于发布候选阶段，尚未发布 GA。GA 要求连续的 annotated
+> `rc.1`、`rc.2`（及后续 RC）、无未解决 P0/P1，并通过构建、打包、安全扫描、签名和
+> provenance 检查；`v1.0.0` 必须与最终 RC 指向同一提交。三轮性能、24 小时压力和 7 天
+> 浸泡保留为可选验证，不是 GA 前置条件。
 
 MiniTun 将公网服务器上的 TCP 端口转发到内网主机的本地服务。v1.0 由公网服务端
 `minitun-server`、客户端守护进程 `minitund`、本地 CLI `minitun`，以及稳定的
@@ -46,8 +47,8 @@ flowchart LR
 ```
 
 公网 server 只知道 `client_id`、`tunnel_id` 和公开绑定，不知道本地目标地址。当前数据面
-保持“一条 relay 对应一条 TLS Worker”；只有正式三轮性能门禁失败时，才会按发布规则
-启用 v2 的 `multiplexed_streams` 能力。
+保持“一条 relay 对应一条 TLS Worker”；可选三轮性能验证的结果可作为后续是否设计
+v2 `multiplexed_streams` 能力的工程输入，但不改变 GA 发布条件。
 
 ## 快速部署
 
@@ -210,7 +211,7 @@ curl --fail http://127.0.0.1:9090/metrics
 - [本地控制 SDK](docs/sdk.md)
 - [运维与可观测性](docs/operations.md)
 - [v0.4.1 → v1.0 迁移](docs/migration-v1.md)
-- [性能与浸泡门禁](docs/performance.md)
+- [性能与浸泡验证](docs/performance.md)
 - [开发、测试与发布](docs/development.md)
 - [变更日志](docs/changelog.md)
 

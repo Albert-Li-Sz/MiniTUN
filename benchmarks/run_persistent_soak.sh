@@ -10,7 +10,7 @@ started_epoch=$(date +%s)
 started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 boot_id=$(cat /proc/sys/kernel/random/boot_id)
 
-# A release soak always uses the frozen scale and duration. The collector also
+# A full-duration soak always uses the fixed scale and duration. The collector also
 # validates the measured result, but clearing inherited development overrides
 # prevents accidental under-testing on the dedicated host.
 unset CLIENTS TUNNELS_PER_CLIENT CONNECTIONS_PER_TUNNEL BYTES_PER_CONNECTION

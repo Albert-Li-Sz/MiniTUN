@@ -307,9 +307,9 @@ rpmbuild 的 ELF 依赖扫描生成 soname 级 `Requires`。每个新架构都�
 | `quality.yml` | clang-tidy、line ≥85% / branch ≥75% coverage、ABI/downstream checks |
 | `codeql.yml` | GitHub CodeQL C/C++ 扫描 |
 | `reliability.yml` | tunnel registration 与高延迟 reconciliation 重复 100 次 |
-| `performance.yml` | 独立 4 vCPU/8 GiB runner 的三轮基准、持久 systemd soak 与 OIDC 证据 |
+| `performance.yml` | 可选的独立 4 vCPU/8 GiB 三轮基准、持久 systemd soak 与 OIDC 证据 |
 | `package.yml` | 四架构 DEB/RPM、QEMU 安装测试与多架构 OCI |
-| `release.yml` | RC/性能/浸泡/P0-P1 门禁、SBOM、签名、attestation 与 GitHub Release |
+| `release.yml` | RC 连续性/冻结提交/P0-P1 门禁、SBOM、签名、attestation 与 GitHub Release |
 | `pages.yml` | VitePress 文档构建与发布 |
 
 `main` 分支包使用 `MAJOR.MINOR.PATCH_pre<运行号>~<提交号>`；它们只用于持续验收。
@@ -319,12 +319,10 @@ rpmbuild 的 ELF 依赖扫描生成 soname 级 `Requires`。每个新架构都�
 v1.0 发布顺序是强制门禁，不是只创建 tag：
 
 1. 发布 `v1.0.0-rc.1` 并冻结协议、schema、SDK ABI 和功能；
-2. 只修阻断项，发布 `v1.0.0-rc.2`；
-3. 在最终 RC tag 的同一 commit 上，由独立 runner 完成三次
-   100 clients / 2,000 tunnels / 10,000 relay 基准；
-4. 在该 commit 上完成至少 24 小时满规模压力和随后 7 天混合负载浸泡；
-5. 确认无 P0/P1，才在最终 RC 的同一 commit 创建 `v1.0.0`；冻结后任何变化都必须增加
-   rc.N 并重跑两个浸泡阶段。
+2. 只修阻断项，发布 `v1.0.0-rc.2`；后续修改必须按顺序增加 `rc.N`；
+3. 确认最终 RC 的必需构建、测试、打包和安全检查满足 GA 要求；
+4. 确认没有未关闭的 P0/P1 issue；
+5. 在最终 RC 的同一 commit 创建 `v1.0.0`。
 
 候选版示例：
 
@@ -333,9 +331,12 @@ git tag -s v1.0.0-rc.1 -m "MiniTun v1.0.0-rc.1"
 git push origin v1.0.0-rc.1
 ```
 
-RC 发布会记录其预发布状态，但不要求性能证据。GA 发布会自动下载并验证同提交的
-OIDC-attested 门禁 JSON；缺少或缩短证据时在软件包构建前失败。具体启动/收集命令见
-[性能文档](performance.md)。
+三轮性能、24 小时压力和 7 天浸泡可通过 `performance.yml` 手动执行，生成带 OIDC
+attestation 的工程验证记录；`release.yml` 不下载或要求这些记录，它们的缺失或失败不会
+阻止 RC 或 GA。具体启动/收集命令见[性能文档](performance.md)。
+
+最终 RC 后任何源码变化仍必须发布后续 `rc.N`，因为 GA 必须与最终 RC 指向完全相同的
+commit；这一冻结规则与可选性能/浸泡验证无关。
 
 OCI 漏洞扫描在 RC 中完整报告 High/Critical 发现但不阻断候选版发布，便于在冻结后处理
 基础镜像问题；GA 中相同发现仍会使发布失败。

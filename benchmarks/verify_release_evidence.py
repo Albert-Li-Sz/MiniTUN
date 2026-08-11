@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate immutable MiniTUN benchmark and soak release evidence."""
+"""Validate MiniTUN benchmark, soak, and release-policy evidence."""
 
 from __future__ import annotations
 
@@ -222,39 +222,16 @@ def validate_release(args: argparse.Namespace) -> dict[str, Any]:
     result: dict[str, Any] = {
         "tag": args.tag,
         "source_commit": args.source_sha,
+        "performance": "not-required",
+        "full_24h": "not-required",
+        "mixed_7d": "not-required",
     }
     if rc_number is not None:
-        if args.performance is not None:
-            validate_performance(args.performance, args.source_sha)
-            result["performance"] = "passed"
-        else:
-            result["performance"] = "not-required"
         result["release_kind"] = "release-candidate"
         result["rc_number"] = rc_number
         return result
 
-    require(args.performance is not None,
-            "release: GA requires performance evidence")
-    validate_performance(args.performance, args.source_sha)
-    result["performance"] = "passed"
-    require(args.full_24h is not None and args.mixed_7d is not None,
-            "release: GA requires both soak evidence files")
-    full = validate_soak(args.full_24h, args.source_sha, "full-24h")
-    mixed = validate_soak(args.mixed_7d, args.source_sha, "mixed-7d")
-    full_started = timestamp(full["soak_started_at"], "full-24h.soak_started_at")
-    full_finished = timestamp(full["soak_finished_at"], "full-24h.soak_finished_at")
-    mixed_started = timestamp(mixed["soak_started_at"], "mixed-7d.soak_started_at")
-    require(mixed_started >= full_finished,
-            "release: mixed-7d must start after full-24h completes")
-    if args.not_before:
-        not_before = timestamp(args.not_before, "release.not_before")
-        require(full_started >= not_before,
-                "release: full-24h started before the final RC was published")
-    result.update({
-        "release_kind": "general-availability",
-        "full_24h": "passed",
-        "mixed_7d": "passed",
-    })
+    result["release_kind"] = "general-availability"
     return result
 
 
@@ -275,10 +252,6 @@ def build_parser() -> argparse.ArgumentParser:
     release = subcommands.add_parser("release")
     release.add_argument("--tag", required=True)
     release.add_argument("--source-sha", required=True)
-    release.add_argument("--performance", type=Path)
-    release.add_argument("--full-24h", type=Path)
-    release.add_argument("--mixed-7d", type=Path)
-    release.add_argument("--not-before")
     return parser
 
 

@@ -27,9 +27,10 @@ MiniTun 的所有重要变更都会记录在此文件中。本文档以
   强制 Bearer token，指标使用有界标签。
 - 增加策略、认证、注册/注销、ACL/quota 和本地管理审计日志，不记录秘密或用户流量。
 - 增加 schema v3→v4 迁移、崩溃暂存凭据清理、故障注入、ABI baseline、下游 SDK、
-  coverage、clang-tidy、CodeQL、持久 fuzz corpus 和独立性能/浸泡门禁。
+  coverage、clang-tidy、CodeQL、持久 fuzz corpus 和独立性能/浸泡验证。
 - 发布流程增加 SPDX/CycloneDX SBOM、SHA-256、GitHub OIDC provenance/attestation，
-  可执行产物和 OCI 的 Sigstore keyless 签名验证，以及绑定 commit 的性能/浸泡证据门禁。
+  以及可执行产物和 OCI 的 Sigstore keyless 签名验证；性能/浸泡工作流可另行生成绑定
+  commit 的 OIDC 证据，但不是发布门禁。
 
 ### 修复与改进
 
@@ -42,9 +43,9 @@ MiniTun 的所有重要变更都会记录在此文件中。本文档以
 
 ### 发布状态
 
-- 代码版本已进入 1.0.0 开发线；创建 rc.1、rc.2 或 GA tag 前仍必须归档独立三轮基准、
-  24 小时满规模压力和随后 7 天混合负载浸泡证据；release workflow 会拒绝缺失、缩短、
-  错序或非同一提交的证据。
+- 代码版本已进入 1.0.0 开发线；GA 要求连续的 annotated rc.1、rc.2（及后续 RC）、
+  无未解决 P0/P1，并与最终 RC 指向同一 commit。构建、打包、安全扫描、签名和 provenance
+  门禁保持不变；独立三轮基准、24 小时压力和 7 天浸泡为可选验证。
 
 ## [0.4.1] - 2026-08-08
 

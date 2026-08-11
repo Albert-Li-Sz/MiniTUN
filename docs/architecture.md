@@ -175,4 +175,4 @@ SIGHUP 在 server 侧完整重读 TLS 和 client policy；在 daemon 侧触发�
 - 不支持 UDP、P2P、NAT 穿透、SOCKS5 或 GUI；
 - 不承诺非 Linux 运行时；macOS 仅做编译测试；
 - SDK 只控制本地 daemon，不嵌入运行时或暴露 Remote Protocol；
-- 默认不支持 multiplexed relay；是否启用由正式性能门禁决定。
+- 默认不支持 multiplexed relay；可选性能验证可为后续是否启用提供工程依据。

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Dependency-free TCP echo/load tool used by the MiniTUN release gate."""
+"""Dependency-free TCP echo/load tool used by MiniTUN performance validation."""
 
 from __future__ import annotations
 

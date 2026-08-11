@@ -28,7 +28,7 @@ features:
   - title: 多架构交付
     details: 提供 Client/Server/SDK DEB、RPM 与多架构 OCI，以及 SBOM、校验和、keyless 签名和 provenance。
   - title: 持续验证
-    details: CI 覆盖 GCC、Clang、Sanitizer、coverage、clang-tidy、CodeQL、fuzz、ABI、故障注入、软件包与独立性能门禁。
+    details: CI 覆盖 GCC、Clang、Sanitizer、coverage、clang-tidy、CodeQL、fuzz、ABI、故障注入、软件包与独立性能验证。
 ---
 
 ## 工作原理
@@ -91,6 +91,6 @@ minitun tun inspect web --json
 - [本地控制 SDK](/sdk)：C11 ABI、C++20 wrapper 和安装方式。
 - [运维与可观测性](/operations)：管理端点、指标、审计和备份。
 - [v1 迁移](/migration-v1)：从 v0.4.1 协调升级与离线回滚。
-- [性能门禁](/performance)：正式基准、24 小时压力与 7 天浸泡。
+- [性能与浸泡验证](/performance)：可选三轮基准、24 小时压力与 7 天浸泡。
 - [开发文档](/development)：源码构建、本地演示、测试、打包、发布与排障。
 - [变更日志](/changelog)：近期版本变更记录。

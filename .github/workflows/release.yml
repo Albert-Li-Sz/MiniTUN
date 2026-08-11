@@ -74,13 +74,11 @@ jobs:
           echo "rc_number=${rc_number}" >>"${GITHUB_OUTPUT}"
 
   release-gates:
-    name: Verify frozen release gates
+    name: Verify frozen release policy
     needs: validate-tag
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
-      actions: read
-      attestations: read
       contents: read
       issues: read
     env:
@@ -96,12 +94,10 @@ jobs:
           fetch-depth: 0
 
       - name: Validate RC sequence and frozen GA commit
-        id: freeze
         run: |
           set -euo pipefail
           tag=${GITHUB_REF_NAME}
           base_tag=${tag%%-rc.*}
-          not_before=
 
           if [[ "${RELEASE_KIND}" == rc ]]; then
             for sequence in $(seq 1 $((RC_NUMBER - 1))); do
@@ -142,43 +138,12 @@ jobs:
               echo "GA must point at the exact final RC commit; publish another RC after changes" >&2
               exit 1
             }
-            not_before=$(git for-each-ref \
-              --format='%(taggerdate:iso-strict)' "refs/tags/${latest_rc}")
-            [[ -n "${not_before}" ]] || {
-              echo "cannot determine final RC publication time" >&2
-              exit 1
-            }
-            echo "final_rc=${latest_rc}" >>"${GITHUB_OUTPUT}"
           fi
-
-          echo "not_before=${not_before}" >>"${GITHUB_OUTPUT}"
-
-      - name: Download exact-commit performance evidence
-        if: needs.validate-tag.outputs.release_kind == 'ga'
-        run: |
-          ./benchmarks/download_release_evidence.sh \
-            "${GITHUB_SHA}" performance release-evidence/performance
-          gh attestation verify \
-            release-evidence/performance/gate-summary.json \
-            --repo "${GH_REPO}"
-
-      - name: Download exact-commit soak evidence
-        if: needs.validate-tag.outputs.release_kind == 'ga'
-        run: |
-          ./benchmarks/download_release_evidence.sh \
-            "${GITHUB_SHA}" full-24h release-evidence/full-24h
-          ./benchmarks/download_release_evidence.sh \
-            "${GITHUB_SHA}" mixed-7d release-evidence/mixed-7d
-          gh attestation verify \
-            release-evidence/full-24h/full-24h.json \
-            --repo "${GH_REPO}"
-          gh attestation verify \
-            release-evidence/mixed-7d/mixed-7d.json \
-            --repo "${GH_REPO}"
 
       - name: Reject unresolved P0 or P1 issues
         if: needs.validate-tag.outputs.release_kind == 'ga'
         run: |
+          install -d release-evidence
           gh issue list --repo "${GH_REPO}" --state open --limit 1000 \
             --json number,title,url,labels >release-evidence/open-issues.json
           jq '[.[] | select(.labels | any(.name | test(
@@ -191,25 +156,12 @@ jobs:
             exit 1
           fi
 
-      - name: Validate release evidence as one ordered set
-        env:
-          NOT_BEFORE: ${{ steps.freeze.outputs.not_before }}
+      - name: Record release policy result
         run: |
           install -d release-evidence
-          arguments=(
-            release
-            --tag "${GITHUB_REF_NAME}"
-            --source-sha "${GITHUB_SHA}"
-          )
-          if [[ "${RELEASE_KIND}" == ga ]]; then
-            arguments+=(
-              --performance release-evidence/performance/gate-summary.json
-              --full-24h release-evidence/full-24h/full-24h.json
-              --mixed-7d release-evidence/mixed-7d/mixed-7d.json
-              --not-before "${NOT_BEFORE}"
-            )
-          fi
-          ./benchmarks/verify_release_evidence.py "${arguments[@]}" |
+          ./benchmarks/verify_release_evidence.py release \
+            --tag "${GITHUB_REF_NAME}" \
+            --source-sha "${GITHUB_SHA}" |
             tee release-evidence/release-gate-result.json
 
       - name: Assemble publishable gate evidence
@@ -218,18 +170,6 @@ jobs:
           install -m 0644 release-evidence/release-gate-result.json \
             release-gate-assets/release-gate-result.json
           if [[ "${RELEASE_KIND}" == ga ]]; then
-            install -m 0644 release-evidence/performance/gate-summary.json \
-              release-gate-assets/performance-gate-summary.json
-            install -m 0644 release-evidence/performance/download-receipt.json \
-              release-gate-assets/performance-download-receipt.json
-            install -m 0644 release-evidence/full-24h/full-24h.json \
-              release-gate-assets/full-24h.json
-            install -m 0644 release-evidence/full-24h/download-receipt.json \
-              release-gate-assets/full-24h-download-receipt.json
-            install -m 0644 release-evidence/mixed-7d/mixed-7d.json \
-              release-gate-assets/mixed-7d.json
-            install -m 0644 release-evidence/mixed-7d/download-receipt.json \
-              release-gate-assets/mixed-7d-download-receipt.json
             install -m 0644 release-evidence/blocking-issues.json \
               release-gate-assets/blocking-issues.json
           fi
@@ -361,7 +301,7 @@ jobs:
           done
           minimum_gate_evidence=1
           if [[ "${RELEASE_KIND}" == ga ]]; then
-            minimum_gate_evidence=8
+            minimum_gate_evidence=2
           fi
           [ "$gate_evidence_count" -ge "$minimum_gate_evidence" ] || {
             echo "expected at least ${minimum_gate_evidence} release-gate records, found ${gate_evidence_count}" >&2

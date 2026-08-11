@@ -1,10 +1,10 @@
-name: Performance release gate
+name: Performance and soak validation
 
 on:
   workflow_dispatch:
     inputs:
       operation:
-        description: Release-gate operation to run on the dedicated host
+        description: Performance or soak operation to run on the dedicated host
         required: true
         type: choice
         default: benchmark
@@ -76,7 +76,7 @@ jobs:
             -DMINITUN_WARNINGS_AS_ERRORS=ON
           cmake --build build/performance --parallel 4
 
-      - name: Run three independent release-gate trials
+      - name: Run three independent performance trials
         env:
           MINITUN_SOURCE_SHA: ${{ github.sha }}
           RUNS: "3"
@@ -86,7 +86,7 @@ jobs:
           sudo chmod 0666 /var/tmp/minitun-release-gate.lock
           exec 9<>/var/tmp/minitun-release-gate.lock
           flock --nonblock 9 || {
-            echo "the dedicated runner is already executing a release gate" >&2
+            echo "the dedicated runner is already executing a performance validation" >&2
             exit 1
           }
           ./benchmarks/run_gate.sh \

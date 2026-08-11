@@ -18,11 +18,12 @@ title: 变更日志
 - schema v4、完整 server/tunnel 生命周期、声明式 config plan/apply 和安全 prune。
 - `libminitun-client.so.1` 的 C11/C++20 本地控制 SDK 及 DEB/RPM runtime/devel 包。
 - client/server 管理端点、Prometheus 指标、故障注入、ABI/coverage/fuzz/security 门禁，
-  以及绑定 commit 的性能/浸泡证据、SBOM、keyless 签名和 provenance 发布链。
+  可选的性能/浸泡证据，以及 SBOM、keyless 签名和 provenance 发布链。
 
 ::: warning 尚未发布 GA
-`v1.0.0` tag 只能在 rc.1、rc.2、独立性能证据、24 小时满规模压力和随后 7 天浸泡全部
-通过后创建；冻结后公共契约变化必须增加 RC。
+`v1.0.0` tag 要求连续的 rc.1、rc.2（及后续 RC）、无未解决 P0/P1，并与最终 RC 指向
+同一 commit；构建、打包、安全扫描、签名和 provenance 门禁仍须通过。三轮性能、24 小时
+压力和 7 天浸泡不是 GA 前置条件。
 :::
 
 ## [0.4.1] - 2026-08-08
