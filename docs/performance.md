@@ -111,7 +111,8 @@ benchmarks/soak_service.sh status \
 
 1. RC tag 连续且均为 annotated tag，GA 与最后一个 rc.2 或更高 RC 指向同一 commit；
 2. GitHub 中没有带 P0/P1 优先级标签的未关闭 issue；
-3. 必需的构建、测试、打包和安全检查通过，包括 GA 对 OCI High/Critical 漏洞的阻断；
+3. 必需的构建、测试、打包和阻断性安全检查通过；OCI High/Critical 漏洞完整报告但不
+   阻断发布；
 4. 发布物的 SBOM、校验和、keyless 签名及 provenance/attestation 成功生成并验证。
 
 最终 RC 后任何协议、schema 或 SDK ABI 变化都会产生新 commit，因此 GA 的同提交检查会

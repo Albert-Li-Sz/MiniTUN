@@ -308,7 +308,7 @@ rpmbuild 的 ELF 依赖扫描生成 soname 级 `Requires`。每个新架构都�
 | `codeql.yml` | GitHub CodeQL C/C++ 扫描 |
 | `reliability.yml` | tunnel registration 与高延迟 reconciliation 重复 100 次 |
 | `performance.yml` | 可选的独立 4 vCPU/8 GiB 三轮基准、持久 systemd soak 与 OIDC 证据 |
-| `package.yml` | 四架构 DEB/RPM、QEMU 安装测试与多架构 OCI |
+| `package.yml` | 四架构 DEB/RPM、QEMU 安装测试、多架构 OCI 与非阻断漏洞报告 |
 | `release.yml` | RC 连续性/冻结提交/P0-P1 门禁、SBOM、签名、attestation 与 GitHub Release |
 | `pages.yml` | VitePress 文档构建与发布 |
 
@@ -320,7 +320,7 @@ v1.0 发布顺序是强制门禁，不是只创建 tag：
 
 1. 发布 `v1.0.0-rc.1` 并冻结协议、schema、SDK ABI 和功能；
 2. 只修阻断项，发布 `v1.0.0-rc.2`；后续修改必须按顺序增加 `rc.N`；
-3. 确认最终 RC 的必需构建、测试、打包和安全检查满足 GA 要求；
+3. 确认最终 RC 的必需构建、测试、打包和阻断性安全检查满足 GA 要求；
 4. 确认没有未关闭的 P0/P1 issue；
 5. 在最终 RC 的同一 commit 创建 `v1.0.0`。
 
@@ -338,8 +338,9 @@ attestation 的工程验证记录；`release.yml` 不下载或要求这些记录
 最终 RC 后任何源码变化仍必须发布后续 `rc.N`，因为 GA 必须与最终 RC 指向完全相同的
 commit；这一冻结规则与可选性能/浸泡验证无关。
 
-OCI 漏洞扫描在 RC 中完整报告 High/Critical 发现但不阻断候选版发布，便于在冻结后处理
-基础镜像问题；GA 中相同发现仍会使发布失败。
+OCI 漏洞扫描在 RC 和 GA 中都会完整报告 High/Critical 发现，但不阻断发布。报告仍保留在
+Actions 日志中供发布决策和后续基础镜像修复使用；CodeQL、依赖审计及其他安全门禁保持
+阻断性。
 
 每个架构产生 client、server、SDK runtime 和 SDK development 四个包，因此完整矩阵为
 16 个 DEB 和 16 个 RPM，另有多架构 OCI。Release 还包含 SPDX/CycloneDX SBOM、
