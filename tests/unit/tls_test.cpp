@@ -35,7 +35,7 @@ asio::awaitable<void> write_many(TlsStream& stream, std::vector<Frame> frames,
 
 template <typename Awaitable> void run(asio::io_context& io_context, Awaitable awaitable) {
     asio::co_spawn(io_context, std::move(awaitable),
-                   [](const std::exception_ptr failure) { EXPECT_FALSE(failure); });
+                   [](const std::exception_ptr& failure) { EXPECT_FALSE(failure); });
     io_context.run();
     io_context.restart();
 }

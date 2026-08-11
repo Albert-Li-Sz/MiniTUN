@@ -45,7 +45,7 @@ TEST(RelayTest, RejectsInvalidInactivityTimeoutBeforeUsingSockets) {
     std::optional<common::Result<RelayStats>> outcome;
 
     asio::co_spawn(io_context, run_relay_with_invalid_timeout(tls_stream, tcp_socket, outcome),
-                   [](const std::exception_ptr failure) { EXPECT_FALSE(failure); });
+                   [](const std::exception_ptr& failure) { EXPECT_FALSE(failure); });
     io_context.run();
 
     ASSERT_TRUE(outcome.has_value());
@@ -56,7 +56,7 @@ TEST(RelayTest, RejectsInvalidInactivityTimeoutBeforeUsingSockets) {
     asio::co_spawn(io_context,
                    run_relay(tls_stream, tcp_socket,
                              std::chrono::hours{24} + std::chrono::seconds{1}, outcome),
-                   [](const std::exception_ptr failure) { EXPECT_FALSE(failure); });
+                   [](const std::exception_ptr& failure) { EXPECT_FALSE(failure); });
     io_context.restart();
     io_context.run();
     ASSERT_TRUE(outcome.has_value());
@@ -72,7 +72,7 @@ TEST(RelayTest, ContainsDisconnectedSocketFailuresAndCompletesBothDirections) {
     std::optional<common::Result<RelayStats>> outcome;
 
     asio::co_spawn(io_context, run_relay(tls_stream, tcp_socket, std::chrono::seconds{1}, outcome),
-                   [](const std::exception_ptr failure) { EXPECT_FALSE(failure); });
+                   [](const std::exception_ptr& failure) { EXPECT_FALSE(failure); });
     io_context.run();
 
     ASSERT_TRUE(outcome.has_value());
