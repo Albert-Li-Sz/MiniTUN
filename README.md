@@ -12,8 +12,10 @@
 > CodeQL/依赖安全、签名和 provenance 检查。OCI High/Critical 漏洞会完整报告但不阻断
 > 发布；三轮性能、24 小时压力和 7 天浸泡同样不是 GA 前置条件。
 
-> **当前源码：** `1.1.0` 开发版。它在不移动 `v1.0.0` tag 的前提下新增 UDP、SOCKS5、
-> P2P、localhost GUI 与 Remote Protocol C++ SDK；这些能力不在已发布的 `1.0.0` 包中。
+> **当前源码：** `1.1.0` 开发线，首个 pre-release
+> [`v1.1.0-rc.1`](https://github.com/LMTINSUZHOU/MiniTUN/releases/tag/v1.1.0-rc.1)
+> 已发布。它在不移动 `v1.0.0` tag 的前提下新增 UDP、SOCKS5、P2P、localhost GUI 与
+> Remote Protocol C++ SDK；这些能力不在已发布的 `1.0.0` 包中。
 
 MiniTun 将公网服务器上的 TCP 或 UDP 端口转发到内网服务，也可以提供 SOCKS5 CONNECT
 代理，或为可路由主机协商 P2P 直连并自动回退到 relay。当前源码由公网服务端

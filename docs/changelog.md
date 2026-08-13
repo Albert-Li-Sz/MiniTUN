@@ -8,7 +8,7 @@ title: 变更日志
 [CHANGELOG.md](https://github.com/LMTINSUZHOU/MiniTUN/blob/main/CHANGELOG.md) 为准。
 这里保留官网常用的近期版本摘要，方便从文档站快速了解最新能力。
 
-## [1.1.0] - 开发中
+## [1.1.0-rc.1] - 2026-08-13
 
 ### 主要变化
 

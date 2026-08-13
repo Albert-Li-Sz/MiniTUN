@@ -4,7 +4,9 @@ MiniTun 的所有重要变更都会记录在此文件中。本文档以
 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 的结构为基础，项目
 版本遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased] - 1.1.0
+## [Unreleased]
+
+## [1.1.0-rc.1] - 2026-08-13
 
 ### 新增
 
