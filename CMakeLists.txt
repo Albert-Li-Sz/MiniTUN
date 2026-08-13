@@ -2,9 +2,9 @@ cmake_minimum_required(VERSION 3.22)
 
 project(
     MiniTun
-    VERSION 1.1.0
+    VERSION 1.0.0
     DESCRIPTION "A minimal-footprint, self-hosted multi-transport reverse tunnel"
-    HOMEPAGE_URL "https://github.com/LMTINSUZHOU/MiniTUN"
+    HOMEPAGE_URL "https://github.com/Albert-Li-Sz/MiniTUN"
     LANGUAGES C CXX
 )
 

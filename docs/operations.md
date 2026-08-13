@@ -81,6 +81,5 @@ minitun doctor --json \
   --backup-credentials /var/backups/minitun/pre-v1/credentials.db
 ```
 
-备份是成对的；恢复时也应使用同一时间点生成的两个文件。详情见
-[v1 迁移指南](migration-v1.md)。
+备份是成对的；恢复时也应使用同一时间点生成的两个文件。
 

@@ -1,6 +1,6 @@
 # Remote Protocol v2
 
-MiniTun 1.x 只接受 Remote Protocol v2。它与 v0.4.x 的 v1 不兼容，升级必须协调停机。
+MiniTun 只接受 Remote Protocol v2；不存在更旧协议的兼容回退。
 全部远程消息都在 TLS 1.2+ 内传输；不存在明文回退。C/C++ 对象布局不会直接上网，所有
 整数、长度和字段都使用显式网络字节序编码。
 

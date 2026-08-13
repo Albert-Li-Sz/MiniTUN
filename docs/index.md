@@ -99,7 +99,6 @@ minitun-p2p tunnel.example.com:6003 --listen 127.0.0.1:6501
 - [Remote Protocol v2](/protocol)：能力协商、认证、注册与数据中继。
 - [SDK](/sdk)：本地控制 C11/C++20 API 与 Remote Protocol C++20 codec/decoder。
 - [运维与可观测性](/operations)：管理端点、指标、审计和备份。
-- [v1 迁移](/migration-v1)：从 v0.4.1 协调升级与离线回滚。
 - [性能与浸泡验证](/performance)：可选三轮基准、24 小时压力与 7 天浸泡。
 - [开发文档](/development)：源码构建、本地演示、测试、打包、发布与排障。
 - [变更日志](/changelog)：近期版本变更记录。

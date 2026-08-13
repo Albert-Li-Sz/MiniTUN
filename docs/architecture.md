@@ -10,7 +10,7 @@
 - `libminitun-remote-protocol.so.1`：独立的 Remote Protocol v2 C++20 codec、增量 decoder
   与认证摘要 helper。
 
-从 1.1.0 起项目聚焦最小资源占用：不提供 Web GUI，控制面只有 CLI 与本地 SDK。
+MiniTun 聚焦最小资源占用：不提供 Web GUI，控制面只有 CLI 与本地 SDK。
 
 ```mermaid
 flowchart LR
@@ -64,7 +64,7 @@ quota、worker pool、状态收敛、声明式配置和 admin HTTP 已分别位�
 外键。未来 schema、漂移对象、断裂迁移历史或无版本的非空数据库都会拒绝启动，不会被
 自动删除或重建。
 
-v0.4.1 的 schema v3 会先迁移到 v4；当前版本再以事务重建 tunnel 表并迁移到 v5，原有
+历史 schema v3 数据会先迁移到 v4；当前版本再以事务重建 tunnel 表并迁移到 v5，原有
 tunnel 默认为 `tcp`、公开 bind host 默认为 `0.0.0.0`。ID、名称、endpoint、tunnel 和
 原 PSK 引用保持不变。旧程序不能打开 schema v5；回滚必须恢复升级前的成对备份。
 

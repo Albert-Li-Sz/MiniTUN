@@ -43,7 +43,6 @@ export default defineConfig({
           { text: '命令行界面', link: '/cli' },
           { text: '配置与客户端策略', link: '/configuration' },
           { text: '运维与可观测性', link: '/operations' },
-          { text: 'v1 迁移指南', link: '/migration-v1' },
           { text: '开发文档', link: '/development' },
           { text: '变更日志', link: '/changelog' }
         ]
@@ -59,7 +58,7 @@ export default defineConfig({
       }
     ],
     socialLinks: [
-      { icon: 'github', link: 'https://github.com/LMTINSUZHOU/MiniTUN' }
+      { icon: 'github', link: 'https://github.com/Albert-Li-Sz/MiniTUN' }
     ],
     search: {
       provider: 'local'

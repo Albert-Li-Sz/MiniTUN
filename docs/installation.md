@@ -1,6 +1,6 @@
 # 安装指南
 
-本页说明如何获取、校验并安装 MiniTun。项目从 1.1.0 起聚焦资源占用最小：只有五个
+本页说明如何获取、校验并安装 MiniTun。项目聚焦资源占用最小：只有五个
 可执行程序（`minitun`、`minitund`、`minitun-server`、`minitun-p2p`）与两个 SDK
 共享库，无 Web GUI、无脚本运行时。正式支持 Linux/systemd。
 
@@ -23,7 +23,7 @@
 
 ## 1. 下载并校验
 
-从 [GitHub Releases](https://github.com/LMTINSUZHOU/MiniTUN/releases) 下载目标版本与
+从 [GitHub Releases](https://github.com/Albert-Li-Sz/MiniTUN/releases) 下载目标版本与
 架构的四个软件包、`SHA256SUMS` 与对应 `.sigstore.json` bundle。先校验摘要：
 
 ```bash
@@ -36,7 +36,7 @@ sha256sum --check SHA256SUMS
 ```bash
 cosign verify-blob \
   --bundle=minitun-server_<版本>_amd64.deb.sigstore.json \
-  --certificate-identity="https://github.com/LMTINSUZHOU/MiniTUN/.github/workflows/release.yml@refs/tags/<版本tag>" \
+  --certificate-identity="https://github.com/Albert-Li-Sz/MiniTUN/.github/workflows/release.yml@refs/tags/<版本tag>" \
   --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
   minitun-server_<版本>_amd64.deb
 ```
@@ -90,7 +90,7 @@ sudo dnf install ./libminitun-client1-<版本>.x86_64.rpm \
 - `ghcr.io/lmtinsuzhou/minitun-server`：服务端；
 - `ghcr.io/lmtinsuzhou/minitun-client`：客户端守护进程（内含 CLI 与系统 CA）。
 
-Tag 与发布版本一致（如 `:1.0.0`、`:1.1.0-rc.1`）。服务端需要挂载证书、私钥、客户端
+Tag 与发布版本一致（如 `:1.0.0`）。服务端需要挂载证书、私钥、客户端
 策略与 PSK 目录：
 
 ```bash
@@ -287,5 +287,3 @@ minitun doctor --json --checkpoint  # SQLite 诊断、WAL checkpoint 与在线�
   恢复。
 - **运维端点**：需要 `/healthz`、`/readyz`、`/metrics` 时给 daemon/server 加
   `--admin-listen 127.0.0.1:<port>`，详见[运维文档](/operations)。
-
-从 v0.4.1 升级的旧部署请先阅读 [v1 迁移指南](/migration-v1)。

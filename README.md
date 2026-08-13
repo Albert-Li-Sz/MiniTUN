@@ -1,30 +1,24 @@
 # MiniTun
 
-[![CI](https://github.com/LMTINSUZHOU/MiniTUN/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/LMTINSUZHOU/MiniTUN/actions/workflows/ci.yml)
-[![Sanitizers](https://github.com/LMTINSUZHOU/MiniTUN/actions/workflows/sanitizers.yml/badge.svg?branch=main)](https://github.com/LMTINSUZHOU/MiniTUN/actions/workflows/sanitizers.yml)
-[![Packages](https://github.com/LMTINSUZHOU/MiniTUN/actions/workflows/package.yml/badge.svg?branch=main)](https://github.com/LMTINSUZHOU/MiniTUN/actions/workflows/package.yml)
+[![CI](https://github.com/Albert-Li-Sz/MiniTUN/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Albert-Li-Sz/MiniTUN/actions/workflows/ci.yml)
+[![Sanitizers](https://github.com/Albert-Li-Sz/MiniTUN/actions/workflows/sanitizers.yml/badge.svg?branch=main)](https://github.com/Albert-Li-Sz/MiniTUN/actions/workflows/sanitizers.yml)
+[![Packages](https://github.com/Albert-Li-Sz/MiniTUN/actions/workflows/package.yml/badge.svg?branch=main)](https://github.com/Albert-Li-Sz/MiniTUN/actions/workflows/package.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2ea44f.svg)](LICENSE)
 
 > 面向 Linux 的资源占用最小、自托管多传输内网穿透工具。
 
-> **发布状态：** [v1.0.0 GA](https://github.com/LMTINSUZHOU/MiniTUN/releases/tag/v1.0.0)
-> 已于 2026-08-11 发布，并与最终 `v1.0.0-rc.4` 指向同一提交。该版本通过构建、打包、
-> CodeQL/依赖安全、签名和 provenance 检查。OCI High/Critical 漏洞会完整报告但不阻断
-> 发布；三轮性能、24 小时压力和 7 天浸泡同样不是 GA 前置条件。
-
-> **当前源码：** `1.1.0` 开发线，首个 pre-release
-> [`v1.1.0-rc.1`](https://github.com/LMTINSUZHOU/MiniTUN/releases/tag/v1.1.0-rc.1)
-> 已发布。它在不移动 `v1.0.0` tag 的前提下新增 UDP、SOCKS5、P2P 与
-> Remote Protocol C++ SDK；这些能力不在已发布的 `1.0.0` 包中。从 1.1.0 起，项目
-> 聚焦最小资源占用，不提供任何 Web GUI。
+> **发布状态：** [`v1.0.0`](https://github.com/Albert-Li-Sz/MiniTUN/releases/tag/v1.0.0)
+> 已于 2026-08-14 发布，是本代源码的首个正式版本。此前全部 v0.x 与旧版 v1.0.0
+> 发行记录已删除，公开历史从本版本重新开始。它包含 TCP、UDP、SOCKS5、P2P 四种
+> tunnel mode、两个稳定 SOVERSION 1 SDK，并聚焦最小资源占用：无 Web GUI、无脚本
+> 运行时。
 
 MiniTun 将公网服务器上的 TCP 或 UDP 端口转发到内网服务，也可以提供 SOCKS5 CONNECT
 代理，或为可路由主机协商 P2P 直连并自动回退到 relay。当前源码由公网服务端
 `minitun-server`、客户端守护进程 `minitund`、本地 CLI `minitun`、P2P connector
 `minitun-p2p`，以及两个稳定 SOVERSION 1 SDK 组成。
 
-运行时仍以 Linux/systemd 为正式支持目标。Remote Protocol v2 与 v0.4.x 不兼容；从
-v0.4.1 升级前请阅读[迁移指南](docs/migration-v1.md)。
+运行时仍以 Linux/systemd 为正式支持目标。
 
 ## 核心能力
 
@@ -71,7 +65,7 @@ framing；SOCKS5 只接受无认证 CONNECT；P2P direct path 以一次性 token
 
 ### 1. 安装
 
-从 [GitHub Releases](https://github.com/LMTINSUZHOU/MiniTUN/releases) 下载目标架构的
+从 [GitHub Releases](https://github.com/Albert-Li-Sz/MiniTUN/releases) 下载目标架构的
 软件包、`SHA256SUMS` 和 `.sigstore.json` bundle，并先验证校验和与签名。发布矩阵：
 
 | 格式 | 架构 |
@@ -162,7 +156,7 @@ minitun tun add edge 8080 6000 --name web
 minitun tun inspect web --json
 ```
 
-当前 `1.1.0` 源码还可以创建其他 mode：
+当前源码还可以创建其他 mode：
 
 ```bash
 # UDP：公网 6001/udp -> daemon 127.0.0.1:5353/udp
@@ -181,7 +175,7 @@ SOCKS5 的 `--remote-host` 必须是数值 loopback 地址，防止误把开放�
 P2P connector 默认只监听 loopback；只有明确理解暴露面时才使用
 `--allow-non-loopback`。
 
-管道输入使用主选项 `--psk-stdin`；`--token-stdin` 仅作为 v0.4.x CLI 迁移别名：
+管道输入使用主选项 `--psk-stdin`；`--token-stdin` 仅作为旧版 CLI 迁移别名：
 
 ```bash
 minitun server login edge --psk-stdin </secure/path/team-a.psk
@@ -240,15 +234,14 @@ curl --fail http://127.0.0.1:9090/metrics
 
 ## 文档
 
-- [官网](https://lmtinsuzhou.github.io/MiniTUN/)
-- [安装指南](https://lmtinsuzhou.github.io/MiniTUN/installation)
+- [官网](https://albert-li-sz.github.io/MiniTUN/)
+- [安装指南](https://albert-li-sz.github.io/MiniTUN/installation)
 - [CLI](docs/cli.md)
 - [配置与客户端策略](docs/configuration.md)
 - [系统架构](docs/architecture.md)
 - [Remote Protocol v2](docs/protocol.md)
 - [本地控制与 Remote Protocol SDK](docs/sdk.md)
 - [运维与可观测性](docs/operations.md)
-- [v0.4.1 → v1.0 迁移](docs/migration-v1.md)
 - [性能与浸泡验证](docs/performance.md)
 - [开发、测试与发布](docs/development.md)
 - [变更日志](docs/changelog.md)

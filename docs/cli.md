@@ -51,7 +51,7 @@ minitun server remove <id-or-name>
 minitun server login edge --psk-stdin </secure/path/edge.psk
 ```
 
-`--token-stdin` 保留为 v0.4.x CLI 迁移别名；新脚本应使用 `--psk-stdin`。PSK 不能作为
+`--token-stdin` 保留为旧版 CLI 迁移别名；新脚本应使用 `--psk-stdin`。PSK 不能作为
 位置参数或普通 option，因此不会进入 shell history、进程参数或 `/proc`。JSON 响应只
 返回 `credential_configured` 等布尔状态，不返回秘密或凭据引用。
 
@@ -155,8 +155,7 @@ minitun doctor --json --checkpoint \
 ```
 
 同时在线恢复时会先验证两个来源，再分别原子替换并唤醒同步；两个 SQLite 文件之间不是
-同一个数据库事务，因此必须使用成对备份。当前 schema v5 降级回 v0.4.1 需要离线恢复，见
-[迁移指南](migration-v1.md)。
+同一个数据库事务，因此必须使用成对备份。降级到旧 schema 需要离线恢复成对备份。
 
 ## P2P connector
 
