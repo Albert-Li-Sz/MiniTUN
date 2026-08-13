@@ -1053,6 +1053,7 @@ TEST_F(SdkClientTest, CppWrapperOwnsResultsAndCoversEveryAction) {
 TEST_F(SdkClientTest, SupportsConcurrentCallsThroughOneHandle) {
     std::atomic_uint failures{0U};
     std::vector<std::thread> callers;
+    callers.reserve(8U);
     for (std::size_t index = 0U; index < 8U; ++index) {
         callers.emplace_back([this, &failures] {
             for (std::size_t iteration = 0U; iteration < 10U; ++iteration) {

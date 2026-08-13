@@ -451,9 +451,10 @@ void remove_owned_socket(const std::string& path, SocketIdentity identity) noexc
     }
 
     struct stat bound_status{};
-    if (::lstat(options.socket_path.c_str(), &bound_status) != 0 ||
-        !S_ISSOCK(bound_status.st_mode)) {
-        const int inspection_error = errno == 0 ? EIO : errno;
+    const int lstat_result = ::lstat(options.socket_path.c_str(), &bound_status);
+    const int lstat_error = errno;
+    if (lstat_result != 0 || !S_ISSOCK(bound_status.st_mode)) {
+        const int inspection_error = lstat_result != 0 ? lstat_error : EIO;
         asio::error_code ignored;
         acceptor.close(ignored);
         return posix_error(inspection_error, "bound IPC socket inspection");

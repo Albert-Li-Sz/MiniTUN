@@ -696,7 +696,7 @@ int minitun_client_tunnel_create(minitun_client* client,
             if (!value) {
                 return value.error();
             }
-            protocol = std::move(*value);
+            protocol = *value;
         }
         if (create->local_port == 0U && protocol != "socks5") {
             return Error{ErrorCode::invalid_argument,

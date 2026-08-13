@@ -207,11 +207,11 @@ int run_server(const minitun::server::ServerOptions& options,
     std::mutex failure_mutex;
     std::exception_ptr worker_failure;
     const auto record_failure = [&io_context, &failure_mutex,
-                                 &worker_failure](std::exception_ptr failure) {
+                                 &worker_failure](const std::exception_ptr& failure) {
         {
             const std::scoped_lock lock{failure_mutex};
             if (!worker_failure) {
-                worker_failure = std::move(failure);
+                worker_failure = failure;
             }
         }
         io_context.stop();

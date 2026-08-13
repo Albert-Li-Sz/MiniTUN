@@ -767,7 +767,7 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                     local_endpoints_.erase(tunnel_id);
                     auto parsed = common::Id::parse(tunnel_id, common::IdKind::tunnel);
                     if (parsed) {
-                        const common::Id parsed_id = *parsed;
+                        const common::Id& parsed_id = *parsed;
                         auto current = co_await load_tunnel(parsed_id);
                         if (current) {
                             if (current->desired_state == storage::TunnelDesiredState::removed) {

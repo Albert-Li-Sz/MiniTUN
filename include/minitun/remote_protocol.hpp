@@ -44,6 +44,9 @@ using Message =
 class MINITUN_REMOTE_PROTOCOL_API Decoder final {
   public:
     explicit Decoder(std::size_t max_frame_size = protocol::kMaxFrameSize);
+    // Out-of-line defaulted destructor is required by the PImpl idiom so the
+    // unique_ptr member can destroy the complete Impl type in the .cpp.
+    // NOLINTNEXTLINE(performance-trivially-destructible)
     ~Decoder() noexcept;
     Decoder(Decoder&&) noexcept;
     Decoder& operator=(Decoder&&) noexcept;
