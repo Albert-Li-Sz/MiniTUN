@@ -133,6 +133,49 @@ TEST(CredentialKeysTest, CleanupAttemptsEverySlotAndReportsTheFirstError) {
         store, server, std::nullopt, std::string_view{primary});
     ASSERT_TRUE(retained) << retained.error();
     EXPECT_TRUE(store.get(primary));
+
+    const auto referenced = cleanup_server_credentials(
+        store, server, std::string_view{primary}, std::nullopt);
+    ASSERT_TRUE(referenced) << referenced.error();
+    EXPECT_EQ(store.get(primary).error().code(), common::ErrorCode::not_found);
+    EXPECT_EQ(store.get(secondary).error().code(), common::ErrorCode::not_found);
+}
+
+TEST(CredentialKeysTest, RotatesEveryCredentialKindSlot) {
+    const auto server =
+        require_id("srv_00000000000000000000000000000003", common::IdKind::server);
+    storage::ServerRecord record{
+        .id = server,
+        .name = "managed",
+        .endpoint = require_endpoint("127.0.0.1:9"),
+        .desired_state = storage::ServerDesiredState::enabled,
+        .actual_state = storage::ServerActualState::disconnected,
+        .reconnect_attempt = 0U,
+        .created_at_unix_ms = 1,
+        .updated_at_unix_ms = 1,
+    };
+
+    const auto ca_keys = managed_server_credential_keys(server, ServerCredentialKind::ca_certificate);
+    const auto certificate_keys =
+        managed_server_credential_keys(server, ServerCredentialKind::client_certificate);
+    const auto key_keys =
+        managed_server_credential_keys(server, ServerCredentialKind::client_private_key);
+    EXPECT_EQ(next_server_credential_key(record, ServerCredentialKind::ca_certificate),
+              ca_keys[0]);
+    EXPECT_EQ(next_server_credential_key(record, ServerCredentialKind::client_certificate),
+              certificate_keys[0]);
+    EXPECT_EQ(next_server_credential_key(record, ServerCredentialKind::client_private_key),
+              key_keys[0]);
+
+    record.ca_credential_ref = ca_keys[0];
+    record.client_certificate_ref = certificate_keys[0];
+    record.client_private_key_ref = key_keys[0];
+    EXPECT_EQ(next_server_credential_key(record, ServerCredentialKind::ca_certificate),
+              ca_keys[1]);
+    EXPECT_EQ(next_server_credential_key(record, ServerCredentialKind::client_certificate),
+              certificate_keys[1]);
+    EXPECT_EQ(next_server_credential_key(record, ServerCredentialKind::client_private_key),
+              key_keys[1]);
 }
 
 TEST(CredentialKeysTest, CleanupAllKindsAttemptsEachCredentialClass) {

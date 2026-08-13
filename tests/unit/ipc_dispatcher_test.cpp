@@ -80,6 +80,13 @@ TEST(IpcDispatcherTest, RejectsUnknownMalformedAndUnsupportedRequests) {
     ASSERT_FALSE(unsupported.ok());
     ASSERT_NE(unsupported.error(), nullptr);
     EXPECT_EQ(unsupported.error()->code(), common::ErrorCode::unsupported_version);
+
+    Request non_object = make_request();
+    non_object.params = Json{"not-an-object"};
+    const Response rejected = dispatcher.dispatch(non_object);
+    ASSERT_FALSE(rejected.ok());
+    ASSERT_NE(rejected.error(), nullptr);
+    EXPECT_EQ(rejected.error()->code(), common::ErrorCode::invalid_argument);
 }
 
 TEST(IpcDispatcherTest, RejectsInvalidRegistrationsAndKeepsTheOriginalDuplicate) {

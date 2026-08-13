@@ -59,5 +59,20 @@ TEST(ConnectionQuotaTest, RejectsMalformedClientIdentity) {
     EXPECT_EQ(acquired.error().code(), common::ErrorCode::invalid_argument);
 }
 
+TEST(ConnectionQuotaTest, RejectsInvalidPerClientOverridesAndReportsUnknownClients) {
+    ConnectionQuota quota{2U, 4U};
+    const std::string client = generated_client_id();
+
+    const auto zero = quota.try_acquire(client, 0U);
+    ASSERT_FALSE(zero);
+    EXPECT_EQ(zero.error().code(), common::ErrorCode::invalid_argument);
+    const auto oversized = quota.try_acquire(client, 3U);
+    ASSERT_FALSE(oversized);
+    EXPECT_EQ(oversized.error().code(), common::ErrorCode::invalid_argument);
+
+    EXPECT_EQ(quota.client_in_use(client), 0U);
+    EXPECT_EQ(quota.client_in_use("client_00000000000000000000000000000000"), 0U);
+}
+
 } // namespace
 } // namespace minitun::server

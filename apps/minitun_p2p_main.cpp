@@ -80,7 +80,7 @@ handle_connection(tcp::socket local_socket, minitun::common::Endpoint remote_end
 }
 
 [[nodiscard]] asio::awaitable<void>
-accept_connections(tcp::acceptor& acceptor, const minitun::common::Endpoint remote_endpoint,
+accept_connections(tcp::acceptor& acceptor, const minitun::common::Endpoint& remote_endpoint,
                    const std::chrono::seconds connect_timeout,
                    const std::chrono::seconds negotiation_timeout,
                    const std::chrono::seconds direct_timeout,
