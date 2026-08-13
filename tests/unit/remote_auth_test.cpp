@@ -77,6 +77,23 @@ TEST(RemoteAuthTest, RejectsEmptyTokenAndInvalidClientIdentifier) {
     EXPECT_EQ(invalid.error().code(), common::ErrorCode::invalid_argument);
 }
 
+TEST(RemoteAuthTest, RejectsOversizedTokensAndInvalidCapabilitySelections) {
+    AuthenticationNonce nonce{};
+    const std::string client = client_id();
+    const std::string server = server_id();
+    const std::string worker = worker_id();
+    const std::string oversized(64U * 1024U + 1U, 'x');
+
+    EXPECT_FALSE(compute_authentication_data(oversized, client, server, 0, nonce,
+                                             kRequiredCapabilities));
+    EXPECT_FALSE(compute_worker_authentication_data(oversized, client, server, 42U, worker, 0,
+                                                    nonce));
+    EXPECT_FALSE(compute_authentication_data("token", client, server, 0, nonce,
+                                             kRequiredCapabilities | (1ULL << 63U)));
+    EXPECT_FALSE(compute_worker_authentication_data("token", client, server, 0U, worker, 0,
+                                                    nonce));
+}
+
 TEST(RemoteAuthTest, WorkerProofBindsSessionServerIdentityAndRejectsReplay) {
     const std::string client = client_id();
     const std::string server = server_id();

@@ -251,14 +251,15 @@ class TunnelRegistry::Impl final {
         inline static constexpr std::size_t kMaximumPeerQueuedBytes = 512U * 1024U;
 
         struct SocketPair final {
-            asio::ip::tcp::socket bridge;
+            std::shared_ptr<asio::ip::tcp::socket> bridge;
             asio::ip::tcp::socket relay;
         };
 
         class PeerSession final : public std::enable_shared_from_this<PeerSession> {
           public:
             PeerSession(std::weak_ptr<UdpListener> owner, std::string key,
-                        asio::ip::udp::endpoint peer, asio::ip::tcp::socket bridge)
+                        asio::ip::udp::endpoint peer,
+                        std::shared_ptr<asio::ip::tcp::socket> bridge)
                 : owner_(std::move(owner)), key_(std::move(key)), peer_(std::move(peer)),
                   bridge_(std::move(bridge)) {}
 
@@ -266,12 +267,12 @@ class TunnelRegistry::Impl final {
 
             void start() {
                 auto self = shared_from_this();
-                asio::post(bridge_.get_executor(), [self] { self->read_header(); });
+                asio::post(bridge_->get_executor(), [self] { self->read_header(); });
             }
 
             void enqueue(std::vector<std::uint8_t> record) {
                 auto self = shared_from_this();
-                asio::post(bridge_.get_executor(), [self, record = std::move(record)]() mutable {
+                asio::post(bridge_->get_executor(), [self, record = std::move(record)]() mutable {
                     if (self->stopped_ ||
                         self->write_queue_.size() >= kMaximumPeerQueuedDatagrams ||
                         record.size() >
@@ -290,7 +291,7 @@ class TunnelRegistry::Impl final {
 
             void stop() noexcept {
                 auto self = shared_from_this();
-                asio::post(bridge_.get_executor(), [self] { self->close(); });
+                asio::post(bridge_->get_executor(), [self] { self->close(); });
             }
 
           private:
@@ -301,7 +302,7 @@ class TunnelRegistry::Impl final {
                 }
                 writing_ = true;
                 auto self = shared_from_this();
-                asio::async_write(bridge_, asio::buffer(write_queue_.front()),
+                asio::async_write(*bridge_, asio::buffer(write_queue_.front()),
                                   [self](const asio::error_code& error, const std::size_t bytes) {
                                       if (error || self->write_queue_.empty() ||
                                           bytes != self->write_queue_.front().size()) {
@@ -322,7 +323,7 @@ class TunnelRegistry::Impl final {
                     return;
                 }
                 auto self = shared_from_this();
-                asio::async_read(bridge_, asio::buffer(read_header_),
+                asio::async_read(*bridge_, asio::buffer(read_header_),
                                  [self](const asio::error_code& error, const std::size_t bytes) {
                                      if (error || bytes != self->read_header_.size()) {
                                          self->close();
@@ -346,7 +347,7 @@ class TunnelRegistry::Impl final {
 
             void read_payload() {
                 auto self = shared_from_this();
-                asio::async_read(bridge_, asio::buffer(read_payload_),
+                asio::async_read(*bridge_, asio::buffer(read_payload_),
                                  [self](const asio::error_code& error, const std::size_t bytes) {
                                      if (error || bytes != self->read_payload_.size()) {
                                          self->close();
@@ -392,14 +393,14 @@ class TunnelRegistry::Impl final {
 
             void close_socket() noexcept {
                 asio::error_code ignored;
-                bridge_.cancel(ignored);
-                bridge_.close(ignored);
+                bridge_->cancel(ignored);
+                bridge_->close(ignored);
             }
 
             std::weak_ptr<UdpListener> owner_;
             std::string key_;
             asio::ip::udp::endpoint peer_;
-            asio::ip::tcp::socket bridge_;
+            std::shared_ptr<asio::ip::tcp::socket> bridge_;
             std::deque<std::vector<std::uint8_t>> write_queue_;
             std::array<std::uint8_t, protocol::kDatagramRecordHeaderSize> read_header_{};
             std::vector<std::uint8_t> read_payload_;
@@ -493,10 +494,10 @@ class TunnelRegistry::Impl final {
             if (!error) {
                 acceptor.listen(1, error);
             }
-            asio::ip::tcp::socket bridge{peer_executor};
             asio::ip::tcp::socket relay{peer_executor};
+            auto bridge = std::make_shared<asio::ip::tcp::socket>(peer_executor);
             if (!error) {
-                bridge.connect(acceptor.local_endpoint(error), error);
+                bridge->connect(acceptor.local_endpoint(error), error);
             }
             if (!error) {
                 acceptor.accept(relay, error);
@@ -506,7 +507,7 @@ class TunnelRegistry::Impl final {
                     common::ErrorCode::resource_exhausted,
                     "internal UDP relay socket pair could not be created");
             }
-            protocol::configure_tcp_transport(bridge);
+            protocol::configure_tcp_transport(*bridge);
             protocol::configure_tcp_transport(relay);
             return SocketPair{std::move(bridge), std::move(relay)};
         }

@@ -100,6 +100,10 @@ TEST(TimeTest, FormatsUtcTimestampsIncludingBeforeTheEpoch) {
     const auto leap_day = format_unix_time_utc(951'827'696);
     ASSERT_TRUE(leap_day) << leap_day.error();
     EXPECT_EQ(*leap_day, "2000-02-29T12:34:56Z");
+
+    const auto extreme = format_unix_time_utc(std::numeric_limits<std::int64_t>::max());
+    EXPECT_FALSE(extreme);
+    EXPECT_EQ(extreme.error().code(), ErrorCode::invalid_argument);
 }
 
 TEST(TimeTest, UtcFormattingIsSafeForConcurrentCallers) {

@@ -474,6 +474,46 @@ TEST(RemoteMessagesTest, RejectsEverySemanticWireInvariant) {
     EXPECT_FALSE(decode_worker_idle_timeout_seconds(*tagged & ~timeout_bits).has_value());
 }
 
+TEST(RemoteMessagesTest, RejectsExplicitTcpAndUnknownTransportModeExtensions) {
+    const std::string tunnel_id = generated_id(common::IdKind::tunnel);
+    const std::string connection_id = generated_id(common::IdKind::connection);
+
+    const auto register_with_mode = [&tunnel_id](const std::uint8_t mode) {
+        return wire_payload([&](PayloadWriter& writer) {
+            return writer.write_string(tunnel_id) && writer.write_string("0.0.0.0") &&
+                   writer.write_u16(1U) && writer.write_u64(1U) && writer.write_u8(mode);
+        });
+    };
+    EXPECT_FALSE(decode_register_tunnel(register_with_mode(0U)));
+    EXPECT_FALSE(decode_register_tunnel(register_with_mode(255U)));
+    const auto register_double_extension = wire_payload([&](PayloadWriter& writer) {
+        return writer.write_string(tunnel_id) && writer.write_string("0.0.0.0") &&
+               writer.write_u16(1U) && writer.write_u64(1U) && writer.write_u8(1U) &&
+               writer.write_u8(2U);
+    });
+    EXPECT_FALSE(decode_register_tunnel(register_double_extension));
+
+    const auto relay_with_mode = [&](const std::uint8_t mode) {
+        return wire_payload([&](PayloadWriter& writer) {
+            return writer.write_string(tunnel_id) && writer.write_string(connection_id) &&
+                   writer.write_u8(mode);
+        });
+    };
+    EXPECT_FALSE(decode_start_relay(relay_with_mode(0U)));
+    EXPECT_FALSE(decode_start_relay(relay_with_mode(255U)));
+    const auto relay_double_extension = wire_payload([&](PayloadWriter& writer) {
+        return writer.write_string(tunnel_id) && writer.write_string(connection_id) &&
+               writer.write_u8(1U) && writer.write_u8(2U);
+    });
+    EXPECT_FALSE(decode_start_relay(relay_double_extension));
+
+    const auto workers_wire = [](const std::uint16_t count) {
+        return wire_payload([&](PayloadWriter& writer) { return writer.write_u16(count); });
+    };
+    EXPECT_FALSE(decode_request_workers(workers_wire(0U)));
+    EXPECT_FALSE(decode_request_workers(workers_wire(129U)));
+}
+
 template <typename Message>
 void expect_per_field_inequalities(const Message& base,
                                    const std::initializer_list<Message> mutated) {

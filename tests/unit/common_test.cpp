@@ -42,6 +42,8 @@ TEST(ErrorCodeTest, HasStableRoundTripSpelling) {
         EXPECT_EQ(*parsed, code);
     }
     EXPECT_FALSE(error_code_from_string("not_a_real_error").has_value());
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
+    EXPECT_EQ(to_string(static_cast<ErrorCode>(255U)), "internal_error");
 }
 
 TEST(ErrorTest, AddsNonSensitiveContext) {
