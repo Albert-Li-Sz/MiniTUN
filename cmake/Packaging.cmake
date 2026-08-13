@@ -6,7 +6,7 @@ set(CPACK_PACKAGE_NAME "minitun")
 set(CPACK_PACKAGE_VENDOR "MiniTun")
 set(CPACK_PACKAGE_CONTACT "MiniTun maintainers")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
-    "Small, high-performance multi-transport reverse-tunnelling system"
+    "Minimal-footprint, self-hosted multi-transport reverse tunnel"
 )
 set(CPACK_PACKAGE_HOMEPAGE_URL "${PROJECT_HOMEPAGE_URL}")
 set(minitun_debian_version "${MINITUN_PACKAGE_VERSION}")
@@ -39,7 +39,7 @@ set(CPACK_COMPONENTS_ALL Client Server ClientLibrary ClientDevelopment)
 
 set(CPACK_COMPONENT_CLIENT_DISPLAY_NAME "MiniTun Client")
 set(CPACK_COMPONENT_CLIENT_DESCRIPTION
-    "CLI, daemon, localhost GUI, and P2P connector for MiniTun public servers"
+    "CLI, daemon, and P2P connector for MiniTun public servers"
 )
 set(CPACK_COMPONENT_SERVER_DISPLAY_NAME "MiniTun Server")
 set(CPACK_COMPONENT_SERVER_DESCRIPTION

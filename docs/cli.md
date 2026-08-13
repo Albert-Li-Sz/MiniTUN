@@ -172,17 +172,6 @@ minitun-p2p <server-host:tunnel-port>
 path；`--relay-only` 可用于策略控制和验证 fallback。只有明确要向受信网络暴露本地入口
 时才使用 `--allow-non-loopback`。
 
-## Web GUI
-
-```text
-minitun-gui [--listen <numeric-loopback:port>]
-            [--socket <path>] [--assets-dir <directory>]
-```
-
-默认在 `http://127.0.0.1:6500` 提供管理控制台。它拒绝非 loopback listener，通过同一
-Unix IPC 查看/管理 server 与 tunnel，不直接打开数据库或秘密。完整安全边界与开发运行
-方式见 [GUI 文档](gui.md)。
-
 ## 输出与退出码
 
 `status --json`、`doctor --json`、health/readiness/metrics/reload、config 命令输出 JSON

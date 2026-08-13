@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.22)
 project(
     MiniTun
     VERSION 1.1.0
-    DESCRIPTION "A small, high-performance multi-transport reverse-tunnelling system"
+    DESCRIPTION "A minimal-footprint, self-hosted multi-transport reverse tunnel"
     HOMEPAGE_URL "https://github.com/LMTINSUZHOU/MiniTUN"
     LANGUAGES C CXX
 )
@@ -258,18 +258,6 @@ target_link_libraries(minitun_admin
 minitun_apply_sanitizers(minitun_admin)
 minitun_apply_lto(minitun_admin)
 
-add_library(minitun_gui STATIC src/gui/server.cpp)
-add_library(MiniTun::gui ALIAS minitun_gui)
-target_include_directories(minitun_gui
-    PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
-)
-target_link_libraries(minitun_gui
-    PUBLIC MiniTun::ipc
-    PRIVATE minitun_project_warnings
-)
-minitun_apply_sanitizers(minitun_gui)
-minitun_apply_lto(minitun_gui)
-
 add_library(minitun_client SHARED src/sdk/client.cpp)
 add_library(MiniTun::Client ALIAS minitun_client)
 set_target_properties(minitun_client PROPERTIES
@@ -370,11 +358,7 @@ endfunction()
 minitun_add_program(minitun apps/minitun_main.cpp MiniTun::ipc)
 minitun_add_program(minitund apps/minitund_main.cpp MiniTun::daemon)
 minitun_add_program(minitun-server apps/minitun_server_main.cpp MiniTun::server)
-minitun_add_program(minitun-gui apps/minitun_gui_main.cpp MiniTun::gui)
 minitun_add_program(minitun-p2p apps/minitun_p2p_main.cpp MiniTun::protocol)
-target_compile_definitions(minitun-gui PRIVATE
-    MINITUN_GUI_ASSETS_DIR="${CMAKE_INSTALL_FULL_DATADIR}/minitun/gui"
-)
 target_link_libraries(minitund PRIVATE MiniTun::admin)
 target_link_libraries(minitun-server PRIVATE MiniTun::admin)
 
@@ -443,18 +427,8 @@ install(
     COMPONENT Server
 )
 install(
-    TARGETS minitun-gui
-    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
-    COMPONENT Client
-)
-install(
     TARGETS minitun-p2p
     RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
-    COMPONENT Client
-)
-install(
-    DIRECTORY gui/dist/
-    DESTINATION "${CMAKE_INSTALL_DATADIR}/minitun/gui"
     COMPONENT Client
 )
 install(
@@ -501,7 +475,6 @@ install(
 
 install(
     FILES packaging/man/minitun.1
-          packaging/man/minitun-gui.1
           packaging/man/minitun-p2p.1
     DESTINATION "${CMAKE_INSTALL_MANDIR}/man1"
     COMPONENT Client

@@ -198,14 +198,6 @@ set_tests_properties(smoke.server-help PROPERTIES
     PASS_REGULAR_EXPRESSION "MiniTun public server"
 )
 
-add_test(NAME smoke.gui-help
-    COMMAND $<TARGET_FILE:minitun-gui> --help
-)
-set_tests_properties(smoke.gui-help PROPERTIES
-    LABELS "smoke;gui"
-    PASS_REGULAR_EXPRESSION "MiniTun localhost web management console"
-)
-
 add_test(NAME smoke.p2p-help
     COMMAND $<TARGET_FILE:minitun-p2p> --help
 )
@@ -383,19 +375,6 @@ if(UNIX)
             $<TARGET_FILE:minitun-p2p>
     )
 
-    add_test(NAME integration.gui-console
-        COMMAND
-            "${CMAKE_CURRENT_SOURCE_DIR}/integration/gui_console.sh"
-            $<TARGET_FILE:minitund>
-            $<TARGET_FILE:minitun-gui>
-            "${CMAKE_SOURCE_DIR}/gui/dist"
-    )
-    set_tests_properties(integration.gui-console PROPERTIES
-        LABELS "integration;gui;http;security"
-        TIMEOUT 30
-        PASS_REGULAR_EXPRESSION "GUI console integration passed"
-        RUN_SERIAL TRUE
-    )
     set_tests_properties(integration.extended-transports PROPERTIES
         LABELS "integration;e2e;tls;udp;socks5;p2p"
         TIMEOUT 90

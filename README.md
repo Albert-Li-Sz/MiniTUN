@@ -5,7 +5,7 @@
 [![Packages](https://github.com/LMTINSUZHOU/MiniTUN/actions/workflows/package.yml/badge.svg?branch=main)](https://github.com/LMTINSUZHOU/MiniTUN/actions/workflows/package.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2ea44f.svg)](LICENSE)
 
-> 面向 Linux 团队自托管的安全多传输反向隧道。
+> 面向 Linux 的资源占用最小、自托管多传输内网穿透工具。
 
 > **发布状态：** [v1.0.0 GA](https://github.com/LMTINSUZHOU/MiniTUN/releases/tag/v1.0.0)
 > 已于 2026-08-11 发布，并与最终 `v1.0.0-rc.4` 指向同一提交。该版本通过构建、打包、
@@ -14,13 +14,14 @@
 
 > **当前源码：** `1.1.0` 开发线，首个 pre-release
 > [`v1.1.0-rc.1`](https://github.com/LMTINSUZHOU/MiniTUN/releases/tag/v1.1.0-rc.1)
-> 已发布。它在不移动 `v1.0.0` tag 的前提下新增 UDP、SOCKS5、P2P、localhost GUI 与
-> Remote Protocol C++ SDK；这些能力不在已发布的 `1.0.0` 包中。
+> 已发布。它在不移动 `v1.0.0` tag 的前提下新增 UDP、SOCKS5、P2P 与
+> Remote Protocol C++ SDK；这些能力不在已发布的 `1.0.0` 包中。从 1.1.0 起，项目
+> 聚焦最小资源占用，不提供任何 Web GUI。
 
 MiniTun 将公网服务器上的 TCP 或 UDP 端口转发到内网服务，也可以提供 SOCKS5 CONNECT
 代理，或为可路由主机协商 P2P 直连并自动回退到 relay。当前源码由公网服务端
 `minitun-server`、客户端守护进程 `minitund`、本地 CLI `minitun`、P2P connector
-`minitun-p2p`、Web 控制台 `minitun-gui`，以及两个稳定 SOVERSION 1 SDK 组成。
+`minitun-p2p`，以及两个稳定 SOVERSION 1 SDK 组成。
 
 运行时仍以 Linux/systemd 为正式支持目标。Remote Protocol v2 与 v0.4.x 不兼容；从
 v0.4.1 升级前请阅读[迁移指南](docs/migration-v1.md)。
@@ -41,8 +42,9 @@ v0.4.1 升级前请阅读[迁移指南](docs/migration-v1.md)。
 - 本地控制 C11 ABI/C++20 RAII SDK，以及 Remote Protocol v2 C++20 codec/decoder SDK；
   可通过 `MiniTun::Client`、`MiniTun::RemoteProtocol` 或对应 pkg-config 文件链接，
   SOVERSION 均为 1。
-- localhost-only Web GUI 使用同一 Unix IPC 管理 server 与四种 tunnel，不直接读取数据库
-  或凭据；同源写操作与严格 HTTP/CSP 边界默认启用。
+- 无 Web GUI、无额外运行时依赖：C++20 单一 daemon 进程、嵌入式 SQLite 状态库，
+  systemd 单元自带沙箱加固与文件描述符上限，适合路由器、NAS 与边缘设备等
+  低资源环境。
 - DEB/RPM 分离为 client、server、SDK runtime、SDK development；同时发布多架构 OCI、
   SPDX/CycloneDX SBOM、SHA-256、keyless 签名与 provenance attestation。
 
@@ -52,7 +54,7 @@ v0.4.1 升级前请阅读[迁移指南](docs/migration-v1.md)。
 flowchart LR
     user["公网 TCP / UDP / SOCKS5 / P2P 客户端"] -->|"公开端口"| server["minitun-server"]
     server <-->|"TLS / Remote Protocol v2"| daemon["minitund"]
-    control["minitun / GUI / 本地 SDK"] -->|"Unix IPC envelope v1"| daemon
+    control["minitun / 本地 SDK"] -->|"Unix IPC envelope v1"| daemon
     daemon -->|"TCP / UDP / SOCKS5 CONNECT / P2P"| service["内网服务"]
 ```
 
@@ -63,6 +65,9 @@ framing；SOCKS5 只接受无认证 CONNECT；P2P direct path 以一次性 token
 数据，敏感协议应自行启用 TLS。
 
 ## 快速部署
+
+> 完整的安装说明（校验签名、各发行版包管理、OCI、源码构建、卸载与排障）见
+> [官网安装指南](https://lmtinsuzhou.github.io/MiniTUN/installation)。以下是最短路径。
 
 ### 1. 安装
 
@@ -170,9 +175,6 @@ minitun tun add edge 1 6002 --protocol socks5 \
 # P2P：先创建入口，再在访问端运行 connector
 minitun tun add edge 8080 6003 --protocol p2p --name p2p-web
 minitun-p2p tunnel.example.com:6003 --listen 127.0.0.1:6501
-
-# 本地 Web 控制台；只监听数值 loopback 地址
-minitun-gui
 ```
 
 SOCKS5 的 `--remote-host` 必须是数值 loopback 地址，防止误把开放代理暴露到公网。
@@ -238,6 +240,8 @@ curl --fail http://127.0.0.1:9090/metrics
 
 ## 文档
 
+- [官网](https://lmtinsuzhou.github.io/MiniTUN/)
+- [安装指南](https://lmtinsuzhou.github.io/MiniTUN/installation)
 - [CLI](docs/cli.md)
 - [配置与客户端策略](docs/configuration.md)
 - [系统架构](docs/architecture.md)

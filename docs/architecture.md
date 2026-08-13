@@ -1,19 +1,20 @@
 # 系统架构
 
-当前 MiniTun 源码由七个公开交付面组成：
+当前 MiniTun 源码由六个公开交付面组成：
 
 - `minitun-server`：公网 TLS/control listener、客户端策略、公开 tunnel listener 与 relay；
 - `minitund`：本地状态、凭据、远程 session、TunnelReconciler 和本地目标连接；
 - `minitun`：无状态 CLI，只通过本地 Unix IPC 调用 daemon；
 - `minitun-p2p`：面向 P2P tunnel 的本地 connector，直连失败时自动使用 TLS relay；
-- `minitun-gui`：只监听数值 loopback、通过同一 IPC 管理 daemon 的 Web 控制台；
 - `libminitun-client.so.1`：与 CLI 使用同一 IPC 的稳定 C ABI/C++20 控制 SDK；
 - `libminitun-remote-protocol.so.1`：独立的 Remote Protocol v2 C++20 codec、增量 decoder
   与认证摘要 helper。
 
+从 1.1.0 起项目聚焦最小资源占用：不提供 Web GUI，控制面只有 CLI 与本地 SDK。
+
 ```mermaid
 flowchart LR
-    operator["操作者 / 自动化"] --> control["minitun / GUI / Local SDK"]
+    operator["操作者 / 自动化"] --> control["minitun / Local SDK"]
     control -->|"Unix IPC envelope v1"| daemon["minitund"]
     daemon --> state[("state.db / schema v5")]
     daemon --> secrets[("credentials.db")]
@@ -40,7 +41,6 @@ CLI 与 SDK 不直接打开数据库；server 不知道本地目标地址。只�
 | `daemon` | control service、声明式配置、server session、worker pool、reconciler |
 | `server` | 客户端策略、认证/session、tunnel registry、quota、worker pool |
 | `admin` | 有界 HTTP 健康、就绪与 Prometheus 端点 |
-| `gui` | 有界 localhost HTTP、静态资源、安全响应头和 IPC gateway |
 | `sdk` | 稳定本地 C ABI/C++ wrapper，以及独立 Remote Protocol C++ API |
 
 `server.cpp` 与 `server_manager.cpp` 仍是异步生命周期编排器；策略解析、listener 所有权、
@@ -168,13 +168,6 @@ quota lease 后才等待 Worker。
 
 P2P direct 适用于 LAN 或可路由地址，不实现 ICE、STUN、TURN 或 NAT 打洞。一次性 token
 只验证候选连接，direct path 不额外加密应用数据；需要机密性的应用必须自行使用 TLS。
-
-## 本地 GUI 边界
-
-`minitun-gui` 默认监听 `127.0.0.1:6500`，只接受数值 IPv4/IPv6 loopback，不提供公网
-认证层。HTTP parser 对 method、header/body/path、并发和超时设上限；JSON 写操作校验
-同源 `Origin`，静态文件路径规范化并拒绝 traversal。响应包含 CSP、`nosniff`、frame 和
-referrer 策略。后端只把允许的 API 映射为 IPC 方法，不直接打开状态库或凭据库。
 
 ## 管理端点与指标
 

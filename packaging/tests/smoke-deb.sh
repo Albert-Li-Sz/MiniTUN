@@ -28,7 +28,6 @@ apt-get install -y pkg-config \
 
 minitun version
 /usr/libexec/minitun/minitund --version
-minitun-gui --version
 minitun-p2p --version
 minitun-server --version
 test -f /usr/lib/systemd/system/minitund.service
@@ -41,7 +40,6 @@ test ! -e /etc/minitun-server/token
 test -f /usr/include/minitun/client.h
 test -f /usr/include/minitun/client.hpp
 test -f /usr/include/minitun/remote_protocol.hpp
-test -f /usr/share/minitun/gui/index.html
 pkg-config --exists minitun-remote-protocol
 pc_version=$(pkg-config --modversion minitun-client)
 package_version=$(dpkg-deb -f "$sdk_development_package" Version)

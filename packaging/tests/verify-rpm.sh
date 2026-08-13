@@ -34,11 +34,8 @@ rpm -qlp "$sdk_development_package"
 [ "$(rpm -qp --queryformat '%{ARCH}' "$sdk_development_package")" = "$expected_arch" ]
 
 rpm -qlp "$client_package" | grep -qx '/usr/bin/minitun'
-rpm -qlp "$client_package" | grep -qx '/usr/bin/minitun-gui'
 rpm -qlp "$client_package" | grep -qx '/usr/bin/minitun-p2p'
 rpm -qlp "$client_package" | grep -qx '/usr/libexec/minitun/minitund'
-rpm -qlp "$client_package" | grep -qx '/usr/share/minitun/gui/index.html'
-rpm -qlp "$client_package" | grep -qx '/usr/share/minitun/gui/logo.svg'
 rpm -qlp "$client_package" | grep -qx '/usr/lib/systemd/system/minitund.service'
 rpm -qlp "$client_package" | grep -qx '/usr/lib/sysusers.d/minitun.conf'
 if rpm -qlp "$client_package" | grep -q 'minitun-server'; then

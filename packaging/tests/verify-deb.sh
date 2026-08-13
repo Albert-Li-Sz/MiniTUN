@@ -39,11 +39,8 @@ sdk_library_contents=$(dpkg-deb --fsys-tarfile "$sdk_library_package" | tar -tf 
 sdk_development_contents=$(dpkg-deb --fsys-tarfile "$sdk_development_package" | tar -tf -)
 
 printf '%s\n' "$client_contents" | grep -qx './usr/bin/minitun'
-printf '%s\n' "$client_contents" | grep -qx './usr/bin/minitun-gui'
 printf '%s\n' "$client_contents" | grep -qx './usr/bin/minitun-p2p'
 printf '%s\n' "$client_contents" | grep -qx './usr/libexec/minitun/minitund'
-printf '%s\n' "$client_contents" | grep -qx './usr/share/minitun/gui/index.html'
-printf '%s\n' "$client_contents" | grep -qx './usr/share/minitun/gui/logo.svg'
 printf '%s\n' "$client_contents" | grep -qx './usr/lib/systemd/system/minitund.service'
 printf '%s\n' "$client_contents" | grep -qx './usr/lib/sysusers.d/minitun.conf'
 if printf '%s\n' "$client_contents" | grep -q 'minitun-server'; then

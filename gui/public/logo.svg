@@ -1,7 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="MiniTun">
-  <rect width="256" height="256" rx="56" fill="#0f172a"/>
-  <path d="M61 137c0-36 24-60 60-60h42c18 0 32 14 32 32s-14 32-32 32h-42c-9 0-14 5-14 14s5 14 14 14h74" fill="none" stroke="#2dd4bf" stroke-width="22" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M61 85h58c20 0 35 15 35 35v51" fill="none" stroke="#60a5fa" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
-  <circle cx="61" cy="137" r="14" fill="#f8fafc"/>
-  <circle cx="195" cy="169" r="14" fill="#f8fafc"/>
-</svg>

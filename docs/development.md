@@ -12,7 +12,7 @@
 - Ninja；
 - 支持 C++20 的 GCC 或 Clang；
 - OpenSSL 3、SQLite3 和 Python 3；
-- Node.js 22.12+ 与 npm（修改或验证 Web GUI/文档站时）；
+- Node.js 22.12+ 与 npm（仅修改或验证文档站时）；
 - 可访问 FetchContent 上游依赖的网络环境。
 
 Debian/Ubuntu 的最小开发依赖：
@@ -39,8 +39,6 @@ CLI11、Asio、nlohmann/json、spdlog 与 GoogleTest 开发包。
 ## 构建与测试
 
 ```bash
-npm ci
-npm run gui:build
 cmake --preset dev
 cmake --build --preset dev
 ctest --preset dev
@@ -52,14 +50,10 @@ ctest --preset dev
 build/dev/minitun
 build/dev/minitund
 build/dev/minitun-server
-build/dev/minitun-gui
 build/dev/minitun-p2p
 build/dev/libminitun-client.so.1  # Linux；macOS 为对应 dylib
 build/dev/libminitun-remote-protocol.so.1
 ```
-
-`gui/dist` 是软件包使用的可复现静态资源并随源码提交。修改 `gui/src` 后必须执行
-`npm run gui:build`，质量工作流会重建并拒绝未同步的 dist。
 
 常用 CMake 选项：
 
@@ -273,9 +267,9 @@ packaging/tests/verify-rpm.sh build/package-rpm
 ```
 
 生成 `minitun-client`、`minitun-server`、`libminitun-client1` 和
-`libminitun-client-dev`/`libminitun-client-devel`。Client 包含 GUI、P2P connector 与
-静态资源；两个 SDK 的 runtime 和 development 文件共用对应 library/devel 包。在 Docker 可用的 Linux
-开发主机上，可以继续执行干净容器冒烟测试：
+`libminitun-client-dev`/`libminitun-client-devel`。Client 包含 CLI、daemon 与 P2P
+connector；两个 SDK 的 runtime 和 development 文件共用对应 library/devel 包。在 Docker
+可用的 Linux 开发主机上，可以继续执行干净容器冒烟测试：
 
 ```bash
 packaging/tests/smoke-deb.sh "$PWD/build/package-deb"
@@ -314,7 +308,7 @@ rpmbuild 的 ELF 依赖扫描生成 soname 级 `Requires`。每个新架构都�
 | --- | --- |
 | `ci.yml` | Linux GCC/Clang、macOS 编译、完整 CTest、SDK 示例 |
 | `sanitizers.yml` | ASan、UBSan、TSan、PR fuzz smoke 与 nightly corpus fuzz |
-| `quality.yml` | GUI/文档可复现构建、clang-tidy、line ≥85% / branch ≥75% coverage、ABI/downstream checks |
+| `quality.yml` | 文档可复现构建、clang-tidy、line ≥85% / branch ≥75% coverage、ABI/downstream checks |
 | `codeql.yml` | GitHub CodeQL C/C++ 扫描 |
 | `reliability.yml` | tunnel registration 与高延迟 reconciliation 重复 100 次 |
 | `performance.yml` | 可选的独立 4 vCPU/8 GiB 三轮基准、持久 systemd soak 与 OIDC 证据 |

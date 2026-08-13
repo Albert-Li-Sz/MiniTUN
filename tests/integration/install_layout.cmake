@@ -76,17 +76,13 @@ staged_path("${MINITUN_SYSUSERS_DIR}" staged_sysusers_dir)
 install_component(Client client_prefix)
 require_paths("${client_prefix}"
     "${staged_bindir}/minitun"
-    "${staged_bindir}/minitun-gui"
     "${staged_bindir}/minitun-p2p"
     "${staged_libexecdir}/minitun/minitund"
     "${staged_systemd_unit_dir}/minitund.service"
     "${staged_sysusers_dir}/minitun.conf"
     "${staged_mandir}/man1/minitun.1"
-    "${staged_mandir}/man1/minitun-gui.1"
     "${staged_mandir}/man1/minitun-p2p.1"
     "${staged_mandir}/man8/minitund.8"
-    "usr/share/minitun/gui/index.html"
-    "usr/share/minitun/gui/logo.svg"
 )
 if(EXISTS "${client_prefix}/${staged_bindir}/minitun-server")
     message(FATAL_ERROR "Client component unexpectedly installed minitun-server")

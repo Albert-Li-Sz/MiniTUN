@@ -3,15 +3,15 @@ layout: home
 
 hero:
   name: MiniTun
-  text: 团队自托管的多传输反向隧道
-  tagline: TCP、UDP、SOCKS5、P2P、localhost GUI 与两个稳定 SDK，共用安全的 Remote Protocol v2 控制面。
+  text: 资源占用最小的内网穿透工具
+  tagline: TCP、UDP、SOCKS5、P2P 与两个稳定 SDK，共用安全的 Remote Protocol v2 控制面；无 Web GUI，无额外运行时依赖。
   image:
     src: /logo.svg
     alt: MiniTun
   actions:
     - theme: brand
-      text: 快速部署
-      link: /configuration
+      text: 安装指南
+      link: /installation
     - theme: alt
       text: 查看 CLI
       link: /cli
@@ -25,8 +25,10 @@ features:
     details: 一个客户端守护进程可同时连接多个公网服务器，会话、隧道与 Worker Pool 相互隔离。
   - title: 四种数据面
     details: TCP、UDP datagram、SOCKS5 CONNECT，以及具备自动 TLS relay 回退的 P2P direct path。
-  - title: GUI 与 SDK
-    details: localhost-only Web 控制台、本地控制 C/C++ SDK，以及独立 Remote Protocol v2 C++ codec/decoder SDK。
+  - title: 最小资源占用
+    details: 无 Web GUI、无脚本运行时；C++20 单一 daemon 进程 + 嵌入式 SQLite，systemd 单元自带沙箱加固，适合路由器、NAS 与边缘设备。
+  - title: SDK
+    details: 本地控制 C11 ABI/C++20 RAII SDK，以及独立 Remote Protocol v2 C++ codec/decoder SDK。
   - title: 生产运维
     details: client/server 都可启用 health、readiness 与 Prometheus 指标，并提供审计、热加载、诊断和成对备份。
   - title: 多架构交付
@@ -38,9 +40,9 @@ features:
 ## 工作原理
 
 MiniTun 由公网服务端 <code>minitun-server</code>、客户端守护进程 <code>minitund</code>、
-命令行工具 <code>minitun</code>、P2P connector <code>minitun-p2p</code>、Web 控制台
-<code>minitun-gui</code> 和两个 SDK 组成。CLI、GUI 和本地 SDK 只通过受权限保护的 Unix
-IPC 管理 daemon；远程控制和 Worker 使用 TLS 下的 Protocol v2。
+命令行工具 <code>minitun</code>、P2P connector <code>minitun-p2p</code> 和两个 SDK
+组成。CLI 和本地 SDK 只通过受权限保护的 Unix IPC 管理 daemon；远程控制和 Worker 使用
+TLS 下的 Protocol v2。
 
 <div class="minitun-flow">
   <div class="flow-node">公网 TCP / UDP / SOCKS5 / P2P 客户端</div>
@@ -81,7 +83,6 @@ minitun server list
 minitun server inspect primary --json
 minitun tun list primary
 minitun tun inspect web --json
-minitun-gui
 minitun-p2p tunnel.example.com:6003 --listen 127.0.0.1:6501
 ~~~
 
@@ -91,6 +92,7 @@ minitun-p2p tunnel.example.com:6003 --listen 127.0.0.1:6501
 
 ## 文档入口
 
+- [安装指南](/installation)：校验签名、DEB/RPM/OCI 安装、源码构建、首次部署与卸载。
 - [命令行界面](/cli)：生命周期命令、PSK 输入、JSON 输出与退出码。
 - [配置与策略](/configuration)：每客户端策略和声明式资源。
 - [系统架构](/architecture)：schema v5、reconciler、session、Worker 与多种数据面。

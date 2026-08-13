@@ -54,8 +54,6 @@ jobs:
         run: |
           npm ci
           npm audit --audit-level=high
-          npm run gui:build
-          git diff --exit-code -- gui/dist
           npm run docs:build
 
   clang-tidy:
