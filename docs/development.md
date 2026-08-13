@@ -299,7 +299,7 @@ rpmbuild 的 ELF 依赖扫描生成 soname 级 `Requires`。每个新架构都�
 为基座，直接拷贝交叉构建出的二进制（镜像内不编译），以非 root 用户
 （UID 65532）运行；客户端镜像通过 `ca-certificates` 内置系统 CA。`package.yml`
 的 OCI job 从 DEB 产物提取二进制、按架构构建镜像并推送到
-`ghcr.io/lmtinsuzhou/minitun-server` 与 `ghcr.io/lmtinsuzhou/minitun-client`，
+`ghcr.io/albert-li-sz/minitun-server` 与 `ghcr.io/albert-li-sz/minitun-client`，
 随后用 `docker manifest` 汇总为覆盖 amd64/arm64/arm/v7/riscv64 的多架构清单。
 
 ## CI 与发布

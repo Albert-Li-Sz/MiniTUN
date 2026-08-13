@@ -61,7 +61,7 @@ framing；SOCKS5 只接受无认证 CONNECT；P2P direct path 以一次性 token
 ## 快速部署
 
 > 完整的安装说明（校验签名、各发行版包管理、OCI、源码构建、卸载与排障）见
-> [官网安装指南](https://lmtinsuzhou.github.io/MiniTUN/installation)。以下是最短路径。
+> [官网安装指南](https://albert-li-sz.github.io/MiniTUN/installation)。以下是最短路径。
 
 ### 1. 安装
 

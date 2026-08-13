@@ -699,16 +699,16 @@ jobs:
 
             docker build \
               --platform "${platform}" \
-              -t "ghcr.io/lmtinsuzhou/minitun-server:${version}-linux-${suffix}" \
+              -t "ghcr.io/albert-li-sz/minitun-server:${version}-linux-${suffix}" \
               -f packaging/oci/Dockerfile.server \
               "${server_ctx}"
             docker build \
               --platform "${platform}" \
-              -t "ghcr.io/lmtinsuzhou/minitun-client:${version}-linux-${suffix}" \
+              -t "ghcr.io/albert-li-sz/minitun-client:${version}-linux-${suffix}" \
               -f packaging/oci/Dockerfile.client \
               "${client_ctx}"
-            docker push "ghcr.io/lmtinsuzhou/minitun-server:${version}-linux-${suffix}"
-            docker push "ghcr.io/lmtinsuzhou/minitun-client:${version}-linux-${suffix}"
+            docker push "ghcr.io/albert-li-sz/minitun-server:${version}-linux-${suffix}"
+            docker push "ghcr.io/albert-li-sz/minitun-client:${version}-linux-${suffix}"
           done
 
       - name: Create and push multi-architecture manifests
@@ -719,17 +719,17 @@ jobs:
           for image in minitun-server minitun-client; do
             manifest_args=()
             for suffix in "${suffixes[@]}"; do
-              manifest_args+=(--amend "ghcr.io/lmtinsuzhou/${image}:${version}-linux-${suffix}")
+              manifest_args+=(--amend "ghcr.io/albert-li-sz/${image}:${version}-linux-${suffix}")
             done
             docker manifest create \
-              "ghcr.io/lmtinsuzhou/${image}:${version}" \
+              "ghcr.io/albert-li-sz/${image}:${version}" \
               "${manifest_args[@]}"
-            docker manifest push "ghcr.io/lmtinsuzhou/${image}:${version}"
+            docker manifest push "ghcr.io/albert-li-sz/${image}:${version}"
             if [[ "${PACKAGE_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
               docker manifest create \
-                "ghcr.io/lmtinsuzhou/${image}:latest" \
+                "ghcr.io/albert-li-sz/${image}:latest" \
                 "${manifest_args[@]}"
-              docker manifest push "ghcr.io/lmtinsuzhou/${image}:latest"
+              docker manifest push "ghcr.io/albert-li-sz/${image}:latest"
             fi
           done
 
@@ -741,7 +741,7 @@ jobs:
           set -euo pipefail
           version=${ARTIFACT_VERSION}
           for image in minitun-server minitun-client; do
-            reference="ghcr.io/lmtinsuzhou/${image}:${version}"
+            reference="ghcr.io/albert-li-sz/${image}:${version}"
             digest="sha256:$(docker buildx imagetools inspect --raw "${reference}" | sha256sum | awk '{print $1}')"
             immutable_reference="${reference}@${digest}"
             cosign sign --yes "${immutable_reference}"
@@ -759,7 +759,7 @@ jobs:
       - name: Generate server image SPDX SBOM
         uses: anchore/sbom-action@v0
         with:
-          image: ghcr.io/lmtinsuzhou/minitun-server:${{ env.ARTIFACT_VERSION }}
+          image: ghcr.io/albert-li-sz/minitun-server:${{ env.ARTIFACT_VERSION }}
           format: spdx-json
           output-file: oci-sbom/minitun-server-${{ env.ARTIFACT_VERSION }}.spdx.json
           upload-artifact: false
@@ -768,7 +768,7 @@ jobs:
       - name: Generate server image CycloneDX SBOM
         uses: anchore/sbom-action@v0
         with:
-          image: ghcr.io/lmtinsuzhou/minitun-server:${{ env.ARTIFACT_VERSION }}
+          image: ghcr.io/albert-li-sz/minitun-server:${{ env.ARTIFACT_VERSION }}
           format: cyclonedx-json
           output-file: oci-sbom/minitun-server-${{ env.ARTIFACT_VERSION }}.cyclonedx.json
           upload-artifact: false
@@ -777,7 +777,7 @@ jobs:
       - name: Generate client image SPDX SBOM
         uses: anchore/sbom-action@v0
         with:
-          image: ghcr.io/lmtinsuzhou/minitun-client:${{ env.ARTIFACT_VERSION }}
+          image: ghcr.io/albert-li-sz/minitun-client:${{ env.ARTIFACT_VERSION }}
           format: spdx-json
           output-file: oci-sbom/minitun-client-${{ env.ARTIFACT_VERSION }}.spdx.json
           upload-artifact: false
@@ -786,7 +786,7 @@ jobs:
       - name: Generate client image CycloneDX SBOM
         uses: anchore/sbom-action@v0
         with:
-          image: ghcr.io/lmtinsuzhou/minitun-client:${{ env.ARTIFACT_VERSION }}
+          image: ghcr.io/albert-li-sz/minitun-client:${{ env.ARTIFACT_VERSION }}
           format: cyclonedx-json
           output-file: oci-sbom/minitun-client-${{ env.ARTIFACT_VERSION }}.cyclonedx.json
           upload-artifact: false
@@ -799,8 +799,8 @@ jobs:
           CLIENT_DIGEST: ${{ steps.image-digests.outputs.client_digest }}
         run: |
           set -euo pipefail
-          server_ref="ghcr.io/lmtinsuzhou/minitun-server@${SERVER_DIGEST}"
-          client_ref="ghcr.io/lmtinsuzhou/minitun-client@${CLIENT_DIGEST}"
+          server_ref="ghcr.io/albert-li-sz/minitun-server@${SERVER_DIGEST}"
+          client_ref="ghcr.io/albert-li-sz/minitun-client@${CLIENT_DIGEST}"
           cosign attest --yes --type spdxjson \
             --predicate "oci-sbom/minitun-server-${ARTIFACT_VERSION}.spdx.json" \
             "${server_ref}"
@@ -834,14 +834,14 @@ jobs:
       - name: Attest server image provenance
         uses: actions/attest@v4
         with:
-          subject-name: ghcr.io/lmtinsuzhou/minitun-server
+          subject-name: ghcr.io/albert-li-sz/minitun-server
           subject-digest: ${{ steps.image-digests.outputs.server_digest }}
           push-to-registry: true
 
       - name: Attest client image provenance
         uses: actions/attest@v4
         with:
-          subject-name: ghcr.io/lmtinsuzhou/minitun-client
+          subject-name: ghcr.io/albert-li-sz/minitun-client
           subject-digest: ${{ steps.image-digests.outputs.client_digest }}
           push-to-registry: true
 
@@ -877,7 +877,7 @@ jobs:
       - name: Report high and critical OCI findings
         uses: anchore/scan-action@v7
         with:
-          image: ghcr.io/lmtinsuzhou/${{ matrix.image }}:${{ needs.resolve-version.outputs.artifact_version }}-linux-${{ matrix.suffix }}
+          image: ghcr.io/albert-li-sz/${{ matrix.image }}:${{ needs.resolve-version.outputs.artifact_version }}-linux-${{ matrix.suffix }}
           fail-build: false
           severity-cutoff: high
           output-format: table

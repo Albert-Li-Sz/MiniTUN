@@ -87,8 +87,8 @@ sudo dnf install ./libminitun-client1-<版本>.x86_64.rpm \
 
 镜像以 `debian:stable-slim` 为基座、非 root（UID 65532）运行，不包含构建工具：
 
-- `ghcr.io/lmtinsuzhou/minitun-server`：服务端；
-- `ghcr.io/lmtinsuzhou/minitun-client`：客户端守护进程（内含 CLI 与系统 CA）。
+- `ghcr.io/albert-li-sz/minitun-server`：服务端；
+- `ghcr.io/albert-li-sz/minitun-client`：客户端守护进程（内含 CLI 与系统 CA）。
 
 Tag 与发布版本一致（如 `:1.0.0`）。服务端需要挂载证书、私钥、客户端
 策略与 PSK 目录：
@@ -99,7 +99,7 @@ sudo mkdir -p /etc/minitun-server
 docker run -d --name minitun-server \
   --network host \
   -v /etc/minitun-server:/etc/minitun-server:ro \
-  ghcr.io/lmtinsuzhou/minitun-server:1.0.0
+  ghcr.io/albert-li-sz/minitun-server:1.0.0
 ```
 
 客户端守护进程需要持久化 `/var/lib/minitun`（状态与凭据）与 `/run/minitun`（IPC
@@ -110,7 +110,7 @@ docker run -d --name minitund \
   --network host \
   -v /var/lib/minitun:/var/lib/minitun \
   -v /run/minitun:/run/minitun \
-  ghcr.io/lmtinsuzhou/minitun-client:1.0.0
+  ghcr.io/albert-li-sz/minitun-client:1.0.0
 ```
 
 容器内通过 `docker exec minitund minitun daemon status` 使用同一 CLI。镜像使用
