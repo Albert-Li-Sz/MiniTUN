@@ -11,6 +11,7 @@
 | DEB | Debian/Ubuntu | `amd64`、`arm64`、`armhf`、`riscv64` |
 | RPM | Fedora/RHEL 系 | `x86_64`、`aarch64`、`armv7hl`、`riscv64` |
 | OCI | Docker / containerd | `linux/amd64`、`linux/arm64`、`linux/arm/v7`、`linux/riscv64` |
+| static tar | 无运行时依赖 | `x86_64`、`aarch64` 的 musl 完全静态二进制 |
 
 每个发行版包含四个包：
 

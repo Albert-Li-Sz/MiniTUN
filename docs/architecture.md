@@ -195,7 +195,8 @@ SIGHUP 在 server 侧完整重读 TLS 和 client policy；在 daemon 侧触发�
 
 ## 非目标
 
-- 不提供 ICE/STUN/TURN/NAT 打洞或 P2P direct path 的附加传输加密；
+- 不提供 ICE/STUN/TURN/NAT 打洞；可行的演进路径与验收标准见
+  [NAT 打洞设计提案](design/nat-traversal.md)；
 - 不承诺非 Linux 运行时；macOS 仅做编译测试；
 - SDK 不嵌入 daemon/server 运行时；Remote SDK 只提供协议 codec/decoder/helper；
 - 默认不支持 multiplexed relay；可选性能验证可为后续是否启用提供工程依据。

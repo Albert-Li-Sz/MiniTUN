@@ -73,6 +73,7 @@ PSK），应用数据全程加密。当前 P2P 不包含 ICE/STUN/TURN/NAT 打�
 | DEB | `amd64`、`arm64`、`armhf`、`riscv64` |
 | RPM | `x86_64`、`aarch64`、`armv7hl`、`riscv64` |
 | OCI | `linux/amd64`、`linux/arm64`、`linux/arm/v7`、`linux/riscv64` |
+| static tar | `x86_64`、`aarch64` 的 musl 完全静态二进制（无 glibc/OpenSSL 运行时依赖） |
 
 Debian/Ubuntu 示例：
 

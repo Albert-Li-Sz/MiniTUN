@@ -315,6 +315,7 @@ rpmbuild 的 ELF 依赖扫描生成 soname 级 `Requires`。每个新架构都�
 | `package.yml` | 四架构 DEB/RPM、QEMU 安装测试、多架构 OCI 与非阻断漏洞报告 |
 | `release.yml` | RC 连续性/冻结提交/P0-P1 门禁、SBOM、签名、attestation 与 GitHub Release |
 | `pages.yml` | VitePress 文档构建与发布 |
+| `static.yml` | 发布 tag 的 musl 完全静态二进制（x86_64/aarch64）并附带发布 |
 
 `main` 分支包使用 `MAJOR.MINOR.PATCH_pre<运行号>~<提交号>`；它们只用于持续验收。
 发布 tag 必须是 `vMAJOR.MINOR.PATCH` 或 `vMAJOR.MINOR.PATCH-rc.NUMBER`，基础版本必须与
