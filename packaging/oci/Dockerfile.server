@@ -1,0 +1,18 @@
+# Minimal MiniTun public-server image. The context must contain the
+# minitun-server binary for the target architecture (produced by the
+# cross-compiled DEB/RPM matrix); no compilation happens in this image.
+FROM debian:stable-slim
+
+COPY minitun-server /usr/bin/minitun-server
+
+# Operator mounts the TLS certificate chain, private key, client policy and PSKs here.
+RUN mkdir -p /etc/minitun-server \
+	&& chown -R 65532:65532 /etc/minitun-server
+
+USER 65532:65532
+
+ENTRYPOINT ["minitun-server", "--foreground"]
+CMD ["--listen", "0.0.0.0:2333", \
+	"--tls-cert", "/etc/minitun-server/server.crt", \
+	"--tls-key", "/etc/minitun-server/server.key", \
+	"--clients-config", "/etc/minitun-server/clients.json"]

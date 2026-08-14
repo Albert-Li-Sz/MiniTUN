@@ -1,0 +1,237 @@
+name: Sanitizers
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  schedule:
+    - cron: "17 1 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sanitizers-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  asan-ubsan:
+    name: Clang ASan + UBSan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+      UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes \
+            clang \
+            cmake \
+            git \
+            libsqlite3-dev \
+            libssl-dev \
+            ninja-build \
+            openssl \
+            pkg-config \
+            python3
+
+      - name: Restore fetched dependencies
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/minitun-fetchcontent/asan
+          key: fetchcontent-asan-${{ hashFiles('cmake/Dependencies.cmake') }}
+
+      - name: Configure ASan and UBSan
+        env:
+          CXX: clang++
+        run: |
+          mkdir -p sanitizer-logs
+          cmake --preset asan \
+            -DFETCHCONTENT_BASE_DIR="${HOME}/.cache/minitun-fetchcontent/asan" \
+            -DMINITUN_ENABLE_LTO=OFF \
+            -DMINITUN_WARNINGS_AS_ERRORS=ON \
+            2>&1 | tee sanitizer-logs/asan-configure.log
+
+      - name: Build ASan and UBSan
+        run: |
+          cmake --build --preset asan --parallel 2 \
+            2>&1 | tee sanitizer-logs/asan-build.log
+
+      - name: Test ASan and UBSan
+        run: |
+          ctest --preset asan --output-on-failure --no-tests=error \
+            2>&1 | tee sanitizer-logs/asan-ctest.log
+
+      - name: Upload ASan and UBSan logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: sanitizer-asan-ubsan-logs
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            sanitizer-logs/
+            build/asan/Testing/Temporary/
+
+  tsan:
+    name: Clang TSan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      TSAN_OPTIONS: halt_on_error=1
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes \
+            clang \
+            cmake \
+            git \
+            libsqlite3-dev \
+            libssl-dev \
+            ninja-build \
+            openssl \
+            pkg-config \
+            python3
+
+      - name: Restore fetched dependencies
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/minitun-fetchcontent/tsan
+          key: fetchcontent-tsan-${{ hashFiles('cmake/Dependencies.cmake') }}
+
+      - name: Configure TSan
+        env:
+          CXX: clang++
+        run: |
+          mkdir -p sanitizer-logs
+          cmake --preset tsan \
+            -DFETCHCONTENT_BASE_DIR="${HOME}/.cache/minitun-fetchcontent/tsan" \
+            -DMINITUN_ENABLE_LTO=OFF \
+            -DMINITUN_WARNINGS_AS_ERRORS=ON \
+            2>&1 | tee sanitizer-logs/tsan-configure.log
+
+      - name: Build TSan
+        run: |
+          cmake --build --preset tsan --parallel 2 \
+            2>&1 | tee sanitizer-logs/tsan-build.log
+
+      - name: Test TSan
+        run: |
+          ctest --preset tsan --output-on-failure --no-tests=error \
+            2>&1 | tee sanitizer-logs/tsan-ctest.log
+
+      - name: Upload TSan logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: sanitizer-tsan-logs
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            sanitizer-logs/
+            build/tsan/Testing/Temporary/
+
+  fuzz-smoke:
+    name: Clang libFuzzer (${{ github.event_name == 'schedule' && 'nightly 15m/target' || 'smoke' }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    env:
+      ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+      UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes \
+            clang \
+            cmake \
+            git \
+            libsqlite3-dev \
+            libssl-dev \
+            ninja-build \
+            pkg-config
+
+      - name: Restore fetched dependencies
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/minitun-fetchcontent/fuzz
+          key: fetchcontent-fuzz-${{ hashFiles('cmake/Dependencies.cmake') }}
+
+      - name: Restore persistent fuzz corpus
+        uses: actions/cache@v5
+        with:
+          path: fuzz/corpus
+          key: fuzz-corpus-${{ github.run_id }}
+          restore-keys: |
+            fuzz-corpus-
+
+      - name: Configure fuzzers
+        env:
+          CXX: clang++
+        run: |
+          mkdir -p sanitizer-logs
+          cmake --preset fuzz \
+            -DFETCHCONTENT_BASE_DIR="${HOME}/.cache/minitun-fetchcontent/fuzz" \
+            -DMINITUN_ENABLE_LTO=OFF \
+            -DMINITUN_WARNINGS_AS_ERRORS=ON \
+            2>&1 | tee sanitizer-logs/fuzz-configure.log
+
+      - name: Build fuzzers
+        run: |
+          cmake --build --preset fuzz --parallel 2 \
+            2>&1 | tee sanitizer-logs/fuzz-build.log
+
+      - name: Run bounded fuzz smoke tests
+        env:
+          FUZZ_SECONDS: ${{ github.event_name == 'schedule' && '900' || '10' }}
+        run: |
+          install -d fuzz-artifacts
+          for target in remote_frame ipc_frame ipc_json endpoint port_range; do
+            install -d "fuzz-artifacts/${target}"
+            "build/fuzz/minitun_${target}_fuzz" \
+              "fuzz/corpus/${target}" \
+              -max_total_time="${FUZZ_SECONDS}" \
+              -artifact_prefix="fuzz-artifacts/${target}/" \
+              2>&1 | tee --append sanitizer-logs/fuzz-smoke.log
+          done
+
+      - name: Upload fuzz logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: sanitizer-fuzz-logs
+          if-no-files-found: warn
+          retention-days: 14
+          path: sanitizer-logs/
+
+      - name: Upload evolved corpus and crash artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-corpus-and-artifacts
+          if-no-files-found: warn
+          retention-days: 30
+          path: |
+            fuzz/corpus/
+            fuzz-artifacts/

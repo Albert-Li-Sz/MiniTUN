@@ -1,0 +1,140 @@
+.TH MINITUN-SERVER 8 "2026-08-12" "MiniTun 1.0.0" "系统管理"
+.SH NAME
+minitun-server \-
+MiniTun Protocol v2 公网多传输隧道服务端
+.SH 用法
+.B minitun-server
+.B --tls-cert
+.I file
+.B --tls-key
+.I file
+.B --clients-config
+.I file
+.RI [ options ]
+.SH 描述
+.B minitun-server
+接受 TLS 1.2+ Remote Protocol v2 控制和 Worker 连接，并按每客户端策略创建 TCP、UDP、
+SOCKS5 或 P2P listener。每个客户端有独立 PSK、端口 ACL 和资源配额，可选绑定客户端
+证书。SOCKS5 listener 强制为 loopback；P2P candidate 不可达时保留 TLS relay fallback。
+.SH 必需选项
+.TP
+.BI --tls-cert " file"
+PEM 服务端证书链。
+.TP
+.BI --tls-key " file"
+匹配的 PEM 私钥。
+.TP
+.BI --clients-config " file"
+严格 JSON 客户端策略。文件必须由服务账户所有，且不得由组或其他用户写入。
+.SH 选项
+.TP
+.BI --listen " endpoint"
+TLS 控制 listener；默认 0.0.0.0:2333。
+.TP
+.BI --client-ca " file"
+验证策略绑定客户端证书的 PEM CA。任一策略包含 certificate_san 或
+certificate_sha256 时必需。
+.TP
+.BI --admin-listen " endpoint"
+可选数值 host:port 管理 listener，提供 /healthz、/readyz 和 /metrics。默认关闭。
+.TP
+.BI --admin-token-file " file"
+非 loopback 管理 listener 必需的 Bearer token 文件。
+.TP
+.BI --max-clients " count"
+已认证客户端全局上限；默认 1000。
+.TP
+.BI --max-tunnels-per-client " count"
+服务端允许的单客户端 tunnel 上限；默认 128，并与策略中的更小值共同生效。
+.TP
+.BI --max-total-tunnels " count"
+全局 tunnel 上限；默认 10000。
+.TP
+.BI --max-connections-per-client " count"
+单客户端公网 relay 上限；默认 10000，并与策略中的更小值共同生效。
+.TP
+.BI --max-total-connections " count"
+全局公网 relay 上限；默认 50000。
+.TP
+.BI --min-idle-workers " count"
+每个 session 请求的最小空闲 Worker 数；默认 2。
+.TP
+.BI --max-idle-workers " count"
+每个 session 的服务端空闲 Worker 上限；默认 32。
+.TP
+.BI --max-total-idle-workers " count"
+全局空闲 Worker 上限；默认 128。
+.TP
+.BI --handshake-timeout " seconds"
+TLS 与认证期限；
+默认 10 秒。
+.TP
+.BI --heartbeat-interval " seconds"
+心跳间隔；默认 5 秒。
+.TP
+.BI --heartbeat-timeout " seconds"
+心跳响应期限；默认 15 秒。
+.TP
+.BI --auth-clock-skew " seconds"
+认证时间戳最大偏差；默认 30 秒。
+.TP
+.BI --worker-wait-timeout " seconds"
+公网连接等待 Worker 的期限；默认 2 秒。
+.TP
+.BI --worker-idle-timeout " seconds"
+空闲 Worker 生命周期；默认 60 秒。
+.TP
+.BI --relay-idle-timeout " seconds"
+relay 不活动超时；
+默认 300 秒。
+.TP
+.BI --shutdown-timeout " seconds"
+进程关闭或有效客户端策略变化后的 relay 排空期限；默认 10 秒。
+.TP
+.BI --io-threads " count"
+Asio I/O 线程数，范围 1 到 16。
+.TP
+.BI --log-level " level"
+trace、debug、info、warn、error、critical
+或 off。
+.TP
+.B --foreground
+保持前台运行；软件包 unit 使用该模式。
+.TP
+.B --version
+打印版本、提交、构建和协议号。
+.SH 客户端策略
+clients.json 必须包含 format_version 1 和 clients 数组。
+每项包含 client_id、enabled、psk_file、allowed_ports、
+max_tunnels、max_connections 与 max_idle_workers，
+可选 certificate_san 或 certificate_sha256。
+PSK 文件必须为服务账户所有的单链接普通文件，
+且组和其他用户均不可访问。
+.SH 管理端点
+loopback listener 可不认证。
+非 loopback 必须配置 --admin-token-file，
+并只应置于可信网络或启用 TLS/访问控制的反向代理之后。
+HTTP 实现限制方法、大小、并发和超时。
+.SH 信号
+.TP
+.B SIGHUP
+完整校验 TLS 和客户端策略后原子替换。无效新配置保留旧快照。变化客户端立即停止新
+流量，活动 relay 在 --shutdown-timeout 内排空；未变化客户端不抖动。
+.TP
+.B SIGINT, SIGTERM
+停止 listener 和新分配，按 --shutdown-timeout 排空活动 relay。
+.SH 文件
+.TP
+.I /etc/minitun-server/server.crt
+软件包 unit 使用的 TLS 证书链。
+.TP
+.I /etc/minitun-server/server.key
+软件包 unit 使用的 TLS 私钥。
+.TP
+.I /etc/minitun-server/clients.json
+软件包 unit 使用的每客户端策略。
+.SH 另请参阅
+.BR minitun (1),
+.BR minitund (8),
+.BR minitun-p2p (1),
+.BR systemd.service (5)

@@ -1,0 +1,32 @@
+[Unit]
+Description=MiniTun Client Daemon
+Documentation=man:minitund(8)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=minitun
+Group=minitun
+ExecStart=/usr/libexec/minitun/minitund --foreground --database /var/lib/minitun/state.db --credentials /var/lib/minitun/credentials.db --socket /run/minitun/minitun.sock
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=2s
+RuntimeDirectory=minitun
+RuntimeDirectoryMode=0750
+StateDirectory=minitun
+StateDirectoryMode=0750
+UMask=0007
+LimitNOFILE=65536
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectControlGroups=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

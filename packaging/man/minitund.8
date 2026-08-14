@@ -1,0 +1,96 @@
+.TH MINITUND 8 "2026-08-12" "MiniTun 1.0.0" "系统管理"
+.SH NAME
+minitund \- MiniTun 客户端守护进程
+.SH 用法
+.B /usr/libexec/minitun/minitund
+.RI [ options ]
+.SH 描述
+.B minitund
+持久化 schema v5 资源与凭据，
+维护相互隔离的 Protocol v2 server session、TunnelReconciler 和 Worker Pool，
+并把已认证 tunnel 连接到本地 TCP/UDP 目标、SOCKS5 CONNECT 目的或 P2P direct/relay
+数据面。
+.SH 选项
+.TP
+.BI --socket " path"
+Unix 控制 socket；
+默认 /run/minitun/minitun.sock。
+.TP
+.BI --database " path"
+状态数据库；默认 /var/lib/minitun/state.db。
+.TP
+.BI --credentials " path"
+凭据数据库；默认 /var/lib/minitun/credentials.db。
+.TP
+.BI --admin-listen " endpoint"
+可选数值 host:port 管理 listener；默认关闭。
+.TP
+.BI --admin-token-file " file"
+非 loopback 管理 listener 必需的 Bearer token 文件。
+.TP
+.BI --tls-ca " file"
+默认用于验证远程 server 的 PEM CA；单 server 保存的 CA 优先。省略时使用系统信任库。
+.TP
+.B --insecure-skip-verify
+禁用远程证书验证，仅供开发；生产不得使用。
+.TP
+.BI --relay-idle-timeout " seconds"
+关闭不活动 relay；默认 300 秒。
+.TP
+.BI --shutdown-timeout " seconds"
+优雅排空 relay 的期限；默认 10 秒。
+.TP
+.BI --max-idle-workers-per-server " count"
+逐 server 空闲 Worker 上限；默认 32。
+.TP
+.BI --max-total-idle-workers " count"
+daemon 全局空闲 Worker 上限；
+默认 128。
+.TP
+.BI --max-total-connections " count"
+daemon 全局 Worker/relay 连接上限；
+默认 10000。
+.TP
+.BI --io-threads " count"
+Asio I/O 线程数，范围 1 到 16。
+.TP
+.BI --log-level " level"
+trace、debug、info、warn、error、critical
+或 off。
+.TP
+.B --foreground
+保持前台运行；软件包 unit 使用该模式。
+.TP
+.B --version
+打印版本、提交、构建和协议号。
+.SH 启动恢复
+首次打开旧数据会按顺序以事务迁移 schema v3 到 v4、再到 schema v5；旧 tunnel 默认为
+tcp mode 和 0.0.0.0 公开 bind host。
+启动时将残留 tunnel 状态收敛为 pending，
+验证所有凭据引用并清理崩溃留下的不可达轮换槽。
+旧程序不能打开迁移后数据库；回滚必须恢复升级前备份。
+.SH 管理端点
+提供 GET/HEAD /healthz、GET/HEAD /readyz 和 GET /metrics。readiness 要求状态库、
+凭据库和 IPC 正常，不要求所有远端在线。非 loopback 规则同 minitun-server。
+.SH 信号
+.TP
+.B SIGHUP
+重新创建受影响远程 session；也可执行 minitun reload。启动路径和资源上限不改变。
+.TP
+.B SIGINT, SIGTERM
+停止 IPC 和远程 session，并按 --shutdown-timeout 排空 relay。
+.SH 文件
+.TP
+.I /run/minitun/minitun.sock
+本地控制 socket，默认模式 0660。
+.TP
+.I /var/lib/minitun/state.db
+schema v5 状态数据库，模式 0600。
+.TP
+.I /var/lib/minitun/credentials.db
+私有凭据数据库，模式 0600。
+.SH 另请参阅
+.BR minitun (1),
+.BR minitun-server (8),
+.BR minitun-p2p (1),
+.BR systemd.service (5)

@@ -1,0 +1,62 @@
+name: CodeQL
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+  schedule:
+    - cron: "31 2 * * 2"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+concurrency:
+  group: codeql-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: C/C++ security analysis
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes \
+            cmake g++ ninja-build libssl-dev libsqlite3-dev libasio-dev \
+            libspdlog-dev nlohmann-json3-dev libcli11-dev pkg-config
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: c-cpp
+          build-mode: manual
+          queries: security-extended
+      - name: Build analyzed targets
+        run: |
+          cmake -S . -B build/codeql -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DMINITUN_USE_SYSTEM_DEPS=ON \
+            -DMINITUN_BUILD_TESTS=OFF \
+            -DMINITUN_WARNINGS_AS_ERRORS=ON
+          cmake --build build/codeql --parallel 2
+      - name: Analyze
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: /language:c-cpp
+          post-processed-sarif-path: codeql-results
+      - name: Enforce zero high or critical findings
+        run: python3 ci/check_sarif.py codeql-results --threshold 7.0
+      - name: Upload CodeQL evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: codeql-c-cpp-sarif
+          if-no-files-found: warn
+          retention-days: 30
+          path: codeql-results/

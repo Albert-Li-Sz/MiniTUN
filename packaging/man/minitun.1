@@ -1,0 +1,99 @@
+.TH MINITUN 1 "2026-08-12" "MiniTun 1.0.0" "用户命令"
+.SH NAME
+minitun \-
+管理本地 MiniTun daemon、server 和多传输 tunnel
+.SH 用法
+.B minitun
+.RI [ --socket " path" ]
+.I command
+.RI [ arguments ]
+.SH 描述
+.B minitun
+是无状态本地控制客户端。每次运行只通过受保护 Unix socket 调用
+.BR minitund (8)；
+它不直接打开 SQLite 或连接公网 server。
+.SH SERVER 命令
+.TP
+.BI "server add " endpoint " [--name " name "]"
+创建 server 资源。
+.TP
+.BI "server login " server " [--psk-stdin]"
+保存该 server 的 PSK。默认从 TTY 无回显读取；--token-stdin 是旧 CLI 迁移别名。
+.TP
+.BI "server update " server " [fields]"
+更新名称、endpoint、TLS server name、CA 或 client cert/key。clear 选项删除对应可选值。
+.TP
+.BI "server enable|disable " server
+保留记录并切换期望状态。
+.TP
+.BI "server logout " server
+删除 PSK、CA、client cert/key 并切换为未认证。
+.TP
+.BI "server list [--json] | server inspect " server " [--json]"
+列出或检查 server。
+.TP
+.BI "server remove " server
+删除 server 及其 tunnel 和凭据。
+.SH TUNNEL 命令
+.TP
+.BI "tun add " server " " local-port " " server-port " [--protocol " mode "] [--local-host " host "] [--remote-host " host "] [--name " name "]"
+创建 TCP、UDP、SOCKS5 或 P2P tunnel。protocol 默认 tcp；local host 默认 127.0.0.1，
+remote bind host 默认 0.0.0.0。SOCKS5 忽略 local-port 兼容占位值，并强制 remote host
+为数值 loopback。
+.TP
+.BI "tun update " tunnel " [fields]"
+更新名称、protocol、本地 host/port 或公开 server host/port。稳定 ID 和 server 归属
+不可改变。
+.TP
+.BI "tun enable|disable " tunnel
+保留记录并切换期望状态。
+.TP
+.BI "tun list [" server "] [--json] | tun inspect " tunnel " [--json]"
+列出或检查 tunnel。
+.TP
+.BI "tun remove " tunnel
+删除 tunnel 并停止远端 listener。
+.SH 配置命令
+.TP
+.B config export
+导出 format_version 1 配置；不包含凭据路径或内容。
+.TP
+.BI "config plan " file " [--prune]"
+只读输出稳定排序动作。
+.TP
+.BI "config apply " file " [--prune]"
+原子应用严格 JSON。默认不删除；--prune 只删除 apply 管理的缺失资源。
+.SH 运维命令
+.TP
+.B daemon status | daemon identity [--json]
+检查本地 daemon 或输出稳定 client_id。
+.TP
+.B status [--json]
+显示聚合状态。
+.TP
+.B doctor [--json] [--checkpoint] [--backup-state path] [--backup-credentials path] [--restore-state path] [--restore-credentials path]
+诊断、checkpoint、在线备份或受控恢复本地数据库。
+.TP
+.B health | readiness | metrics | reload
+调用本地健康、就绪、指标或 session reload 方法。
+.TP
+.B version
+打印版本、提交、构建、编译器和 Remote Protocol 版本。
+.SH 选项
+.TP
+.BI --socket " path"
+使用默认 /run/minitun/minitun.sock 之外的 daemon socket。
+.TP
+.B --json
+为支持的命令输出 JSON。
+.SH 退出状态
+0 成功；2 参数或资源错误；3 daemon 不可用；4 认证失败；
+5 远程/TLS/网络失败；10 协议、数据库、资源或内部失败。
+.SH 文件
+.TP
+.I /run/minitun/minitun.sock
+本地 daemon 控制 socket。
+.SH 另请参阅
+.BR minitund (8),
+.BR minitun-server (8),
+.BR minitun-p2p (1)

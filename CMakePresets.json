@@ -1,0 +1,210 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 22,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "MINITUN_BUILD_TESTS": "ON",
+        "MINITUN_BUILD_FUZZERS": "OFF",
+        "MINITUN_ENABLE_LTO": "OFF"
+      }
+    },
+    {
+      "name": "dev",
+      "displayName": "Developer build",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "MINITUN_USE_SYSTEM_DEPS": "OFF"
+      }
+    },
+    {
+      "name": "release",
+      "displayName": "Release build with system dependencies",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "MINITUN_USE_SYSTEM_DEPS": "ON",
+        "MINITUN_ENABLE_LTO": "ON"
+      }
+    },
+    {
+      "name": "asan",
+      "displayName": "AddressSanitizer and UndefinedBehaviorSanitizer",
+      "inherits": "dev",
+      "cacheVariables": {
+        "MINITUN_ENABLE_ASAN": "ON",
+        "MINITUN_ENABLE_UBSAN": "ON"
+      }
+    },
+    {
+      "name": "ubsan",
+      "displayName": "UndefinedBehaviorSanitizer",
+      "inherits": "dev",
+      "cacheVariables": {
+        "MINITUN_ENABLE_UBSAN": "ON"
+      }
+    },
+    {
+      "name": "tsan",
+      "displayName": "ThreadSanitizer",
+      "inherits": "dev",
+      "cacheVariables": {
+        "MINITUN_ENABLE_TSAN": "ON"
+      }
+    },
+    {
+      "name": "coverage",
+      "displayName": "GCC coverage build",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_COMPILER": "gcc",
+        "CMAKE_CXX_COMPILER": "g++",
+        "MINITUN_USE_SYSTEM_DEPS": "ON",
+        "MINITUN_ENABLE_COVERAGE": "ON",
+        "MINITUN_ENABLE_FAULT_INJECTION": "ON",
+        "MINITUN_WARNINGS_AS_ERRORS": "ON"
+      }
+    },
+    {
+      "name": "fuzz",
+      "displayName": "LibFuzzer smoke build with ASan and UBSan",
+      "inherits": "asan",
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "clang++",
+        "MINITUN_BUILD_TESTS": "OFF",
+        "MINITUN_BUILD_FUZZERS": "ON"
+      }
+    },
+    {
+      "name": "package-deb",
+      "displayName": "DEB package build",
+      "inherits": "release",
+      "binaryDir": "${sourceDir}/build/package-deb",
+      "cacheVariables": {
+        "CMAKE_INSTALL_PREFIX": "/usr",
+        "CMAKE_INSTALL_SYSCONFDIR": "/etc",
+        "CMAKE_INSTALL_LIBEXECDIR": "libexec",
+        "CMAKE_INSTALL_DOCDIR": "share/doc/minitun",
+        "MINITUN_SYSTEMD_UNIT_DIR": "lib/systemd/system",
+        "MINITUN_SYSUSERS_DIR": "lib/sysusers.d",
+        "MINITUN_BUILD_PACKAGES": "ON",
+        "MINITUN_ENABLE_LTO": "OFF",
+        "MINITUN_USE_SYSTEM_DEPS": "OFF",
+        "CPACK_GENERATOR": "DEB"
+      }
+    },
+    {
+      "name": "package-rpm",
+      "displayName": "RPM package build",
+      "inherits": "release",
+      "binaryDir": "${sourceDir}/build/package-rpm",
+      "cacheVariables": {
+        "CMAKE_INSTALL_PREFIX": "/usr",
+        "CMAKE_INSTALL_SYSCONFDIR": "/etc",
+        "CMAKE_INSTALL_LIBEXECDIR": "libexec",
+        "CMAKE_INSTALL_DOCDIR": "share/doc/minitun",
+        "MINITUN_SYSTEMD_UNIT_DIR": "lib/systemd/system",
+        "MINITUN_SYSUSERS_DIR": "lib/sysusers.d",
+        "MINITUN_BUILD_PACKAGES": "ON",
+        "MINITUN_ENABLE_LTO": "OFF",
+        "CPACK_GENERATOR": "RPM"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "dev",
+      "configurePreset": "dev"
+    },
+    {
+      "name": "release",
+      "configurePreset": "release"
+    },
+    {
+      "name": "asan",
+      "configurePreset": "asan"
+    },
+    {
+      "name": "ubsan",
+      "configurePreset": "ubsan"
+    },
+    {
+      "name": "tsan",
+      "configurePreset": "tsan"
+    },
+    {
+      "name": "coverage",
+      "configurePreset": "coverage"
+    },
+    {
+      "name": "fuzz",
+      "configurePreset": "fuzz",
+      "targets": [
+        "minitun_fuzzers"
+      ]
+    },
+    {
+      "name": "package-deb",
+      "configurePreset": "package-deb"
+    },
+    {
+      "name": "package-rpm",
+      "configurePreset": "package-rpm"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "dev",
+      "configurePreset": "dev",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "release",
+      "configurePreset": "release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "asan",
+      "configurePreset": "asan",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "ubsan",
+      "configurePreset": "ubsan",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "tsan",
+      "configurePreset": "tsan",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "coverage",
+      "configurePreset": "coverage",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}

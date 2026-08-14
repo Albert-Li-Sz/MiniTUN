@@ -1,0 +1,6 @@
+MINITUN_CLIENT_1.0 {
+    global:
+        minitun_*;
+    local:
+        *;
+};

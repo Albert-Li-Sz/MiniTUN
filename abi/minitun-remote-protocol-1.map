@@ -1,0 +1,7 @@
+MINITUN_REMOTE_PROTOCOL_1.0 {
+    global:
+        _ZN7minitun6remote*;
+        _ZNK7minitun6remote*;
+    local:
+        *;
+};

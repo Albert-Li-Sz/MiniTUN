@@ -1,0 +1,883 @@
+name: Packages
+
+on:
+  workflow_call:
+    inputs:
+      package_version:
+        description: Validated package version without the leading v
+        required: false
+        type: string
+        default: ""
+      publish_oci:
+        description: Build and publish OCI images to GHCR
+        required: false
+        type: boolean
+        default: false
+  workflow_dispatch:
+    inputs:
+      package_version:
+        description: Optional MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH-rc.NUMBER override
+        required: false
+        type: string
+        default: ""
+      publish_oci:
+        description: Build and publish OCI images to GHCR
+        required: false
+        type: boolean
+        default: false
+  push:
+    branches:
+      - main
+    paths:
+      - "src/**"
+      - "include/**"
+      - "apps/**"
+      - "tests/**"
+      - "packaging/**"
+      - "cmake/**"
+      - "CMakeLists.txt"
+      - "CMakePresets.json"
+      - ".github/workflows/package.yml"
+
+permissions:
+  contents: read
+  # GITHUB_TOKEN pushes OCI images to ghcr.io in the oci job.
+  packages: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: packages-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  resolve-version:
+    name: Resolve package version
+    runs-on: ubuntu-24.04
+    outputs:
+      package_version: ${{ steps.version.outputs.package_version }}
+      artifact_version: ${{ steps.version.outputs.artifact_version }}
+    env:
+      REQUESTED_VERSION: ${{ inputs.package_version || '' }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Resolve and validate version
+        id: version
+        run: |
+          project_version=$(awk '$1 == "VERSION" { print $2; exit }' CMakeLists.txt)
+          if [[ -z "${project_version}" ]]; then
+            echo "CMake project version is unavailable" >&2
+            exit 1
+          fi
+
+          package_version=${REQUESTED_VERSION}
+          if [[ -z "${package_version}" ]]; then
+            package_version="${project_version}_pre${GITHUB_RUN_NUMBER}~${GITHUB_SHA:0:12}"
+          fi
+          if [[ ! "${package_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+|_pre[0-9]+~[0-9a-f]{12})?$ ]]; then
+            echo "invalid package version: ${package_version}" >&2
+            exit 1
+          fi
+
+          base_version=${package_version%%-rc.*}
+          base_version=${base_version%%_pre*}
+          if [[ "${base_version}" != "${project_version}" ]]; then
+            echo "package version ${package_version} does not match CMake project version ${project_version}" >&2
+            exit 1
+          fi
+
+          artifact_version=${package_version//~/-}
+          echo "package_version=${package_version}" >>"${GITHUB_OUTPUT}"
+          echo "artifact_version=${artifact_version}" >>"${GITHUB_OUTPUT}"
+
+  deb:
+    name: DEB ${{ matrix.name }}
+    needs: resolve-version
+    runs-on: ${{ matrix.runs_on }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - name: amd64
+            deb_arch: amd64
+            docker_platform: linux/amd64
+            docker_image: ubuntu:22.04
+            runs_on: ubuntu-22.04
+            native: true
+          - name: arm64
+            deb_arch: arm64
+            triplet: aarch64-linux-gnu
+            system_processor: aarch64
+            docker_platform: linux/arm64
+            docker_image: ubuntu:24.04
+            runs_on: ubuntu-24.04
+            native: false
+          - name: armhf
+            deb_arch: armhf
+            triplet: arm-linux-gnueabihf
+            system_processor: armv7l
+            docker_platform: linux/arm/v7
+            docker_image: ubuntu:24.04
+            runs_on: ubuntu-24.04
+            native: false
+          - name: riscv64
+            deb_arch: riscv64
+            triplet: riscv64-linux-gnu
+            system_processor: riscv64
+            docker_platform: linux/riscv64
+            docker_image: ubuntu:24.04
+            runs_on: ubuntu-24.04
+            native: false
+    env:
+      PACKAGE_VERSION: ${{ needs.resolve-version.outputs.package_version }}
+      ARTIFACT_VERSION: ${{ needs.resolve-version.outputs.artifact_version }}
+      DEB_ARCH: ${{ matrix.deb_arch }}
+      TRIPLET: ${{ matrix.triplet }}
+      SYSTEM_PROCESSOR: ${{ matrix.system_processor }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Validate package version
+        run: |
+          if [[ ! "${PACKAGE_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+|_pre[0-9]+~[0-9a-f]{12})?$ ]]; then
+            echo "invalid package version: ${PACKAGE_VERSION}" >&2
+            exit 1
+          fi
+          base_version=${PACKAGE_VERSION%%-rc.*}
+          base_version=${base_version%%_pre*}
+          project_version=$(awk '$1 == "VERSION" { print $2; exit }' CMakeLists.txt)
+          if [[ -z "${project_version}" || "${base_version}" != "${project_version}" ]]; then
+            echo "package version ${PACKAGE_VERSION} does not match CMake project version ${project_version:-unknown}" >&2
+            exit 1
+          fi
+
+      - name: Install DEB build dependencies
+        run: |
+          sudo apt-get update
+          if [[ "${{ matrix.native }}" == "true" ]]; then
+            sudo apt-get install --no-install-recommends --yes \
+              clang \
+              cmake \
+              dpkg-dev \
+              fakeroot \
+              file \
+              git \
+              libasio-dev \
+              libboost-system-dev \
+              libcli11-dev \
+              libgtest-dev \
+              libspdlog-dev \
+              libsqlite3-dev \
+              libssl-dev \
+              ninja-build \
+              nlohmann-json3-dev \
+              openssl \
+              pkg-config \
+              python3
+          else
+            # Default Ubuntu mirrors do not carry armhf/riscv64 (and
+            # security.ubuntu.com even 404s arm64), so switch to
+            # archive.ubuntu.com for amd64 plus ports.ubuntu.com for the
+            # cross architecture (ports does not serve amd64).
+            sudo mv /etc/apt/sources.list.d/ubuntu.sources \
+              /etc/apt/sources.list.d/ubuntu.sources.disabled
+            {
+              echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu noble main universe restricted multiverse"
+              echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu noble-updates main universe restricted multiverse"
+              echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu noble-backports main universe restricted multiverse"
+              echo "deb [arch=amd64] http://security.ubuntu.com/ubuntu noble-security main universe restricted multiverse"
+              echo "deb [arch=${DEB_ARCH}] http://ports.ubuntu.com/ubuntu-ports noble main universe restricted multiverse"
+              echo "deb [arch=${DEB_ARCH}] http://ports.ubuntu.com/ubuntu-ports noble-updates main universe restricted multiverse"
+              echo "deb [arch=${DEB_ARCH}] http://ports.ubuntu.com/ubuntu-ports noble-backports main universe restricted multiverse"
+              echo "deb [arch=${DEB_ARCH}] http://ports.ubuntu.com/ubuntu-ports noble-security main universe restricted multiverse"
+            } | sudo tee /etc/apt/sources.list.d/minitun-cross.list >/dev/null
+            sudo dpkg --add-architecture "${DEB_ARCH}"
+            sudo apt-get update
+            sudo apt-get install --no-install-recommends --yes \
+              "gcc-${TRIPLET}" \
+              "g++-${TRIPLET}" \
+              "libssl-dev:${DEB_ARCH}" \
+              "libsqlite3-dev:${DEB_ARCH}" \
+              cmake \
+              dpkg-dev \
+              fakeroot \
+              file \
+              git \
+              ninja-build \
+              pkg-config \
+              python3
+          fi
+
+      - name: Restore fetched dependencies
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/minitun-fetchcontent/package-deb
+          key: package-deb-fetchcontent-${{ matrix.deb_arch }}-${{ hashFiles('cmake/Dependencies.cmake') }}
+
+      - name: Configure DEB build (native)
+        if: matrix.native
+        env:
+          CC: clang
+          CXX: clang++
+        run: |
+          mkdir -p ci-logs/deb
+          version_arguments=()
+          if [[ -n "${PACKAGE_VERSION}" ]]; then
+            version_arguments+=("-DMINITUN_PACKAGE_VERSION=${PACKAGE_VERSION}")
+          fi
+          cmake --preset package-deb \
+            -DFETCHCONTENT_BASE_DIR="${HOME}/.cache/minitun-fetchcontent/package-deb" \
+            "${version_arguments[@]}" \
+            2>&1 | tee ci-logs/deb/configure.log
+
+      - name: Configure DEB build (cross)
+        if: matrix.native == false
+        run: |
+          mkdir -p ci-logs/deb
+          version_arguments=()
+          if [[ -n "${PACKAGE_VERSION}" ]]; then
+            version_arguments+=("-DMINITUN_PACKAGE_VERSION=${PACKAGE_VERSION}")
+          fi
+          cmake --preset package-deb \
+            -DFETCHCONTENT_BASE_DIR="${HOME}/.cache/minitun-fetchcontent/package-deb" \
+            -DCMAKE_SYSTEM_NAME=Linux \
+            -DCMAKE_SYSTEM_PROCESSOR="${SYSTEM_PROCESSOR}" \
+            -DCMAKE_C_COMPILER="${TRIPLET}-gcc" \
+            -DCMAKE_CXX_COMPILER="${TRIPLET}-g++" \
+            -DCMAKE_LIBRARY_ARCHITECTURE="${TRIPLET}" \
+            -DCMAKE_LIBRARY_PATH="/usr/lib/${TRIPLET}" \
+            -DCMAKE_FIND_ROOT_PATH=/usr \
+            -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER \
+            -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY \
+            -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY \
+            -DCPACK_DEBIAN_PACKAGE_ARCHITECTURE="${DEB_ARCH}" \
+            -DCPACK_DEBIAN_PACKAGE_SHLIBDEPS=OFF \
+            -DCPACK_DEBIAN_CLIENT_PACKAGE_DEPENDS="systemd, libssl3t64 | libssl3, libsqlite3-0, libstdc++6, libgcc-s1, libatomic1" \
+            -DCPACK_DEBIAN_SERVER_PACKAGE_DEPENDS="systemd, libssl3t64 | libssl3, libsqlite3-0, libstdc++6, libgcc-s1, libatomic1" \
+            -DCPACK_DEBIAN_CLIENTLIBRARY_PACKAGE_DEPENDS="libstdc++6, libgcc-s1, libc6" \
+            -DMINITUN_BUILD_TESTS=OFF \
+            "${version_arguments[@]}" \
+            2>&1 | tee ci-logs/deb/configure.log
+
+      - name: Build DEB binaries
+        run: |
+          cmake --build --preset package-deb --parallel 2 \
+            2>&1 | tee ci-logs/deb/build.log
+
+      - name: Test DEB build
+        if: matrix.native
+        run: |
+          ctest --test-dir build/package-deb --output-on-failure --no-tests=error \
+            2>&1 | tee ci-logs/deb/ctest.log
+
+      - name: Generate DEB packages
+        run: |
+          cpack --config build/package-deb/CPackConfig.cmake -G DEB \
+            2>&1 | tee ci-logs/deb/cpack.log
+
+      - name: Verify DEB metadata and contents
+        run: |
+          packaging/tests/verify-deb.sh build/package-deb "${DEB_ARCH}" \
+            2>&1 | tee ci-logs/deb/verify.log
+
+      - name: Register QEMU for foreign-architecture containers
+        if: matrix.native == false
+        run: |
+          docker run --privileged --rm tonistiigi/binfmt --install arm64,arm,riscv64
+
+      - name: Smoke test DEB packages in clean container
+        run: |
+          docker run --rm --privileged --platform "${{ matrix.docker_platform }}" \
+            -v "${PWD}/build/package-deb:/packages:ro" \
+            -v "${PWD}/packaging/tests:/tests:ro" \
+            "${{ matrix.docker_image }}" \
+            /tests/smoke-deb.sh /packages "${DEB_ARCH}" \
+            2>&1 | tee ci-logs/deb/smoke.log
+
+      - name: Prepare DEB artifacts
+        run: |
+          client_package=$(find build/package-deb -maxdepth 1 -type f \
+            -name "minitun-client_*_${DEB_ARCH}.deb")
+          server_package=$(find build/package-deb -maxdepth 1 -type f \
+            -name "minitun-server_*_${DEB_ARCH}.deb")
+          sdk_library_package=$(find build/package-deb -maxdepth 1 -type f \
+            -name "libminitun-client1_*_${DEB_ARCH}.deb")
+          sdk_development_package=$(find build/package-deb -maxdepth 1 -type f \
+            -name "libminitun-client-dev_*_${DEB_ARCH}.deb")
+          test -n "${client_package}"
+          test -n "${server_package}"
+          test -n "${sdk_library_package}"
+          test -n "${sdk_development_package}"
+
+          artifact_version=${ARTIFACT_VERSION}
+
+          install -d dist/deb
+          install -m 0644 "${client_package}" \
+            "dist/deb/minitun-client-${artifact_version}-linux-${DEB_ARCH}.deb"
+          install -m 0644 "${server_package}" \
+            "dist/deb/minitun-server-${artifact_version}-linux-${DEB_ARCH}.deb"
+          install -m 0644 "${sdk_library_package}" \
+            "dist/deb/libminitun-client1-${artifact_version}-linux-${DEB_ARCH}.deb"
+          install -m 0644 "${sdk_development_package}" \
+            "dist/deb/libminitun-client-dev-${artifact_version}-linux-${DEB_ARCH}.deb"
+          (cd dist/deb && sha256sum ./*.deb >"SHA256SUMS-${DEB_ARCH}")
+
+      - name: Upload DEB packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: minitun-deb-${{ matrix.deb_arch }}
+          if-no-files-found: error
+          retention-days: 14
+          path: dist/deb/
+
+      - name: Upload DEB logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: minitun-deb-${{ matrix.deb_arch }}-logs
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            ci-logs/deb/
+            build/package-deb/Testing/Temporary/
+
+  rpm:
+    name: RPM ${{ matrix.name }}
+    needs: resolve-version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - name: x86_64
+            rpm_arch: x86_64
+            native: true
+          - name: aarch64
+            rpm_arch: aarch64
+            triplet: aarch64-linux-gnu
+            deb_arch: arm64
+            system_processor: aarch64
+            docker_platform: linux/arm64
+            native: false
+          - name: armv7hl
+            rpm_arch: armv7hl
+            triplet: arm-linux-gnueabihf
+            deb_arch: armhf
+            system_processor: armv7l
+            docker_platform: linux/arm/v7
+            native: false
+          - name: riscv64
+            rpm_arch: riscv64
+            triplet: riscv64-linux-gnu
+            deb_arch: riscv64
+            system_processor: riscv64
+            docker_platform: linux/riscv64
+            native: false
+    env:
+      PACKAGE_VERSION: ${{ needs.resolve-version.outputs.package_version }}
+      ARTIFACT_VERSION: ${{ needs.resolve-version.outputs.artifact_version }}
+      RPM_ARCH: ${{ matrix.rpm_arch }}
+      TRIPLET: ${{ matrix.triplet }}
+      DEB_ARCH: ${{ matrix.deb_arch }}
+      SYSTEM_PROCESSOR: ${{ matrix.system_processor }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Validate package version
+        run: |
+          if [[ ! "${PACKAGE_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+|_pre[0-9]+~[0-9a-f]{12})?$ ]]; then
+            echo "invalid package version: ${PACKAGE_VERSION}" >&2
+            exit 1
+          fi
+          base_version=${PACKAGE_VERSION%%-rc.*}
+          base_version=${base_version%%_pre*}
+          project_version=$(awk '$1 == "VERSION" { print $2; exit }' CMakeLists.txt)
+          if [[ -z "${project_version}" || "${base_version}" != "${project_version}" ]]; then
+            echo "package version ${PACKAGE_VERSION} does not match CMake project version ${project_version:-unknown}" >&2
+            exit 1
+          fi
+
+      - name: Build, test, and inspect RPM packages in Fedora
+        if: matrix.native
+        run: |
+          mkdir -p ci-logs/rpm
+          docker run --rm --platform linux/amd64 \
+            -v "${PWD}:/work" \
+            -w /work \
+            -e CC=clang \
+            -e CXX=clang++ \
+            -e MINITUN_PACKAGE_VERSION="${PACKAGE_VERSION}" \
+            fedora:43 \
+            bash -euo pipefail -c '
+              dnf install -y --setopt=install_weak_deps=False \
+                asio-devel \
+                boost-devel \
+                clang \
+                cli11-devel \
+                cmake \
+                file \
+                findutils \
+                gcc-c++ \
+                git \
+                gtest-devel \
+                gzip \
+                json-devel \
+                ninja-build \
+                openssl \
+                openssl-devel \
+                pkgconf-pkg-config \
+                python3 \
+                rpm-build \
+                spdlog-devel \
+                sqlite-devel \
+                tar
+              git config --global --add safe.directory /work
+              version_arguments=()
+              if [[ -n "${MINITUN_PACKAGE_VERSION}" ]]; then
+                version_arguments+=("-DMINITUN_PACKAGE_VERSION=${MINITUN_PACKAGE_VERSION}")
+              fi
+              cmake --preset package-rpm "${version_arguments[@]}"
+              cmake --build --preset package-rpm --parallel 2
+              ctest --test-dir build/package-rpm --output-on-failure --no-tests=error
+              cpack --config build/package-rpm/CPackConfig.cmake -G RPM
+              packaging/tests/verify-rpm.sh build/package-rpm x86_64
+            ' 2>&1 | tee ci-logs/rpm/build-test-package.log
+
+      - name: Smoke test RPM packages in clean Fedora
+        if: matrix.native
+        run: |
+          docker run --rm --platform linux/amd64 \
+            -v "${PWD}/build/package-rpm:/packages:ro" \
+            -v "${PWD}/packaging/tests:/tests:ro" \
+            fedora:43 \
+            /tests/smoke-rpm.sh /packages x86_64 \
+            2>&1 | tee ci-logs/rpm/smoke.log
+
+      - name: Install RPM cross build dependencies
+        if: matrix.native == false
+        run: |
+          # Default Ubuntu mirrors 404 for armhf/riscv64 and security updates
+          # for arm64. Use archive.ubuntu.com for amd64 plus ports.ubuntu.com
+          # for the cross architecture (ports does not serve amd64).
+          sudo mv /etc/apt/sources.list.d/ubuntu.sources \
+            /etc/apt/sources.list.d/ubuntu.sources.disabled
+          {
+            echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu noble main universe restricted multiverse"
+            echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu noble-updates main universe restricted multiverse"
+            echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu noble-backports main universe restricted multiverse"
+            echo "deb [arch=amd64] http://security.ubuntu.com/ubuntu noble-security main universe restricted multiverse"
+            echo "deb [arch=${DEB_ARCH}] http://ports.ubuntu.com/ubuntu-ports noble main universe restricted multiverse"
+            echo "deb [arch=${DEB_ARCH}] http://ports.ubuntu.com/ubuntu-ports noble-updates main universe restricted multiverse"
+            echo "deb [arch=${DEB_ARCH}] http://ports.ubuntu.com/ubuntu-ports noble-backports main universe restricted multiverse"
+            echo "deb [arch=${DEB_ARCH}] http://ports.ubuntu.com/ubuntu-ports noble-security main universe restricted multiverse"
+          } | sudo tee /etc/apt/sources.list.d/minitun-cross.list >/dev/null
+          sudo dpkg --add-architecture "${DEB_ARCH}"
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes \
+            "gcc-${TRIPLET}" \
+            "g++-${TRIPLET}" \
+            "libssl-dev:${DEB_ARCH}" \
+            "libsqlite3-dev:${DEB_ARCH}" \
+            cmake \
+            dpkg-dev \
+            file \
+            git \
+            ninja-build \
+            pkg-config \
+            python3 \
+            rpm
+
+      - name: Restore fetched dependencies
+        if: matrix.native == false
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/minitun-fetchcontent/package-rpm
+          key: package-rpm-fetchcontent-${{ matrix.rpm_arch }}-${{ hashFiles('cmake/Dependencies.cmake') }}
+
+      - name: Configure RPM build (cross)
+        if: matrix.native == false
+        run: |
+          mkdir -p ci-logs/rpm
+          version_arguments=()
+          if [[ -n "${PACKAGE_VERSION}" ]]; then
+            version_arguments+=("-DMINITUN_PACKAGE_VERSION=${PACKAGE_VERSION}")
+          fi
+          cmake --preset package-rpm \
+            -DFETCHCONTENT_BASE_DIR="${HOME}/.cache/minitun-fetchcontent/package-rpm" \
+            -DCMAKE_SYSTEM_NAME=Linux \
+            -DCMAKE_SYSTEM_PROCESSOR="${SYSTEM_PROCESSOR}" \
+            -DCMAKE_C_COMPILER="${TRIPLET}-gcc" \
+            -DCMAKE_CXX_COMPILER="${TRIPLET}-g++" \
+            -DCMAKE_LIBRARY_ARCHITECTURE="${TRIPLET}" \
+            -DCMAKE_LIBRARY_PATH="/usr/lib/${TRIPLET}" \
+            -DCMAKE_FIND_ROOT_PATH=/usr \
+            -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER \
+            -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY \
+            -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY \
+            -DCPACK_RPM_PACKAGE_ARCHITECTURE="${RPM_ARCH}" \
+            -DMINITUN_USE_SYSTEM_DEPS=OFF \
+            -DMINITUN_BUILD_TESTS=OFF \
+            "${version_arguments[@]}" \
+            2>&1 | tee ci-logs/rpm/configure.log
+
+      - name: Build RPM binaries
+        if: matrix.native == false
+        run: |
+          cmake --build --preset package-rpm --parallel 2 \
+            2>&1 | tee ci-logs/rpm/build.log
+
+      - name: Generate RPM packages
+        if: matrix.native == false
+        run: |
+          # rpmbuild's brp-strip runs the host strip, which cannot process
+          # cross-compiled ELF binaries. Disable the os install post-processing
+          # hooks (compress/strip/elfperms) for cross RPMs.
+          printf '%%__os_install_post %%{nil}\n' >"${HOME}/.rpmmacros"
+          cpack --config build/package-rpm/CPackConfig.cmake -G RPM \
+            2>&1 | tee ci-logs/rpm/cpack.log
+
+      - name: Verify RPM metadata and contents
+        if: matrix.native == false
+        run: |
+          packaging/tests/verify-rpm.sh build/package-rpm "${RPM_ARCH}" \
+            2>&1 | tee ci-logs/rpm/verify.log
+
+      - name: Register QEMU for foreign-architecture containers
+        if: matrix.native == false
+        run: |
+          docker run --privileged --rm tonistiigi/binfmt --install arm64,arm,riscv64
+
+      - name: Smoke test RPM packages in clean container
+        if: matrix.native == false
+        run: |
+          docker run --rm --privileged --platform "${{ matrix.docker_platform }}" \
+            -v "${PWD}/build/package-rpm:/packages:ro" \
+            -v "${PWD}/packaging/tests:/tests:ro" \
+            ubuntu:24.04 \
+            /tests/smoke-rpm-cross.sh /packages "${RPM_ARCH}" \
+            2>&1 | tee ci-logs/rpm/smoke.log
+
+      - name: Prepare RPM artifacts
+        run: |
+          client_package=$(find build/package-rpm -maxdepth 1 -type f \
+            -name "minitun-client-*.${RPM_ARCH}.rpm")
+          server_package=$(find build/package-rpm -maxdepth 1 -type f \
+            -name "minitun-server-*.${RPM_ARCH}.rpm")
+          sdk_library_package=$(find build/package-rpm -maxdepth 1 -type f \
+            -name "libminitun-client1-*.${RPM_ARCH}.rpm")
+          sdk_development_package=$(find build/package-rpm -maxdepth 1 -type f \
+            -name "libminitun-client-devel-*.${RPM_ARCH}.rpm")
+          test -n "${client_package}"
+          test -n "${server_package}"
+          test -n "${sdk_library_package}"
+          test -n "${sdk_development_package}"
+
+          artifact_version=${ARTIFACT_VERSION}
+
+          install -d dist/rpm
+          install -m 0644 "${client_package}" \
+            "dist/rpm/minitun-client-${artifact_version}-linux-${RPM_ARCH}.rpm"
+          install -m 0644 "${server_package}" \
+            "dist/rpm/minitun-server-${artifact_version}-linux-${RPM_ARCH}.rpm"
+          install -m 0644 "${sdk_library_package}" \
+            "dist/rpm/libminitun-client1-${artifact_version}-linux-${RPM_ARCH}.rpm"
+          install -m 0644 "${sdk_development_package}" \
+            "dist/rpm/libminitun-client-devel-${artifact_version}-linux-${RPM_ARCH}.rpm"
+          (cd dist/rpm && sha256sum ./*.rpm >"SHA256SUMS-${RPM_ARCH}")
+
+      - name: Upload RPM packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: minitun-rpm-${{ matrix.rpm_arch }}
+          if-no-files-found: error
+          retention-days: 14
+          path: dist/rpm/
+
+      - name: Upload RPM logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: minitun-rpm-${{ matrix.rpm_arch }}-logs
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            ci-logs/rpm/
+            build/package-rpm/Testing/Temporary/
+
+  oci:
+    name: OCI server/client images
+    if: inputs.publish_oci
+    needs:
+      - resolve-version
+      - deb
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      PACKAGE_VERSION: ${{ needs.resolve-version.outputs.package_version }}
+      ARTIFACT_VERSION: ${{ needs.resolve-version.outputs.artifact_version }}
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Download DEB artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: minitun-deb-*
+          merge-multiple: true
+          path: deb-artifacts
+
+      - name: Register QEMU for cross-architecture image builds
+        run: |
+          docker run --privileged --rm tonistiigi/binfmt --install arm64,arm,riscv64
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v4.1.2
+
+      - name: Build and push per-architecture images
+        run: |
+          set -euo pipefail
+          version=${ARTIFACT_VERSION}
+          for entry in \
+            "amd64:linux/amd64:amd64" \
+            "arm64:linux/arm64:arm64" \
+            "armhf:linux/arm/v7:armv7" \
+            "riscv64:linux/riscv64:riscv64"; do
+            deb_arch=${entry%%:*}
+            rest=${entry#*:}
+            platform=${rest%%:*}
+            suffix=${rest#*:}
+            client_deb=$(find "deb-artifacts" -maxdepth 1 -type f \
+              -name "minitun-client-*-linux-${deb_arch}.deb")
+            server_deb=$(find "deb-artifacts" -maxdepth 1 -type f \
+              -name "minitun-server-*-linux-${deb_arch}.deb")
+            test -n "${client_deb}"
+            test -n "${server_deb}"
+
+            server_ctx="oci-context/${suffix}/server"
+            client_ctx="oci-context/${suffix}/client"
+            install -d "${server_ctx}" "${client_ctx}"
+            dpkg-deb -x "${server_deb}" "${server_ctx}"
+            dpkg-deb -x "${client_deb}" "${client_ctx}"
+            mv "${server_ctx}/usr/bin/minitun-server" "${server_ctx}/minitun-server"
+            mv "${client_ctx}/usr/bin/minitun" "${client_ctx}/minitun"
+            mv "${client_ctx}/usr/libexec/minitun/minitund" "${client_ctx}/minitund"
+
+            docker build \
+              --platform "${platform}" \
+              -t "ghcr.io/albert-li-sz/minitun-server:${version}-linux-${suffix}" \
+              -f packaging/oci/Dockerfile.server \
+              "${server_ctx}"
+            docker build \
+              --platform "${platform}" \
+              -t "ghcr.io/albert-li-sz/minitun-client:${version}-linux-${suffix}" \
+              -f packaging/oci/Dockerfile.client \
+              "${client_ctx}"
+            docker push "ghcr.io/albert-li-sz/minitun-server:${version}-linux-${suffix}"
+            docker push "ghcr.io/albert-li-sz/minitun-client:${version}-linux-${suffix}"
+          done
+
+      - name: Create and push multi-architecture manifests
+        run: |
+          set -euo pipefail
+          version=${ARTIFACT_VERSION}
+          suffixes=(amd64 arm64 armv7 riscv64)
+          for image in minitun-server minitun-client; do
+            manifest_args=()
+            for suffix in "${suffixes[@]}"; do
+              manifest_args+=(--amend "ghcr.io/albert-li-sz/${image}:${version}-linux-${suffix}")
+            done
+            docker manifest create \
+              "ghcr.io/albert-li-sz/${image}:${version}" \
+              "${manifest_args[@]}"
+            docker manifest push "ghcr.io/albert-li-sz/${image}:${version}"
+            if [[ "${PACKAGE_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              docker manifest create \
+                "ghcr.io/albert-li-sz/${image}:latest" \
+                "${manifest_args[@]}"
+              docker manifest push "ghcr.io/albert-li-sz/${image}:latest"
+            fi
+          done
+
+      - name: Resolve, keyless-sign, and verify OCI manifests
+        id: image-digests
+        env:
+          CERTIFICATE_IDENTITY: https://github.com/${{ github.repository }}/.github/workflows/package.yml@${{ github.ref }}
+        run: |
+          set -euo pipefail
+          version=${ARTIFACT_VERSION}
+          for image in minitun-server minitun-client; do
+            reference="ghcr.io/albert-li-sz/${image}:${version}"
+            digest="sha256:$(docker buildx imagetools inspect --raw "${reference}" | sha256sum | awk '{print $1}')"
+            immutable_reference="${reference}@${digest}"
+            cosign sign --yes "${immutable_reference}"
+            cosign verify \
+              --certificate-identity="${CERTIFICATE_IDENTITY}" \
+              --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
+              "${immutable_reference}"
+            output_name=${image#minitun-}_digest
+            echo "${output_name}=${digest}" >>"${GITHUB_OUTPUT}"
+          done
+
+      - name: Prepare OCI SBOM directory
+        run: install -d oci-sbom
+
+      - name: Generate server image SPDX SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: ghcr.io/albert-li-sz/minitun-server:${{ env.ARTIFACT_VERSION }}
+          format: spdx-json
+          output-file: oci-sbom/minitun-server-${{ env.ARTIFACT_VERSION }}.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Generate server image CycloneDX SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: ghcr.io/albert-li-sz/minitun-server:${{ env.ARTIFACT_VERSION }}
+          format: cyclonedx-json
+          output-file: oci-sbom/minitun-server-${{ env.ARTIFACT_VERSION }}.cyclonedx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Generate client image SPDX SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: ghcr.io/albert-li-sz/minitun-client:${{ env.ARTIFACT_VERSION }}
+          format: spdx-json
+          output-file: oci-sbom/minitun-client-${{ env.ARTIFACT_VERSION }}.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Generate client image CycloneDX SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: ghcr.io/albert-li-sz/minitun-client:${{ env.ARTIFACT_VERSION }}
+          format: cyclonedx-json
+          output-file: oci-sbom/minitun-client-${{ env.ARTIFACT_VERSION }}.cyclonedx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Attach and verify OCI SBOM attestations
+        env:
+          CERTIFICATE_IDENTITY: https://github.com/${{ github.repository }}/.github/workflows/package.yml@${{ github.ref }}
+          SERVER_DIGEST: ${{ steps.image-digests.outputs.server_digest }}
+          CLIENT_DIGEST: ${{ steps.image-digests.outputs.client_digest }}
+        run: |
+          set -euo pipefail
+          server_ref="ghcr.io/albert-li-sz/minitun-server@${SERVER_DIGEST}"
+          client_ref="ghcr.io/albert-li-sz/minitun-client@${CLIENT_DIGEST}"
+          cosign attest --yes --type spdxjson \
+            --predicate "oci-sbom/minitun-server-${ARTIFACT_VERSION}.spdx.json" \
+            "${server_ref}"
+          cosign attest --yes --type cyclonedx \
+            --predicate "oci-sbom/minitun-server-${ARTIFACT_VERSION}.cyclonedx.json" \
+            "${server_ref}"
+          cosign attest --yes --type spdxjson \
+            --predicate "oci-sbom/minitun-client-${ARTIFACT_VERSION}.spdx.json" \
+            "${client_ref}"
+          cosign attest --yes --type cyclonedx \
+            --predicate "oci-sbom/minitun-client-${ARTIFACT_VERSION}.cyclonedx.json" \
+            "${client_ref}"
+          for reference in "${server_ref}" "${client_ref}"; do
+            for predicate_type in spdxjson cyclonedx; do
+              cosign verify-attestation \
+                --type "${predicate_type}" \
+                --certificate-identity="${CERTIFICATE_IDENTITY}" \
+                --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
+                "${reference}" >/dev/null
+            done
+          done
+
+      - name: Upload OCI SBOMs
+        uses: actions/upload-artifact@v7
+        with:
+          name: minitun-oci-sbom-${{ env.ARTIFACT_VERSION }}
+          if-no-files-found: error
+          retention-days: 30
+          path: oci-sbom/
+
+      - name: Attest server image provenance
+        uses: actions/attest@v4
+        with:
+          subject-name: ghcr.io/albert-li-sz/minitun-server
+          subject-digest: ${{ steps.image-digests.outputs.server_digest }}
+          push-to-registry: true
+
+      - name: Attest client image provenance
+        uses: actions/attest@v4
+        with:
+          subject-name: ghcr.io/albert-li-sz/minitun-client
+          subject-digest: ${{ steps.image-digests.outputs.client_digest }}
+          push-to-registry: true
+
+  oci-security-scan:
+    name: OCI scan (${{ matrix.image }}, ${{ matrix.suffix }})
+    if: inputs.publish_oci
+    needs:
+      - resolve-version
+      - oci
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - minitun-server
+          - minitun-client
+        suffix:
+          - amd64
+          - arm64
+          - armv7
+          - riscv64
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Report high and critical OCI findings
+        uses: anchore/scan-action@v7
+        with:
+          image: ghcr.io/albert-li-sz/${{ matrix.image }}:${{ needs.resolve-version.outputs.artifact_version }}-linux-${{ matrix.suffix }}
+          fail-build: false
+          severity-cutoff: high
+          output-format: table

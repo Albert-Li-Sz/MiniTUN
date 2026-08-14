@@ -1,0 +1,10 @@
+prefix=@CMAKE_INSTALL_PREFIX@
+exec_prefix=${prefix}
+libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@
+includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+
+Name: MiniTun Remote Protocol SDK
+Description: C++20 codec and authentication helpers for MiniTun Remote Protocol v2
+Version: @PROJECT_VERSION@
+Libs: -L${libdir} -lminitun-remote-protocol
+Cflags: -I${includedir}
