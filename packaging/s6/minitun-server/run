@@ -1,0 +1,4 @@
+#!/command/execlineb -P
+# MiniTun public server for s6/s6-rc.
+fdmove -c 2 1
+/usr/bin/minitun-server --foreground --listen 0.0.0.0:2333 --tls-cert /etc/minitun-server/server.crt --tls-key /etc/minitun-server/server.key --clients-config /etc/minitun-server/clients.json

@@ -1,0 +1,36 @@
+# 自托管 MiniTun 的最小 docker-compose 编排。
+#
+# 运行前：
+#   1. 把 server.crt/server.key 放到 ./secrets/，并为客户端准备 clients.json；
+#   2. 首次启动后执行
+#        docker compose exec minitund minitun daemon identity --json
+#      把得到的 client_id 与一个 32 字节随机 PSK 写入 ./secrets/clients.json
+#      （server 策略会引用其中的 psk_file 路径）；
+#   3. 把同一 PSK 保存为 ./secrets/client.psk，然后在客户端容器内登录：
+#        docker compose exec minitund minitun server add tunnel.example.com:2333 --name edge
+#        docker compose exec minitund minitun server login edge --psk-stdin \
+#          < ./secrets/client.psk
+#
+# server 镜像要求 /etc/minitun-server 下有 server.crt、server.key、clients.json
+# 以及策略引用的 PSK 文件。
+
+services:
+  minitun-server:
+    image: ghcr.io/albert-li-sz/minitun-server:1.0.0
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./secrets:/etc/minitun-server:ro
+
+  minitund:
+    image: ghcr.io/albert-li-sz/minitun-client:1.0.0
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - minitun-state:/var/lib/minitun
+      - minitun-run:/run/minitun
+      - ./secrets/client.psk:/run/secrets/client.psk:ro
+
+volumes:
+  minitun-state:
+  minitun-run:

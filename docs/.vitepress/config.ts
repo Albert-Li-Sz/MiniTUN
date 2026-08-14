@@ -43,6 +43,7 @@ export default defineConfig({
           { text: '命令行界面', link: '/cli' },
           { text: '配置与客户端策略', link: '/configuration' },
           { text: '运维与可观测性', link: '/operations' },
+          { text: 'Let\'s Encrypt 证书', link: '/letsencrypt' },
           { text: '开发文档', link: '/development' },
           { text: '变更日志', link: '/changelog' }
         ]

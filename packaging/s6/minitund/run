@@ -1,0 +1,5 @@
+#!/command/execlineb -P
+# MiniTun client daemon for s6/s6-rc. Create /var/lib/minitun and
+# /run/minitun owned by the minitun user before supervision starts.
+fdmove -c 2 1
+/usr/libexec/minitun/minitund --foreground --database /var/lib/minitun/state.db --credentials /var/lib/minitun/credentials.db --socket /run/minitun/minitun.sock

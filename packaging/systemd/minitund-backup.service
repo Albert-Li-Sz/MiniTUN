@@ -1,0 +1,15 @@
+[Unit]
+Description=MiniTun daily state backup
+Documentation=man:minitun(1)
+After=minitund.service
+Requires=minitund.service
+
+[Service]
+Type=oneshot
+User=minitun
+Group=minitun
+ExecStart=/usr/bin/minitun --socket /run/minitun/minitun.sock doctor --checkpoint --backup-state /var/backups/minitun/state.db --backup-credentials /var/backups/minitun/credentials.db
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes

@@ -79,10 +79,15 @@ require_paths("${client_prefix}"
     "${staged_bindir}/minitun-p2p"
     "${staged_libexecdir}/minitun/minitund"
     "${staged_systemd_unit_dir}/minitund.service"
+    "${staged_systemd_unit_dir}/minitund-backup.service"
+    "${staged_systemd_unit_dir}/minitund-backup.timer"
     "${staged_sysusers_dir}/minitun.conf"
     "${staged_mandir}/man1/minitun.1"
     "${staged_mandir}/man1/minitun-p2p.1"
     "${staged_mandir}/man8/minitund.8"
+    "usr/share/minitun/openrc/minitund"
+    "usr/share/minitun/s6/minitund/run"
+    "usr/share/doc/client/examples/docker-compose.yml"
 )
 if(EXISTS "${client_prefix}/${staged_bindir}/minitun-server")
     message(FATAL_ERROR "Client component unexpectedly installed minitun-server")
@@ -105,6 +110,8 @@ require_paths("${server_prefix}"
     "${staged_mandir}/man8/minitun-server.8"
     "${staged_sysconfdir}/minitun-server/README"
     "${staged_sysconfdir}/minitun-server/clients.json.example"
+    "usr/share/minitun/openrc/minitun-server"
+    "usr/share/minitun/s6/minitun-server/run"
 )
 if(EXISTS "${server_prefix}/${staged_bindir}/minitun")
     message(FATAL_ERROR "Server component unexpectedly installed minitun")

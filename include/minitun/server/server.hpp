@@ -38,6 +38,7 @@ struct ServerOptions final {
     std::uint16_t min_idle_workers{2U};
     std::uint16_t max_idle_workers{32U};
     std::size_t max_total_idle_workers{128U};
+    std::size_t max_udp_peer_sessions{128U};
 };
 
 /// Process-local counters reset whenever minitun-server restarts.  The

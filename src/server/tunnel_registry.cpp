@@ -418,11 +418,14 @@ class TunnelRegistry::Impl final {
         UdpListener(const asio::any_io_executor& listener_executor,
                     const asio::any_io_executor& connection_executor, TunnelBinding binding,
                     PublicConnectionHandler connection_handler,
-                    std::shared_ptr<UdpIngressBudget> global_ingress_budget)
+                    std::shared_ptr<UdpIngressBudget> global_ingress_budget,
+                    const std::size_t max_peer_sessions)
             : binding_(std::move(binding)), socket_(listener_executor),
               retry_timer_(socket_.get_executor()), connection_executor_(connection_executor),
               connection_handler_(std::move(connection_handler)),
-              global_ingress_budget_(std::move(global_ingress_budget)) {}
+              global_ingress_budget_(std::move(global_ingress_budget)),
+              max_peer_sessions_(max_peer_sessions == 0U ? kMaximumPeerSessions
+                                                         : max_peer_sessions) {}
 
         ~UdpListener() noexcept override { stop(); }
 
@@ -547,7 +550,7 @@ class TunnelRegistry::Impl final {
             const std::string key = peer_key(peer);
             auto found = peers_.find(key);
             if (found == peers_.end()) {
-                if (peers_.size() >= kMaximumPeerSessions) {
+                if (peers_.size() >= max_peer_sessions_) {
                     release_ingress_now(1U, record->size());
                     return;
                 }
@@ -653,6 +656,7 @@ class TunnelRegistry::Impl final {
         asio::any_io_executor connection_executor_;
         PublicConnectionHandler connection_handler_;
         std::shared_ptr<UdpIngressBudget> global_ingress_budget_;
+        std::size_t max_peer_sessions_{kMaximumPeerSessions};
         std::array<std::uint8_t, protocol::kMaximumUdpPayloadSize> receive_buffer_{};
         asio::ip::udp::endpoint receive_peer_;
         std::unordered_map<std::string, std::shared_ptr<PeerSession>> peers_;
@@ -666,12 +670,14 @@ class TunnelRegistry::Impl final {
   public:
     Impl(asio::any_io_executor listener_executor, asio::any_io_executor connection_executor,
          common::PortRange allowed_ports, const std::size_t max_tunnels_per_client,
-         const std::size_t max_total_tunnels, PublicConnectionHandler connection_handler)
+         const std::size_t max_total_tunnels, PublicConnectionHandler connection_handler,
+         const std::size_t max_udp_peer_sessions)
         : listener_executor_(std::move(listener_executor)),
           connection_executor_(std::move(connection_executor)), allowed_ports_(allowed_ports),
           max_tunnels_per_client_(max_tunnels_per_client), max_total_tunnels_(max_total_tunnels),
           connection_handler_(std::move(connection_handler)),
           udp_ingress_budget_(std::make_shared<UdpIngressBudget>()),
+          max_udp_peer_sessions_(max_udp_peer_sessions),
           reserved_descriptor_(std::make_shared<ReservedFileDescriptor>()) {}
 
     [[nodiscard]] common::Result<void> register_tunnel(const TunnelBinding& binding,
@@ -710,7 +716,8 @@ class TunnelRegistry::Impl final {
         if (binding.mode == protocol::TunnelMode::udp) {
             listener =
                 std::make_shared<UdpListener>(listener_executor_, connection_executor_, binding,
-                                              connection_handler_, udp_ingress_budget_);
+                                              connection_handler_, udp_ingress_budget_,
+                                              max_udp_peer_sessions_);
         } else {
             listener =
                 std::make_shared<TcpListener>(listener_executor_, connection_executor_, binding,
@@ -790,6 +797,7 @@ class TunnelRegistry::Impl final {
     std::size_t max_total_tunnels_;
     PublicConnectionHandler connection_handler_;
     std::shared_ptr<UdpIngressBudget> udp_ingress_budget_;
+    std::size_t max_udp_peer_sessions_{128U};
     std::shared_ptr<ReservedFileDescriptor> reserved_descriptor_;
     std::unordered_map<std::string, std::shared_ptr<ListenerBase>> listeners_;
 };
@@ -797,35 +805,42 @@ class TunnelRegistry::Impl final {
 TunnelRegistry::TunnelRegistry(const asio::any_io_executor& executor,
                                common::PortRange allowed_ports,
                                const std::size_t max_tunnels_per_client,
-                               PublicConnectionHandler connection_handler)
+                               PublicConnectionHandler connection_handler,
+                               const std::size_t max_udp_peer_sessions)
     : TunnelRegistry(executor, executor, allowed_ports, max_tunnels_per_client,
-                     kMaximumTotalTunnels, std::move(connection_handler)) {}
+                     kMaximumTotalTunnels, std::move(connection_handler),
+                     max_udp_peer_sessions) {}
 
 TunnelRegistry::TunnelRegistry(const asio::any_io_executor& executor,
                                common::PortRange allowed_ports,
                                const std::size_t max_tunnels_per_client,
                                const std::size_t max_total_tunnels,
-                               PublicConnectionHandler connection_handler)
+                               PublicConnectionHandler connection_handler,
+                               const std::size_t max_udp_peer_sessions)
     : TunnelRegistry(executor, executor, allowed_ports, max_tunnels_per_client, max_total_tunnels,
-                     std::move(connection_handler)) {}
+                     std::move(connection_handler), max_udp_peer_sessions) {}
 
 TunnelRegistry::TunnelRegistry(asio::any_io_executor listener_executor,
                                asio::any_io_executor connection_executor,
                                common::PortRange allowed_ports,
                                const std::size_t max_tunnels_per_client,
-                               PublicConnectionHandler connection_handler)
+                               PublicConnectionHandler connection_handler,
+                               const std::size_t max_udp_peer_sessions)
     : TunnelRegistry(std::move(listener_executor), std::move(connection_executor), allowed_ports,
-                     max_tunnels_per_client, kMaximumTotalTunnels, std::move(connection_handler)) {}
+                     max_tunnels_per_client, kMaximumTotalTunnels, std::move(connection_handler),
+                     max_udp_peer_sessions) {}
 
 TunnelRegistry::TunnelRegistry(asio::any_io_executor listener_executor,
                                asio::any_io_executor connection_executor,
                                common::PortRange allowed_ports,
                                const std::size_t max_tunnels_per_client,
                                const std::size_t max_total_tunnels,
-                               PublicConnectionHandler connection_handler)
+                               PublicConnectionHandler connection_handler,
+                               const std::size_t max_udp_peer_sessions)
     : implementation_(std::make_unique<Impl>(
           std::move(listener_executor), std::move(connection_executor), allowed_ports,
-          max_tunnels_per_client, max_total_tunnels, std::move(connection_handler))) {}
+          max_tunnels_per_client, max_total_tunnels, std::move(connection_handler),
+          max_udp_peer_sessions)) {}
 
 TunnelRegistry::~TunnelRegistry() noexcept = default;
 

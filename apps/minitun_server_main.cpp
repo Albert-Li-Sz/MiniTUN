@@ -326,6 +326,10 @@ int main(int argc, char** argv) {
                    "Maximum idle Workers accepted across all clients")
         ->check(CLI::Range(1U, 4'096U))
         ->capture_default_str();
+    app.add_option("--max-udp-peer-sessions", options.max_udp_peer_sessions,
+                   "Maximum UDP peer sessions per public UDP tunnel")
+        ->check(CLI::Range(1U, 65'536U))
+        ->capture_default_str();
 
     int handshake_timeout_seconds = static_cast<int>(options.handshake_timeout.count());
     int heartbeat_interval_seconds = static_cast<int>(options.heartbeat_interval.count());

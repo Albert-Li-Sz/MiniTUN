@@ -1,5 +1,6 @@
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <stdexcept>
 #include <string>
 
@@ -250,6 +251,30 @@ TEST(TunnelRegistryTest, RejectsOutOfPolicyAndMalformedBindings) {
     EXPECT_EQ(denied.error().code(), common::ErrorCode::permission_denied);
     EXPECT_FALSE(registry.register_tunnel({client_id, 0U, tunnel_id, "127.0.0.1", 6'000U}));
     EXPECT_FALSE(registry.register_tunnel({client_id, 1U, tunnel_id, "localhost", 6'000U}));
+}
+
+TEST(TunnelRegistryTest, AcceptsConfiguredAndZeroUdpPeerSessionLimits) {
+    asio::io_context io_context;
+    auto allowed = common::PortRange::parse("6000-6001");
+    ASSERT_TRUE(allowed);
+    {
+        // A zero limit falls back to the built-in default instead of clamping
+        // every UDP tunnel to no sessions.
+        TunnelRegistry registry{io_context.get_executor(), *allowed, 2U, 1U,
+                                std::function<void(TunnelBinding, asio::ip::tcp::socket)>{},
+                                0U};
+        EXPECT_TRUE(registry.register_tunnel(
+            {generated_id(common::IdKind::client), 1U, generated_id(common::IdKind::tunnel),
+             "127.0.0.1", 6'000U, 1U, protocol::TunnelMode::udp}));
+    }
+    {
+        TunnelRegistry registry{io_context.get_executor(), *allowed, 2U, 1U,
+                                std::function<void(TunnelBinding, asio::ip::tcp::socket)>{},
+                                7U};
+        EXPECT_TRUE(registry.register_tunnel(
+            {generated_id(common::IdKind::client), 1U, generated_id(common::IdKind::tunnel),
+             "127.0.0.1", 6'000U, 1U, protocol::TunnelMode::udp}));
+    }
 }
 
 TEST(TunnelRegistryTest, RejectsEveryIndependentBindingAndRegistryLimit) {

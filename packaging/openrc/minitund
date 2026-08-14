@@ -1,0 +1,15 @@
+#!/sbin/openrc-run
+# MiniTun client daemon for OpenRC (Alpine, Gentoo). Adjust paths to match a
+# non-packaged installation; the packaged binaries live in /usr/libexec/minitun.
+name="minitund"
+description="MiniTun client daemon"
+command="/usr/libexec/minitun/minitund"
+command_args="--foreground --database /var/lib/minitun/state.db --credentials /var/lib/minitun/credentials.db --socket /run/minitun/minitun.sock"
+command_user="minitun:minitun"
+pidfile="/run/${RC_SVCNAME}.pid"
+command_background=false
+
+depend() {
+    need net
+    after firewall
+}

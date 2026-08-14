@@ -1717,7 +1717,8 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
               options_.max_total_tunnels,
               [this](TunnelBinding binding, asio::ip::tcp::socket public_socket) mutable {
                   handle_public_connection(std::move(binding), std::move(public_socket));
-              }) {}
+              },
+              options_.max_udp_peer_sessions) {}
 
     void handle_public_connection(TunnelBinding binding, asio::ip::tcp::socket public_socket) {
         if (!running_.load()) {

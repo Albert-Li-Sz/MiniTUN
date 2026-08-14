@@ -468,6 +468,41 @@ install(
     COMPONENT Client
 )
 install(
+    FILES packaging/systemd/minitund-backup.service
+          packaging/systemd/minitund-backup.timer
+    DESTINATION "${MINITUN_SYSTEMD_UNIT_DIR}"
+    COMPONENT Client
+)
+install(
+    FILES packaging/openrc/minitund
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/minitun/openrc"
+    COMPONENT Client
+    PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
+)
+install(
+    FILES packaging/openrc/minitun-server
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/minitun/openrc"
+    COMPONENT Server
+    PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
+)
+install(
+    FILES packaging/s6/minitund/run
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/minitun/s6/minitund"
+    COMPONENT Client
+    PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
+)
+install(
+    FILES packaging/s6/minitun-server/run
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/minitun/s6/minitun-server"
+    COMPONENT Server
+    PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
+)
+install(
+    FILES contrib/docker-compose.yml
+    DESTINATION "${CMAKE_INSTALL_DOCDIR}/client/examples"
+    COMPONENT Client
+)
+install(
     FILES packaging/sysusers/minitun-server.conf
     DESTINATION "${MINITUN_SYSUSERS_DIR}"
     COMPONENT Server
