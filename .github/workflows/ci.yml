@@ -52,7 +52,7 @@ jobs:
 
     steps:
       - name: Check out source
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install system dependencies
         run: |
@@ -76,7 +76,7 @@ jobs:
             pkg-config
 
       - name: Restore compiler cache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ccache
           key: ccache-${{ matrix.os }}-${{ matrix.cxx }}-${{ matrix.build_type }}-${{ hashFiles('CMakeLists.txt', 'cmake/**', 'include/**', 'src/**', 'apps/**') }}
@@ -168,7 +168,7 @@ jobs:
         shell: bash
     steps:
       - name: Check out source
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install system dependencies
         run: |
