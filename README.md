@@ -55,8 +55,8 @@ flowchart LR
 公网 server 只知道 `client_id`、`tunnel_id` 和公开绑定，不知道本地目标地址。当前数据面
 保持“一条 relay 对应一条 TLS Worker”。UDP 在认证后的 Worker 上使用有界 datagram
 framing；SOCKS5 只接受无认证 CONNECT；P2P direct path 以一次性 token 认证，失败时自动
-回退到 TLS relay。当前 P2P 不包含 ICE/STUN/TURN/NAT 打洞，direct path 不额外加密应用
-数据，敏感协议应自行启用 TLS。
+回退到 TLS relay。direct path 在一次性 token 认证后升级为 TLS 1.3（token 作为外部
+PSK），应用数据全程加密。当前 P2P 不包含 ICE/STUN/TURN/NAT 打洞。
 
 ## 快速部署
 

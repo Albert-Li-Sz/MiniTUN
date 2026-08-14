@@ -168,7 +168,8 @@ quota lease 后才等待 Worker。
 成本。
 
 P2P direct 适用于 LAN 或可路由地址，不实现 ICE、STUN、TURN 或 NAT 打洞。一次性 token
-只验证候选连接，direct path 不额外加密应用数据；需要机密性的应用必须自行使用 TLS。
+先验证候选连接，随后两端把 socket 升级为 TLS 1.3，以 token 作为外部 PSK；应用数据
+全程加密，无需额外证书基础设施。
 
 ## 管理端点与指标
 

@@ -11,7 +11,7 @@ minitun-p2p \- 连接 MiniTun P2P tunnel，并自动回退到服务端 relay
 候选可达时选择 direct path，否则自动保留原连接作为 relay path。
 .PP
 当前实现适合 LAN 或具备可路由地址的主机，不包含 ICE、STUN、TURN 或 NAT 打洞。
-direct path 使用一次性 token 认证，但不额外加密应用数据；敏感协议应自行启用 TLS。
+direct path 使用一次性 token 认证并升级为 TLS 1.3，token 作为外部 PSK 加密应用数据。
 .SH 参数
 .TP
 .I remote-endpoint

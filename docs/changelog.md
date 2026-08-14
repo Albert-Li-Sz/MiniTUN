@@ -23,7 +23,7 @@ title: 变更日志
   占用，适合路由器、NAS 与边缘设备。
 
 ::: warning P2P 边界
-当前 P2P 不实现 ICE/STUN/TURN/NAT 打洞，direct path 不额外加密应用数据；候选不可达时
+当前 P2P 不实现 ICE/STUN/TURN/NAT 打洞；direct path 经 TLS 1.3 PSK 加密；候选不可达时
 自动回退到认证 TLS relay。
 :::
 

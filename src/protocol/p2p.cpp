@@ -21,6 +21,8 @@
 #include <asio/write.hpp>
 
 #include <openssl/crypto.h>
+#include <openssl/evp.h>
+#include <openssl/ssl.h>
 
 #include <minitun/common/error.hpp>
 #include <minitun/protocol/auth.hpp>
@@ -49,6 +51,88 @@ void close_socket(asio::ip::tcp::socket& socket) noexcept {
     socket.cancel(ignored);
     socket.shutdown(asio::ip::tcp::socket::shutdown_both, ignored);
     socket.close(ignored);
+}
+
+// The direct path upgrades to TLS 1.3 with the one-time rendezvous token as an
+// external PSK, so the raw candidate socket never carries application data in
+// the clear. The identity string is the only information sent in plaintext.
+inline constexpr std::string_view kDirectPskIdentity{"minitun-p2p-direct-v1"};
+[[nodiscard]] int direct_psk_ex_index() noexcept {
+    // asio::ssl stores its own verify callback in SSL app-data, so the token
+    // travels through a dedicated ex-data slot instead.
+    static const int index = SSL_get_ex_new_index(0, nullptr, nullptr, nullptr, nullptr);
+    return index;
+}
+
+
+[[nodiscard]] SSL_SESSION* make_psk_session(SSL* ssl, const AuthenticationNonce& token) {
+    auto* session = SSL_SESSION_new();
+    if (session == nullptr) {
+        return nullptr;
+    }
+    // For TLS 1.3 the session acts purely as a PSK carrier: the protocol
+    // version selects TLS 1.3, the cipher field names a TLS 1.3 ciphersuite,
+    // and the master key field carries the PSK bytes.
+    constexpr std::array<unsigned char, 2U> kAes256GcmSha384Id{0x13U, 0x02U};
+    const SSL_CIPHER* const cipher = SSL_CIPHER_find(ssl, kAes256GcmSha384Id.data());
+    if (cipher == nullptr ||
+        SSL_SESSION_set_protocol_version(session, TLS1_3_VERSION) != 1 ||
+        SSL_SESSION_set_cipher(session, cipher) != 1 ||
+        SSL_SESSION_set1_master_key(session, token.data(), token.size()) != 1) {
+        SSL_SESSION_free(session);
+        return nullptr;
+    }
+    return session;
+}
+
+// OpenSSL 3.5 removed the EVP_MD parameter from the server-side PSK lookup
+// callback; keep both signatures working across supported OpenSSL versions.
+#if OPENSSL_VERSION_NUMBER >= 0x30500000L
+int find_direct_psk(SSL* ssl, const unsigned char* identity,
+                    const std::size_t identity_len, SSL_SESSION** session) {
+#else
+int find_direct_psk(SSL* ssl, const EVP_MD* /*md*/, const unsigned char* identity,
+                    const std::size_t identity_len, SSL_SESSION** session) {
+#endif
+    const auto* token =
+        static_cast<const AuthenticationNonce*>(SSL_get_ex_data(ssl, direct_psk_ex_index()));
+    if (token == nullptr || identity_len != kDirectPskIdentity.size() ||
+        !std::equal(kDirectPskIdentity.begin(), kDirectPskIdentity.end(), identity)) {
+        return 0;
+    }
+    auto* candidate = make_psk_session(ssl, *token);
+    if (candidate == nullptr) {
+        return 0;
+    }
+    *session = candidate;
+    return 1;
+}
+
+int use_direct_psk(SSL* ssl, const EVP_MD* /*md*/, const unsigned char** identity,
+                   std::size_t* identity_len, SSL_SESSION** session) {
+    const auto* token =
+        static_cast<const AuthenticationNonce*>(SSL_get_ex_data(ssl, direct_psk_ex_index()));
+    if (token == nullptr) {
+        return 0;
+    }
+    auto* candidate = make_psk_session(ssl, *token);
+    if (candidate == nullptr) {
+        return 0;
+    }
+    *identity = reinterpret_cast<const unsigned char*>(kDirectPskIdentity.data());
+    *identity_len = kDirectPskIdentity.size();
+    *session = candidate;
+    return 1;
+}
+
+void configure_direct_tls(TlsStream& stream, AuthenticationNonce& token, const bool server) {
+    auto* ssl = stream.native_handle();
+    SSL_set_ex_data(ssl, direct_psk_ex_index(), &token);
+    if (server) {
+        SSL_set_psk_find_session_callback(ssl, find_direct_psk);
+    } else {
+        SSL_set_psk_use_session_callback(ssl, use_direct_psk);
+    }
 }
 
 void shutdown_send(asio::ip::tcp::socket& socket) noexcept {
@@ -171,7 +255,7 @@ class HostRace final : public std::enable_shared_from_this<HostRace> {
         if (failure_.has_value()) {
             co_return common::Result<P2pHostUpgrade>::failure(std::move(*failure_));
         }
-        co_return P2pHostUpgrade{path_, std::move(direct_socket_)};
+        co_return P2pHostUpgrade{path_, std::move(direct_stream_)};
     }
 
   private:
@@ -234,11 +318,28 @@ class HostRace final : public std::enable_shared_from_this<HostRace> {
                                      self->accept_direct();
                                      return;
                                  }
-                                 self->path_ = P2pPath::direct;
-                                 self->direct_socket_ =
-                                     std::make_unique<asio::ip::tcp::socket>(std::move(*candidate));
-                                 self->pending_direct_.reset();
-                                 self->finish(true);
+                                 auto stream = std::make_shared<TlsStream>(
+                                     std::move(*candidate), self->direct_tls_context_);
+                                 configure_direct_tls(*stream, self->token_, true);
+                                 stream->async_handshake(
+                                     asio::ssl::stream_base::server,
+                                     [self, stream](const asio::error_code& handshake_error) {
+                                         if (self->done_) {
+                                             close_tls_stream(*stream);
+                                             return;
+                                         }
+                                         if (handshake_error) {
+                                             close_tls_stream(*stream);
+                                             self->pending_direct_.reset();
+                                             self->accept_direct();
+                                             return;
+                                         }
+                                         self->path_ = P2pPath::direct;
+                                         self->direct_stream_ =
+                                             std::make_unique<TlsStream>(std::move(*stream));
+                                         self->pending_direct_.reset();
+                                         self->finish(true);
+                                     });
                              });
         });
     }
@@ -283,7 +384,8 @@ class HostRace final : public std::enable_shared_from_this<HostRace> {
     asio::steady_timer completion_;
     std::chrono::seconds timeout_;
     std::array<std::uint8_t, kFallbackMagic.size()> fallback_{};
-    std::unique_ptr<asio::ip::tcp::socket> direct_socket_;
+    asio::ssl::context direct_tls_context_{asio::ssl::context::tlsv13_server};
+    std::unique_ptr<TlsStream> direct_stream_;
     std::shared_ptr<asio::ip::tcp::socket> pending_direct_;
     std::optional<common::Error> failure_;
     P2pPath path_{P2pPath::relay};
@@ -559,15 +661,27 @@ connect_p2p_upgrade(asio::ip::tcp::socket bootstrap_socket,
             std::copy(offer->token.begin(), offer->token.end(),
                       handshake.begin() + static_cast<std::ptrdiff_t>(kDirectMagic.size()));
             if (co_await write_exact(*direct, handshake.data(), handshake.size())) {
-                std::array<std::uint8_t, kReadyMagic.size()> ready{};
-                if (co_await read_exact(*direct, ready.data(), ready.size()) &&
-                    ready == kReadyMagic) {
-                    static_cast<void>(negotiation_timer.cancel());
-                    close_socket(*bootstrap);
-                    co_return P2pPeerUpgrade{
-                        P2pPath::direct,
-                        std::make_unique<asio::ip::tcp::socket>(std::move(*direct))};
+                asio::ssl::context direct_tls_context{asio::ssl::context::tlsv13_client};
+                auto direct_stream =
+                    std::make_shared<TlsStream>(std::move(*direct), direct_tls_context);
+                configure_direct_tls(*direct_stream, offer->token, false);
+                asio::error_code handshake_error;
+                co_await direct_stream->async_handshake(
+                    asio::ssl::stream_base::client,
+                    asio::redirect_error(asio::use_awaitable, handshake_error));
+                if (!handshake_error) {
+                    std::array<std::uint8_t, kReadyMagic.size()> ready{};
+                    if (co_await read_exact(*direct_stream, ready.data(), ready.size()) &&
+                        ready == kReadyMagic) {
+                        static_cast<void>(negotiation_timer.cancel());
+                        close_socket(*bootstrap);
+                        co_return P2pPeerUpgrade{
+                            P2pPath::direct,
+                            nullptr,
+                            std::make_unique<TlsStream>(std::move(*direct_stream))};
+                    }
                 }
+                close_tls_stream(*direct_stream);
             }
         }
     }
@@ -586,12 +700,12 @@ connect_p2p_upgrade(asio::ip::tcp::socket bootstrap_socket,
     }
     static_cast<void>(negotiation_timer.cancel());
     co_return P2pPeerUpgrade{P2pPath::relay,
-                             std::make_unique<asio::ip::tcp::socket>(std::move(*bootstrap))};
+                             std::make_unique<asio::ip::tcp::socket>(std::move(*bootstrap)),
+                             nullptr};
 }
 
-asio::awaitable<common::Result<void>> confirm_p2p_direct(asio::ip::tcp::socket& socket) {
-    if (!socket.is_open() ||
-        !co_await write_exact(socket, kReadyMagic.data(), kReadyMagic.size())) {
+asio::awaitable<common::Result<void>> confirm_p2p_direct(TlsStream& stream) {
+    if (!co_await write_exact(stream, kReadyMagic.data(), kReadyMagic.size())) {
         co_return common::Result<void>::failure(common::ErrorCode::connection_failed,
                                                 "P2P direct path could not be confirmed");
     }

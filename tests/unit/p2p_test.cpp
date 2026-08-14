@@ -175,34 +175,18 @@ TEST(P2pTest, RelayCompletesWhenPeerResetsConnection) {
     EXPECT_EQ((*relay_result)->first_to_second_bytes, 1U);
 }
 
-TEST(P2pTest, ConfirmsDirectPathWithReadyMagic) {
+TEST(P2pTest, ConfirmDirectPathRequiresAnUpgradedTlsStream) {
     asio::io_context io_context;
     auto pair = connected_pair(io_context);
-    std::optional<common::Result<void>> confirmed;
-    asio::co_spawn(
-        io_context,
-        [&]() -> asio::awaitable<void> {
-            confirmed = co_await confirm_p2p_direct(pair.second);
-        },
-        [](const std::exception_ptr& failure) { EXPECT_FALSE(failure); });
-    asio::co_spawn(
-        io_context,
-        [&]() -> asio::awaitable<void> {
-            const std::array<std::uint8_t, 4U> ready{'M', 'T', 'O', 'K'};
-            co_await asio::async_write(pair.first, asio::buffer(ready), asio::use_awaitable);
-        },
-        [](const std::exception_ptr& failure) { EXPECT_FALSE(failure); });
-    io_context.run();
-    ASSERT_TRUE(confirmed.has_value());
-    ASSERT_TRUE(*confirmed) << confirmed->error();
-
-    io_context.restart();
-    asio::ip::tcp::socket closed{io_context};
+    asio::ssl::context tls_context{asio::ssl::context::tlsv13_server};
+    TlsStream stream{std::move(pair.second), tls_context};
     std::optional<common::Result<void>> rejected;
     asio::co_spawn(
         io_context,
         [&]() -> asio::awaitable<void> {
-            rejected = co_await confirm_p2p_direct(closed);
+            // Writing the ready magic on a stream that never completed the
+            // TLS 1.3 PSK handshake must fail instead of leaking plaintext.
+            rejected = co_await confirm_p2p_direct(stream);
         },
         [](const std::exception_ptr& failure) { EXPECT_FALSE(failure); });
     io_context.run();

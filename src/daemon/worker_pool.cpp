@@ -342,19 +342,19 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
                 protocol::configure_tcp_transport(*local_socket_);
 
                 if (upgraded->path == protocol::P2pPath::direct &&
-                    upgraded->direct_socket != nullptr) {
-                    p2p_socket_ = std::move(upgraded->direct_socket);
-                    protocol::configure_tcp_transport(*p2p_socket_);
+                    upgraded->direct_stream != nullptr) {
+                    p2p_socket_ = std::move(upgraded->direct_stream);
                     auto confirmed = co_await protocol::confirm_p2p_direct(*p2p_socket_);
                     if (!confirmed) {
                         co_return;
                     }
-                    auto relayed = co_await protocol::relay_tcp_and_tcp(
-                        *p2p_socket_, *local_socket_, pool->options_.relay_inactivity_timeout);
+                    auto relayed = co_await protocol::relay_tls_and_tcp(
+                        *p2p_socket_, *local_socket_,
+                        {.inactivity_timeout = pool->options_.relay_inactivity_timeout});
                     if (relayed && pool->options_.relay_stats_handler) {
                         try {
-                            pool->options_.relay_stats_handler(relayed->first_to_second_bytes,
-                                                               relayed->second_to_first_bytes);
+                            pool->options_.relay_stats_handler(relayed->tls_to_tcp_bytes,
+                                                               relayed->tcp_to_tls_bytes);
                         } catch (...) {
                         }
                     }
@@ -496,9 +496,7 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
                             self->local_udp_socket_->close(ignored);
                         }
                         if (self->p2p_socket_ != nullptr) {
-                            asio::error_code ignored;
-                            self->p2p_socket_->cancel(ignored);
-                            self->p2p_socket_->close(ignored);
+                            protocol::close_tls_stream(*self->p2p_socket_);
                         }
                         protocol::close_tls_stream(self->stream_);
                     }
@@ -530,9 +528,7 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
                 local_udp_socket_.reset();
             }
             if (p2p_socket_ != nullptr) {
-                asio::error_code ignored;
-                p2p_socket_->cancel(ignored);
-                p2p_socket_->close(ignored);
+                protocol::close_tls_stream(*p2p_socket_);
                 p2p_socket_.reset();
             }
             protocol::close_tls_stream(stream_);
@@ -558,7 +554,7 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
         protocol::TlsStream stream_;
         std::unique_ptr<asio::ip::tcp::socket> local_socket_;
         std::unique_ptr<asio::ip::udp::socket> local_udp_socket_;
-        std::unique_ptr<asio::ip::tcp::socket> p2p_socket_;
+        std::unique_ptr<protocol::TlsStream> p2p_socket_;
         asio::steady_timer operation_timer_;
         protocol::StateMachine state_;
         std::shared_ptr<WorkerBudget> connection_budget_;

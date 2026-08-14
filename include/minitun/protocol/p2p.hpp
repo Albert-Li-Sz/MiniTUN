@@ -20,12 +20,18 @@ enum class P2pPath : std::uint8_t {
 
 struct P2pHostUpgrade final {
     P2pPath path{P2pPath::relay};
-    std::unique_ptr<asio::ip::tcp::socket> direct_socket;
+    /// Direct path only: the accepted candidate socket upgraded to TLS 1.3
+    /// with the one-time rendezvous token as an external PSK.
+    std::unique_ptr<TlsStream> direct_stream;
 };
 
 struct P2pPeerUpgrade final {
     P2pPath path{P2pPath::relay};
+    /// Relay path only: the raw bootstrap socket kept as the TLS relay.
     std::unique_ptr<asio::ip::tcp::socket> socket;
+    /// Direct path only: the candidate socket upgraded to TLS 1.3 with the
+    /// one-time rendezvous token as an external PSK.
+    std::unique_ptr<TlsStream> direct_stream;
 };
 
 struct P2pRelayStats final {
@@ -38,7 +44,9 @@ struct P2pRelayStats final {
 
 /// Offers the address used by the authenticated Worker connection as a direct
 /// TCP candidate. A peer that cannot reach it requests relay fallback over the
-/// already-established TLS Worker stream.
+/// already-established TLS Worker stream. A successful direct candidate is
+/// upgraded to TLS 1.3 with the one-time token as an external PSK before it is
+/// returned.
 [[nodiscard]] asio::awaitable<common::Result<P2pHostUpgrade>>
 accept_p2p_upgrade(TlsStream& relay_stream, const asio::ip::address& candidate_address,
                    std::chrono::seconds negotiation_timeout = std::chrono::seconds{5});
@@ -51,9 +59,10 @@ connect_p2p_upgrade(asio::ip::tcp::socket bootstrap_socket,
                     std::chrono::seconds direct_connect_timeout = std::chrono::seconds{2},
                     bool direct_enabled = true);
 
-/// Confirms that the local service is ready on the selected direct path.
+/// Confirms that the local service is ready on the selected direct path. The
+/// stream is already TLS 1.3 with the rendezvous token as the PSK.
 [[nodiscard]] asio::awaitable<common::Result<void>>
-confirm_p2p_direct(asio::ip::tcp::socket& socket);
+confirm_p2p_direct(TlsStream& stream);
 
 /// Confirms that the local service is ready on the TLS relay fallback.
 [[nodiscard]] asio::awaitable<common::Result<void>> confirm_p2p_relay(TlsStream& stream);

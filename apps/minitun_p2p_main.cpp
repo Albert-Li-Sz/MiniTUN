@@ -22,6 +22,7 @@
 #include <minitun/common/endpoint.hpp>
 #include <minitun/common/version.hpp>
 #include <minitun/protocol/p2p.hpp>
+#include <minitun/protocol/relay.hpp>
 #include <minitun/protocol/tls.hpp>
 
 namespace {
@@ -67,13 +68,21 @@ handle_connection(tcp::socket local_socket, minitun::common::Endpoint remote_end
     minitun::protocol::configure_tcp_transport(*bootstrap);
     auto upgraded = co_await minitun::protocol::connect_p2p_upgrade(
         std::move(*bootstrap), negotiation_timeout, direct_timeout, direct_enabled);
-    if (!upgraded || upgraded->socket == nullptr) {
+    if (!upgraded || (upgraded->path == minitun::protocol::P2pPath::direct
+                          ? upgraded->direct_stream == nullptr
+                          : upgraded->socket == nullptr)) {
         close_socket(local_socket);
         co_return;
     }
     std::clog << "minitun-p2p: selected "
               << (upgraded->path == minitun::protocol::P2pPath::direct ? "direct" : "relay")
               << " path\n";
+    if (upgraded->path == minitun::protocol::P2pPath::direct) {
+        static_cast<void>(co_await minitun::protocol::relay_tls_and_tcp(
+            *upgraded->direct_stream, local_socket,
+            {.inactivity_timeout = inactivity_timeout}));
+        co_return;
+    }
     minitun::protocol::configure_tcp_transport(*upgraded->socket);
     static_cast<void>(co_await minitun::protocol::relay_tcp_and_tcp(local_socket, *upgraded->socket,
                                                                     inactivity_timeout));

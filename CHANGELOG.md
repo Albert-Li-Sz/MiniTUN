@@ -9,6 +9,8 @@ MiniTun 的所有重要变更都会记录在此文件中。本文档以
 ### 新增
 
 - systemd 单元增加 `MemoryMax`/`TasksMax` 硬资源上限，用 drop-in 可按需放宽。
+- P2P direct path 在一次性 token 认证后升级为 TLS 1.3，以 token 作为外部 PSK
+  加密应用数据，不再明文传输；relay 回退行为不变。
 
 ### 移除
 
@@ -68,8 +70,8 @@ MiniTun 的所有重要变更都会记录在此文件中。本文档以
 
 ### 安全边界
 
-- 当前 P2P 不实现 ICE、STUN、TURN 或 NAT 打洞；一次性 token 只认证 direct candidate，
-  direct application data 不额外加密，敏感应用必须自行使用 TLS。
+- 当前 P2P 不实现 ICE、STUN、TURN 或 NAT 打洞；direct path 在一次性 token 认证后
+  升级为 TLS 1.3（token 作为外部 PSK），应用数据全程加密。
 
 ### 移除
 
