@@ -41,7 +41,9 @@ on:
 
 permissions:
   contents: read
-  # GITHUB_TOKEN pushes OCI images to ghcr.io in the oci job.
+  # GITHUB_TOKEN pushes OCI images to ghcr.io in the oci job. Bash steps derive
+  # the namespace as ${GITHUB_REPOSITORY_OWNER,,}; action inputs that cannot use
+  # bash expansion keep the literal lowercase namespace, which GHCR requires.
   packages: write
   id-token: write
   attestations: write
@@ -659,7 +661,7 @@ jobs:
           docker run --privileged --rm tonistiigi/binfmt --install arm64,arm,riscv64
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -699,16 +701,16 @@ jobs:
 
             docker build \
               --platform "${platform}" \
-              -t "ghcr.io/albert-li-sz/minitun-server:${version}-linux-${suffix}" \
+              -t "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/minitun-server:${version}-linux-${suffix}" \
               -f packaging/oci/Dockerfile.server \
               "${server_ctx}"
             docker build \
               --platform "${platform}" \
-              -t "ghcr.io/albert-li-sz/minitun-client:${version}-linux-${suffix}" \
+              -t "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/minitun-client:${version}-linux-${suffix}" \
               -f packaging/oci/Dockerfile.client \
               "${client_ctx}"
-            docker push "ghcr.io/albert-li-sz/minitun-server:${version}-linux-${suffix}"
-            docker push "ghcr.io/albert-li-sz/minitun-client:${version}-linux-${suffix}"
+            docker push "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/minitun-server:${version}-linux-${suffix}"
+            docker push "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/minitun-client:${version}-linux-${suffix}"
           done
 
       - name: Create and push multi-architecture manifests
@@ -719,17 +721,17 @@ jobs:
           for image in minitun-server minitun-client; do
             manifest_args=()
             for suffix in "${suffixes[@]}"; do
-              manifest_args+=(--amend "ghcr.io/albert-li-sz/${image}:${version}-linux-${suffix}")
+              manifest_args+=(--amend "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/${image}:${version}-linux-${suffix}")
             done
             docker manifest create \
-              "ghcr.io/albert-li-sz/${image}:${version}" \
+              "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/${image}:${version}" \
               "${manifest_args[@]}"
-            docker manifest push "ghcr.io/albert-li-sz/${image}:${version}"
+            docker manifest push "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/${image}:${version}"
             if [[ "${PACKAGE_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
               docker manifest create \
-                "ghcr.io/albert-li-sz/${image}:latest" \
+                "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/${image}:latest" \
                 "${manifest_args[@]}"
-              docker manifest push "ghcr.io/albert-li-sz/${image}:latest"
+              docker manifest push "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/${image}:latest"
             fi
           done
 
@@ -741,7 +743,7 @@ jobs:
           set -euo pipefail
           version=${ARTIFACT_VERSION}
           for image in minitun-server minitun-client; do
-            reference="ghcr.io/albert-li-sz/${image}:${version}"
+            reference="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/${image}:${version}"
             digest="sha256:$(docker buildx imagetools inspect --raw "${reference}" | sha256sum | awk '{print $1}')"
             immutable_reference="${reference}@${digest}"
             cosign sign --yes "${immutable_reference}"
@@ -799,8 +801,8 @@ jobs:
           CLIENT_DIGEST: ${{ steps.image-digests.outputs.client_digest }}
         run: |
           set -euo pipefail
-          server_ref="ghcr.io/albert-li-sz/minitun-server@${SERVER_DIGEST}"
-          client_ref="ghcr.io/albert-li-sz/minitun-client@${CLIENT_DIGEST}"
+          server_ref="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/minitun-server@${SERVER_DIGEST}"
+          client_ref="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/minitun-client@${CLIENT_DIGEST}"
           cosign attest --yes --type spdxjson \
             --predicate "oci-sbom/minitun-server-${ARTIFACT_VERSION}.spdx.json" \
             "${server_ref}"
@@ -834,14 +836,14 @@ jobs:
       - name: Attest server image provenance
         uses: actions/attest@v4
         with:
-          subject-name: ghcr.io/albert-li-sz/minitun-server
+          subject-name: ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/minitun-server
           subject-digest: ${{ steps.image-digests.outputs.server_digest }}
           push-to-registry: true
 
       - name: Attest client image provenance
         uses: actions/attest@v4
         with:
-          subject-name: ghcr.io/albert-li-sz/minitun-client
+          subject-name: ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/minitun-client
           subject-digest: ${{ steps.image-digests.outputs.client_digest }}
           push-to-registry: true
 
@@ -869,7 +871,7 @@ jobs:
           - riscv64
     steps:
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}

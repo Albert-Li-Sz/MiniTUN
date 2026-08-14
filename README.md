@@ -8,7 +8,7 @@
 > 面向 Linux 的资源占用最小、自托管多传输内网穿透工具。
 
 > **发布状态：** [`v1.0.0`](https://github.com/Albert-Li-Sz/MiniTUN/releases/tag/v1.0.0)
-> 已于 2026-08-14 发布，是本代源码的首个正式版本。此前全部 v0.x 与旧版 v1.0.0
+> 已于 2026-08-13 发布，是本代源码的首个正式版本。此前全部 v0.x 与旧版 v1.0.0
 > 发行记录已删除，公开历史从本版本重新开始。它包含 TCP、UDP、SOCKS5、P2P 四种
 > tunnel mode、两个稳定 SOVERSION 1 SDK，并聚焦最小资源占用：无 Web GUI、无脚本
 > 运行时。
@@ -36,9 +36,9 @@ MiniTun 将公网服务器上的 TCP 或 UDP 端口转发到内网服务，也�
 - 本地控制 C11 ABI/C++20 RAII SDK，以及 Remote Protocol v2 C++20 codec/decoder SDK；
   可通过 `MiniTun::Client`、`MiniTun::RemoteProtocol` 或对应 pkg-config 文件链接，
   SOVERSION 均为 1。
-- 无 Web GUI、无额外运行时依赖：C++20 单一 daemon 进程、嵌入式 SQLite 状态库，
-  systemd 单元自带沙箱加固与文件描述符上限，适合路由器、NAS 与边缘设备等
-  低资源环境。
+- 无 Web GUI、无脚本运行时（无 Node/Python 依赖）：C++20 单一 daemon 进程、嵌入式
+  SQLite 状态库，运行时仅链接系统 OpenSSL 与 SQLite，systemd 单元自带沙箱加固与
+  文件描述符上限，适合路由器、NAS 与边缘设备等低资源环境。
 - DEB/RPM 分离为 client、server、SDK runtime、SDK development；同时发布多架构 OCI、
   SPDX/CycloneDX SBOM、SHA-256、keyless 签名与 provenance attestation。
 
