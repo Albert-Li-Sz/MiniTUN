@@ -958,11 +958,12 @@ common::Result<TunnelRecord> read_tunnel(sqlite3_stmt* statement) {
     auto last_synced_at = optional_int64(statement, 14, "tunnels.last_synced_at");
     auto config_revision = required_int64(statement, 15, "tunnels.config_revision");
     auto managed_by_config = required_int64(statement, 16, "tunnels.managed_by_config");
+    auto proxy_protocol = required_int64(statement, 17, "tunnels.proxy_protocol");
 
     if (!id_text || !name || !server_id_text || !protocol_text || !local_host || !local_port ||
         !remote_host || !remote_port || !desired_text || !actual_text || !error_text ||
         !error_message || !created_at || !updated_at || !last_synced_at || !config_revision ||
-        !managed_by_config) {
+        !managed_by_config || !proxy_protocol) {
         return common::Error{common::ErrorCode::database_error,
                              "database contains a malformed tunnel row"};
     }
@@ -977,7 +978,8 @@ common::Result<TunnelRecord> read_tunnel(sqlite3_stmt* statement) {
     const auto actual = tunnel_actual_state_from_string(*actual_text);
     if (!id || !server_id || !local_endpoint || !remote_endpoint || !protocol.has_value() ||
         !desired.has_value() || !actual.has_value() || *config_revision <= 0 ||
-        (*managed_by_config != 0 && *managed_by_config != 1)) {
+        (*managed_by_config != 0 && *managed_by_config != 1) ||
+        (*proxy_protocol != 0 && *proxy_protocol != 1)) {
         return common::Error{common::ErrorCode::database_error,
                              "database contains an invalid tunnel row"};
     }
@@ -1006,6 +1008,7 @@ common::Result<TunnelRecord> read_tunnel(sqlite3_stmt* statement) {
         .last_synced_at_unix_ms = *last_synced_at,
         .config_revision = static_cast<std::uint64_t>(*config_revision),
         .managed_by_config = *managed_by_config != 0,
+        .proxy_protocol = *proxy_protocol != 0,
     };
     auto validated = validate_tunnel_record(record);
     if (!validated) {

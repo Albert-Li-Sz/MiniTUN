@@ -104,13 +104,13 @@ TEST(StorageDatabaseTest, FreshDatabaseMigratesCompleteVersionFiveSchema) {
               4);
     EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM pragma_table_info('schema_version')"), 2);
     EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM pragma_table_info('servers')"), 19);
-    EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM pragma_table_info('tunnels')"), 17);
+    EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM pragma_table_info('tunnels')"), 18);
     EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM pragma_table_info('daemon_identity')"), 2);
     EXPECT_EQ(
         probe.query_int64("SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name IN ("
                           "'idx_servers_reconcile', 'idx_tunnels_reconcile', 'idx_tunnels_name')"),
         3);
-    EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM schema_version"), 5);
+    EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM schema_version"), 6);
     EXPECT_EQ(probe.query_int64("SELECT MAX(version) FROM schema_version"), kCurrentSchemaVersion);
     EXPECT_GE(probe.query_int64("SELECT MIN(applied_at) FROM schema_version"), 0);
     EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM daemon_identity"), 0);
@@ -214,7 +214,7 @@ TEST(StorageDatabaseTest, ReopeningCurrentSchemaIsIdempotentAndPreservesData) {
     EXPECT_EQ(*restored, sample_server());
 
     NativeSqliteDatabase probe{temporary.path(), SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX};
-    EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM schema_version"), 5);
+    EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM schema_version"), 6);
     EXPECT_EQ(probe.query_int64("SELECT applied_at FROM schema_version WHERE version = 1"),
               first_applied_at);
     EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM servers"), 1);
@@ -229,7 +229,7 @@ TEST(StorageDatabaseTest, RejectsVersionOneDatabasesFromPreV1Releases) {
     }
     {
         NativeSqliteDatabase fixture{temporary.path()};
-        fixture.execute("DELETE FROM schema_version WHERE version IN (2, 3, 4, 5)");
+        fixture.execute("DELETE FROM schema_version WHERE version IN (2, 3, 4, 5, 6)");
     }
 
     const auto rejected = StateRepository::open(temporary.path_string());
@@ -251,7 +251,7 @@ TEST(StorageDatabaseTest, RejectsVersionTwoDatabasesFromPreV1Releases) {
     }
     {
         NativeSqliteDatabase fixture{temporary.path()};
-        fixture.execute("DELETE FROM schema_version WHERE version IN (3, 4, 5)");
+        fixture.execute("DELETE FROM schema_version WHERE version IN (3, 4, 5, 6)");
     }
 
     const auto rejected = StateRepository::open(temporary.path_string());
@@ -271,7 +271,7 @@ TEST(StorageDatabaseTest, RejectsVersionThreeDatabasesFromV041) {
     }
     {
         NativeSqliteDatabase fixture{temporary.path()};
-        fixture.execute("DELETE FROM schema_version WHERE version IN (4, 5)");
+        fixture.execute("DELETE FROM schema_version WHERE version IN (4, 5, 6)");
     }
 
     const auto rejected = StateRepository::open(temporary.path_string());
@@ -311,7 +311,7 @@ TEST(StorageDatabaseTest, RejectsFutureSchemaWithoutChangingItsData) {
         NativeSqliteDatabase fixture{temporary.path()};
         fixture.execute(
             "CREATE TABLE schema_version(version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL);"
-            "INSERT INTO schema_version(version, applied_at) VALUES(6, 1234);"
+            "INSERT INTO schema_version(version, applied_at) VALUES(7, 1234);"
             "CREATE TABLE future_data(value TEXT NOT NULL);"
             "INSERT INTO future_data(value) VALUES('preserve-me');");
     }
@@ -321,7 +321,7 @@ TEST(StorageDatabaseTest, RejectsFutureSchemaWithoutChangingItsData) {
     EXPECT_EQ(opened.error().code(), common::ErrorCode::unsupported_version);
 
     NativeSqliteDatabase probe{temporary.path(), SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX};
-    EXPECT_EQ(probe.query_int64("SELECT version FROM schema_version"), 6);
+    EXPECT_EQ(probe.query_int64("SELECT version FROM schema_version"), 7);
     EXPECT_EQ(probe.query_int64("SELECT applied_at FROM schema_version"), 1'234);
     EXPECT_EQ(probe.query_text("SELECT value FROM future_data"), "preserve-me");
     EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM sqlite_master "
@@ -462,13 +462,13 @@ TEST(StorageDatabaseTest, MigratesVersionFourInPlaceAndRejectsPartialMigrationOb
         }
         {
             NativeSqliteDatabase fixture{temporary.path()};
-            fixture.execute("DELETE FROM schema_version WHERE version = 5");
+            fixture.execute("DELETE FROM schema_version WHERE version IN (5, 6)");
         }
         auto migrated = Database::open(temporary.path_string());
         ASSERT_TRUE(migrated) << migrated.error();
-        EXPECT_EQ(*(*migrated)->schema_version(), 5);
+        EXPECT_EQ(*(*migrated)->schema_version(), 6);
         NativeSqliteDatabase probe{temporary.path(), SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX};
-        EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM schema_version"), 5);
+        EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM schema_version"), 6);
         EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM servers"), 1);
     }
     {
@@ -482,7 +482,7 @@ TEST(StorageDatabaseTest, MigratesVersionFourInPlaceAndRejectsPartialMigrationOb
         {
             NativeSqliteDatabase fixture{temporary.path()};
             fixture.execute("CREATE TABLE tunnels_v4 AS SELECT * FROM tunnels;"
-                            "DELETE FROM schema_version WHERE version = 5");
+                            "DELETE FROM schema_version WHERE version IN (5, 6)");
         }
         const auto rejected = Database::open(temporary.path_string());
         ASSERT_FALSE(rejected);
@@ -498,7 +498,7 @@ TEST(StorageDatabaseTest, MigratesVersionFourInPlaceAndRejectsPartialMigrationOb
         }
         {
             NativeSqliteDatabase fixture{temporary.path()};
-            fixture.execute("DELETE FROM schema_version WHERE version IN (4, 5)");
+            fixture.execute("DELETE FROM schema_version WHERE version IN (4, 5, 6)");
         }
         const auto rejected = Database::open(temporary.path_string());
         ASSERT_FALSE(rejected);

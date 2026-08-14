@@ -147,6 +147,7 @@ struct TunnelRecord final {
 
     std::uint64_t config_revision{1U};
     bool managed_by_config{false};
+    bool proxy_protocol{false};
 
     friend bool operator==(const TunnelRecord&, const TunnelRecord&) = default;
 };

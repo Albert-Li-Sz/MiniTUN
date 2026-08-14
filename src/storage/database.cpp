@@ -242,6 +242,8 @@ CREATE TABLE tunnels (
         CHECK(typeof(config_revision) = 'integer' AND config_revision BETWEEN 1 AND 9223372036854775807),
     managed_by_config INTEGER NOT NULL DEFAULT 0
         CHECK(typeof(managed_by_config) = 'integer' AND managed_by_config IN (0, 1)),
+    proxy_protocol INTEGER NOT NULL DEFAULT 0
+        CHECK(typeof(proxy_protocol) = 'integer' AND proxy_protocol IN (0, 1)),
 
     FOREIGN KEY(server_id)
         REFERENCES servers(id)
@@ -482,7 +484,7 @@ CREATE TABLE daemon_identity (
         "SELECT id, name, server_id, protocol, local_host, local_port, "
         "remote_host, remote_port, desired_state, actual_state, "
         "last_error_code, last_error_message, created_at, updated_at, last_synced_at, "
-        "config_revision, managed_by_config "
+        "config_revision, managed_by_config, proxy_protocol "
         "FROM tunnels LIMIT 0",
         "validate tunnels schema");
     if (!tunnels) {
@@ -491,7 +493,7 @@ CREATE TABLE daemon_identity (
     auto tunnel_column_count =
         internal::query_single_int64(database, "SELECT COUNT(*) FROM pragma_table_info('tunnels')",
                                      "validate tunnels column count");
-    if (!tunnel_column_count || *tunnel_column_count != 17) {
+    if (!tunnel_column_count || *tunnel_column_count != 18) {
         return common::Error{common::ErrorCode::database_error,
                              "tunnels schema has an unexpected column layout"};
     }
@@ -640,6 +642,34 @@ CREATE TABLE daemon_identity (
     }
 
     return record_schema_version(database, 5);
+}
+
+[[nodiscard]] common::Result<void> apply_version_six(sqlite3* database) {
+    constexpr std::pair<std::string_view, std::string_view> statements[]{
+        {"ALTER TABLE tunnels RENAME TO tunnels_v5", "stage proxy-protocol tunnel migration"},
+        {kCreateTunnels, "create proxy-protocol-aware tunnels table"},
+        {"INSERT INTO tunnels("
+         "id, name, server_id, protocol, local_host, local_port, remote_host, remote_port, "
+         "desired_state, actual_state, last_error_code, last_error_message, created_at, "
+         "updated_at, last_synced_at, config_revision, managed_by_config, proxy_protocol"
+         ") SELECT "
+         "id, name, server_id, protocol, local_host, local_port, remote_host, remote_port, "
+         "desired_state, actual_state, last_error_code, last_error_message, created_at, "
+         "updated_at, last_synced_at, config_revision, managed_by_config, 0 FROM tunnels_v5",
+         "copy tunnels into proxy-protocol-aware schema"},
+        {"DROP TABLE tunnels_v5", "finish proxy-protocol tunnel migration"},
+        {kCreateTunnelReconcileIndex, "recreate tunnel reconciliation index"},
+        {kCreateTunnelNameIndex, "recreate tunnel name index"},
+    };
+
+    for (const auto& [sql, operation] : statements) {
+        auto result = internal::execute(database, sql, operation);
+        if (!result) {
+            return migration_error(result.error());
+        }
+    }
+
+    return record_schema_version(database, 6);
 }
 
 } // namespace
@@ -946,6 +976,12 @@ common::Result<void> Database::migrate() {
             return fail(applied.error());
         }
         version = 5;
+    }
+    if (version == 5) {
+        if (auto applied = apply_version_six(handle_); !applied) {
+            return fail(applied.error());
+        }
+        version = 6;
     }
     if (version != kCurrentSchemaVersion) {
         return fail(common::Error{

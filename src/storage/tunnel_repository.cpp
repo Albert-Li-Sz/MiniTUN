@@ -23,7 +23,7 @@ constexpr std::string_view kTunnelColumns =
     "id, name, server_id, protocol, local_host, local_port, "
     "remote_host, remote_port, desired_state, actual_state, "
     "last_error_code, last_error_message, created_at, updated_at, last_synced_at, "
-    "config_revision, managed_by_config";
+    "config_revision, managed_by_config, proxy_protocol";
 
 [[nodiscard]] common::Result<void> bind_optional_text(internal::Statement& statement,
                                                       const int index,
@@ -90,9 +90,9 @@ common::Result<void> TunnelRepository::create(const TunnelRecord& record,
         "id, name, server_id, protocol, local_host, local_port, "
         "remote_host, remote_port, desired_state, actual_state, "
         "last_error_code, last_error_message, created_at, updated_at, last_synced_at, "
-        "config_revision, managed_by_config"
+        "config_revision, managed_by_config, proxy_protocol"
         ") VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, "
-        "?16, ?17)",
+        "?16, ?17, ?18)",
         "insert tunnel record");
     if (!statement) {
         return fail(statement.error());
@@ -118,6 +118,7 @@ common::Result<void> TunnelRepository::create(const TunnelRecord& record,
             : statement->bind_null(15),
         statement->bind_int64(16, static_cast<std::int64_t>(record.config_revision)),
         statement->bind_int64(17, record.managed_by_config ? 1 : 0),
+        statement->bind_int64(18, record.proxy_protocol ? 1 : 0),
     };
     for (auto& binding : bindings) {
         if (!binding) {
@@ -345,8 +346,9 @@ common::Result<void> TunnelRepository::update(const TunnelRecord& record,
         "name = ?1, server_id = ?2, protocol = ?3, local_host = ?4, local_port = ?5, "
         "remote_host = ?6, remote_port = ?7, desired_state = ?8, actual_state = ?9, "
         "last_error_code = ?10, last_error_message = ?11, updated_at = ?12, "
-        "last_synced_at = ?13, config_revision = ?14, managed_by_config = ?15 "
-        "WHERE id = ?16",
+        "last_synced_at = ?13, config_revision = ?14, managed_by_config = ?15, "
+        "proxy_protocol = ?16 "
+        "WHERE id = ?17",
         "update tunnel record");
     if (!statement) {
         return fail(statement.error());
@@ -370,7 +372,8 @@ common::Result<void> TunnelRepository::update(const TunnelRecord& record,
             : statement->bind_null(13),
         statement->bind_int64(14, static_cast<std::int64_t>(record.config_revision)),
         statement->bind_int64(15, record.managed_by_config ? 1 : 0),
-        statement->bind_text(16, record.id.str()),
+        statement->bind_int64(16, record.proxy_protocol ? 1 : 0),
+        statement->bind_text(17, record.id.str()),
     };
     for (auto& binding : bindings) {
         if (!binding) {
