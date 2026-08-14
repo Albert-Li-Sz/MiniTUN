@@ -45,9 +45,10 @@ jobs:
             -v "$PWD:/src" -w /src \
             alpine:3.21 sh -eu -c '
               apk add --no-cache build-base cmake ninja openssl-dev sqlite-dev \
-                linux-headers git binutils
+                linux-headers git binutils curl
               cmake -S . -B build-static -G Ninja \
                 -DCMAKE_BUILD_TYPE=Release \
+                -DMINITUN_USE_SYSTEM_DEPS=OFF \
                 -DMINITUN_BUILD_TESTS=OFF \
                 -DMINITUN_BUILD_PACKAGES=OFF \
                 -DCMAKE_EXE_LINKER_FLAGS="-static"
