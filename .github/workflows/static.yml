@@ -26,8 +26,10 @@ jobs:
         include:
           - arch: x86_64
             platform: linux/amd64
+            openssl_target: linux-x86_64
           - arch: aarch64
             platform: linux/arm64
+            openssl_target: linux-aarch64
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -44,13 +46,36 @@ jobs:
           docker run --rm --platform "${{ matrix.platform }}" \
             -v "$PWD:/src" -w /src \
             alpine:3.21 sh -eu -c '
-              apk add --no-cache build-base cmake ninja openssl-dev sqlite-dev \
-                linux-headers git binutils curl
+              apk add --no-cache build-base cmake ninja linux-headers git binutils \
+                curl perl make
+              # Alpine ships no static OpenSSL/SQLite libraries, so both are
+              # built from pinned, checksum-verified sources.
+              curl -fsSL "https://www.openssl.org/source/openssl-3.0.16.tar.gz" -o openssl.tar.gz
+              echo "57e03c50feab5d31b152af2b764f10379aecd8ee92f16c985983ce4a99f7ef86  openssl.tar.gz" | sha256sum -c -
+              tar -xzf openssl.tar.gz
+              cd openssl-3.0.16
+              ./Configure "${{ matrix.openssl_target }}" \
+                no-shared no-tests no-apps no-docs --prefix=/usr/local
+              make -j2
+              make install_sw
+              cd ..
+              curl -fsSL "https://www.sqlite.org/2025/sqlite-amalgamation-3500300.zip" -o sqlite.zip
+              echo "9ad6d16cbc1df7cd55c8b55127c82a9bca5e9f287818de6dc87e04e73599d754  sqlite.zip" | sha256sum -c -
+              unzip -q sqlite.zip
+              cd sqlite-amalgamation-3500300
+              gcc -O2 -c sqlite3.c -o sqlite3.o
+              ar rcs libsqlite3.a sqlite3.o
+              install -m 0644 sqlite3.h sqlite3ext.h /usr/local/include/
+              install -m 0644 libsqlite3.a /usr/local/lib/
+              cd ..
               cmake -S . -B build-static -G Ninja \
                 -DCMAKE_BUILD_TYPE=Release \
                 -DMINITUN_USE_SYSTEM_DEPS=OFF \
                 -DMINITUN_BUILD_TESTS=OFF \
                 -DMINITUN_BUILD_PACKAGES=OFF \
+                -DCMAKE_PREFIX_PATH=/usr/local \
+                -DSQLite3_INCLUDE_DIR=/usr/local/include \
+                -DSQLite3_LIBRARY=/usr/local/lib/libsqlite3.a \
                 -DOPENSSL_USE_STATIC_LIBS=TRUE \
                 -DCMAKE_FIND_LIBRARY_SUFFIXES=.a \
                 -DCMAKE_EXE_LINKER_FLAGS="-static"
