@@ -51,6 +51,8 @@ jobs:
                 -DMINITUN_USE_SYSTEM_DEPS=OFF \
                 -DMINITUN_BUILD_TESTS=OFF \
                 -DMINITUN_BUILD_PACKAGES=OFF \
+                -DOPENSSL_USE_STATIC_LIBS=TRUE \
+                -DCMAKE_FIND_LIBRARY_SUFFIXES=.a \
                 -DCMAKE_EXE_LINKER_FLAGS="-static"
               cmake --build build-static --parallel 2
               ./build-static/minitun --version

@@ -11,6 +11,8 @@ MiniTun 的所有重要变更都会记录在此文件中。本文档以
 - systemd 单元增加 `MemoryMax`/`TasksMax` 硬资源上限，用 drop-in 可按需放宽。
 - P2P direct path 在一次性 token 认证后升级为 TLS 1.3，以 token 作为外部 PSK
   加密应用数据，不再明文传输；relay 回退行为不变。
+- 发布新增 `x86_64`/`aarch64` 的 musl 完全静态二进制归档（`static.yml`，无
+  glibc/OpenSSL 运行时依赖），自动附带 SHA-256。
 
 ### 移除
 
