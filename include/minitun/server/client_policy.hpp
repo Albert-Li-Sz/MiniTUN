@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -7,6 +8,8 @@
 #include <string>
 #include <string_view>
 #include <vector>
+
+#include <asio/ip/address.hpp>
 
 #include <minitun/common/port_range.hpp>
 #include <minitun/common/result.hpp>
@@ -29,6 +32,13 @@ struct ClientCertificateBinding final {
                            const ClientCertificateBinding&) = default;
 };
 
+struct SourceCidr final {
+    asio::ip::address network;
+    std::uint8_t prefix{0U};
+
+    friend bool operator==(const SourceCidr&, const SourceCidr&) = default;
+};
+
 struct ClientPolicy final {
     std::string client_id;
     bool enabled{true};
@@ -38,12 +48,49 @@ struct ClientPolicy final {
     std::size_t max_connections{0U};
     std::size_t max_idle_workers{0U};
     ClientCertificateBinding certificate;
+    /// Optional source-address allowlist; an empty list allows every source.
+    std::vector<SourceCidr> allowed_source_cidrs;
+    /// Per-source connection rate; zero disables rate limiting.
+    std::uint32_t connections_per_minute{0U};
 
     /// A non-reversible digest used only to identify policy changes on reload.
     std::string revision_fingerprint;
 
     [[nodiscard]] bool allows_port(std::uint16_t port) const noexcept;
+    [[nodiscard]] bool allows_source(const asio::ip::address& source) const noexcept;
 };
+
+/// Bounded per-client per-source connection rate limiter. Entries are keyed
+/// by client_id and source address; the table stays bounded by evicting an
+/// arbitrary entry when it grows past the cap.
+class SourceConnectionLimiter final {
+  public:
+    SourceConnectionLimiter();
+    ~SourceConnectionLimiter();
+    SourceConnectionLimiter(const SourceConnectionLimiter&) = delete;
+    SourceConnectionLimiter& operator=(const SourceConnectionLimiter&) = delete;
+    SourceConnectionLimiter(SourceConnectionLimiter&&) noexcept;
+    SourceConnectionLimiter& operator=(SourceConnectionLimiter&&) noexcept;
+
+    /// Returns true when one connection is admitted for this key and rate.
+    [[nodiscard]] bool allow(std::string_view client_id,
+                             const asio::ip::address& source,
+                             std::uint32_t connections_per_minute,
+                             std::chrono::steady_clock::time_point now) noexcept;
+
+  private:
+    class Impl;
+    std::unique_ptr<Impl> implementation_;
+};
+/// Source admission: applies the optional CIDR allowlist and, when configured,
+/// the per-source connection rate. An empty allowlist and a zero rate leave
+/// the source unrestricted.
+[[nodiscard]] bool admits_source(const ClientPolicy& policy,
+                                 SourceConnectionLimiter& limiter,
+                                 std::string_view client_id,
+                                 const asio::ip::address& source,
+                                 std::chrono::steady_clock::time_point now) noexcept;
+
 
 struct ClientPolicyLimits final {
     std::size_t max_clients{1'000U};

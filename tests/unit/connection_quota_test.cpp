@@ -1,10 +1,14 @@
+#include <chrono>
 #include <string>
 #include <utility>
 
+#include <asio/ip/address.hpp>
+#include <asio/ip/address_v4.hpp>
 #include <gtest/gtest.h>
 
 #include <minitun/common/error.hpp>
 #include <minitun/common/id.hpp>
+#include <minitun/server/client_policy.hpp>
 #include <minitun/server/connection_quota.hpp>
 
 namespace minitun::server {
@@ -72,6 +76,39 @@ TEST(ConnectionQuotaTest, RejectsInvalidPerClientOverridesAndReportsUnknownClien
 
     EXPECT_EQ(quota.client_in_use(client), 0U);
     EXPECT_EQ(quota.client_in_use("client_00000000000000000000000000000000"), 0U);
+}
+
+TEST(ConnectionQuotaTest, SourceLimiterAdmitsUpToRateAndRefillsOverTime) {
+    using Clock = std::chrono::steady_clock;
+    const auto start = Clock::time_point{std::chrono::seconds{100}};
+    const auto client = generated_client_id();
+    const auto source = asio::ip::make_address("198.51.100.7");
+    SourceConnectionLimiter limiter;
+
+    EXPECT_TRUE(limiter.allow(client, source, 2U, start));
+    EXPECT_TRUE(limiter.allow(client, source, 2U, start));
+    EXPECT_FALSE(limiter.allow(client, source, 2U, start));
+    EXPECT_TRUE(limiter.allow(client, source, 2U, start + std::chrono::minutes{1}));
+    EXPECT_TRUE(limiter.allow(client, source, 2U, start + std::chrono::minutes{1}));
+    EXPECT_FALSE(limiter.allow(client, source, 2U, start + std::chrono::minutes{1}));
+
+    // Zero rate admits nothing; distinct clients and sources are isolated.
+    EXPECT_FALSE(limiter.allow(client, source, 0U, start));
+    EXPECT_TRUE(limiter.allow(generated_client_id(), source, 1U, start));
+    EXPECT_TRUE(limiter.allow(client, asio::ip::make_address("192.0.2.9"), 1U, start));
+    EXPECT_FALSE(limiter.allow(client, source, 1U, start + std::chrono::seconds{30}));
+}
+
+TEST(ConnectionQuotaTest, SourceLimiterStaysBoundedUnderManyDistinctSources) {
+    using Clock = std::chrono::steady_clock;
+    const auto start = Clock::time_point{std::chrono::seconds{100}};
+    const auto client = generated_client_id();
+    SourceConnectionLimiter limiter;
+    for (std::uint32_t index = 0U; index < 5'000U; ++index) {
+        const auto address =
+            asio::ip::address_v4{0xcb000001U + index}.to_string();
+        static_cast<void>(limiter.allow(client, asio::ip::make_address(address), 1U, start));
+    }
 }
 
 } // namespace

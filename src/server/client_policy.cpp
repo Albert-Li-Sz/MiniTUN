@@ -21,6 +21,9 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <asio/ip/address.hpp>
+#include <asio/ip/address_v4.hpp>
+#include <asio/ip/address_v6.hpp>
 #include <nlohmann/json.hpp>
 #include <openssl/evp.h>
 
@@ -262,6 +265,22 @@ parse_limit(const Json& value, const std::size_t maximum, const std::string_view
     return static_cast<std::size_t>(number);
 }
 
+[[nodiscard]] common::Result<unsigned> parse_cidr_prefix(const std::string_view text) {
+    if (text.empty() || text.size() > 3U) {
+        return common::Result<unsigned>::failure(common::ErrorCode::invalid_argument,
+                                                 "CIDR prefix is invalid");
+    }
+    unsigned prefix = 0U;
+    for (const char character : text) {
+        if (character < '0' || character > '9') {
+            return common::Result<unsigned>::failure(common::ErrorCode::invalid_argument,
+                                                     "CIDR prefix is invalid");
+        }
+        prefix = prefix * 10U + static_cast<unsigned>(character - '0');
+    }
+    return prefix;
+}
+
 [[nodiscard]] bool is_lower_hex(const std::string_view value) noexcept {
     return std::all_of(value.begin(), value.end(), [](const char byte) {
         return (byte >= '0' && byte <= '9') || (byte >= 'a' && byte <= 'f');
@@ -459,7 +478,7 @@ load_snapshot(const std::string& config_path, const ClientPolicyLimits& limits) 
     static const std::set<std::string_view> client_fields{
         "client_id",          "enabled",        "psk_file",          "allowed_ports",
         "max_tunnels",       "max_connections", "max_idle_workers", "certificate_sha256",
-        "certificate_san",
+        "certificate_san",   "allowed_source_cidrs", "connections_per_minute",
     };
     auto implementation = std::make_shared<ClientPolicySnapshot::Impl>();
     const std::filesystem::path config_directory =
@@ -538,6 +557,51 @@ load_snapshot(const std::string& config_path, const ClientPolicyLimits& limits) 
         policy.max_connections = *max_connections;
         policy.max_idle_workers = *max_idle_workers;
         policy.certificate = std::move(*certificate);
+        if (entry.contains("allowed_source_cidrs")) {
+            const auto& cidrs = entry.at("allowed_source_cidrs");
+            if (!cidrs.is_array() || cidrs.empty() || cidrs.size() > 64U) {
+                return common::Result<std::shared_ptr<const ClientPolicySnapshot>>::failure(
+                    common::ErrorCode::invalid_argument,
+                    "allowed_source_cidrs must be an array of 1..64 CIDR strings");
+            }
+            for (const auto& cidr_value : cidrs) {
+                if (!cidr_value.is_string()) {
+                    return common::Result<std::shared_ptr<const ClientPolicySnapshot>>::failure(
+                        common::ErrorCode::invalid_argument,
+                        "allowed_source_cidrs entries must be strings");
+                }
+                const auto& text = cidr_value.get_ref<const std::string&>();
+                const std::size_t slash = text.find('/');
+                if (slash == std::string::npos || slash == 0U || slash + 1U >= text.size()) {
+                    return common::Result<std::shared_ptr<const ClientPolicySnapshot>>::failure(
+                        common::ErrorCode::invalid_argument,
+                        "allowed_source_cidrs entries must use CIDR notation");
+                }
+                asio::error_code address_error;
+                const auto network =
+                    asio::ip::make_address(text.substr(0U, slash), address_error);
+                const auto prefix = parse_cidr_prefix(text.substr(slash + 1U));
+                const auto maximum =
+                    network.is_v6() ? 128U : network.is_v4() ? 32U : 0U;
+                if (address_error || !prefix || *prefix > maximum) {
+                    return common::Result<std::shared_ptr<const ClientPolicySnapshot>>::failure(
+                        common::ErrorCode::invalid_argument,
+                        "allowed_source_cidrs contains an invalid network or prefix");
+                }
+                policy.allowed_source_cidrs.push_back(
+                    SourceCidr{network, static_cast<std::uint8_t>(*prefix)});
+            }
+        }
+        if (entry.contains("connections_per_minute")) {
+            const auto& rate = entry.at("connections_per_minute");
+            if (!rate.is_number_unsigned() ||
+                rate.get<std::uint64_t>() > 1'000'000U) {
+                return common::Result<std::shared_ptr<const ClientPolicySnapshot>>::failure(
+                    common::ErrorCode::invalid_argument,
+                    "connections_per_minute must be an unsigned integer up to 1000000");
+            }
+            policy.connections_per_minute = static_cast<std::uint32_t>(rate.get<std::uint64_t>());
+        }
         auto fingerprint = policy_fingerprint(policy);
         if (!fingerprint) {
             return common::Result<std::shared_ptr<const ClientPolicySnapshot>>::failure(
@@ -560,6 +624,115 @@ load_snapshot(const std::string& config_path, const ClientPolicyLimits& limits) 
 bool ClientPolicy::allows_port(const std::uint16_t port) const noexcept {
     return std::any_of(allowed_ports.begin(), allowed_ports.end(),
                        [port](const common::PortRange& range) { return range.contains(port); });
+}
+
+bool admits_source(const ClientPolicy& policy, SourceConnectionLimiter& limiter,
+                   const std::string_view client_id, const asio::ip::address& source,
+                   const std::chrono::steady_clock::time_point now) noexcept {
+    if (!policy.allows_source(source)) {
+        return false;
+    }
+    return policy.connections_per_minute == 0U ||
+           limiter.allow(client_id, source, policy.connections_per_minute, now);
+}
+
+bool ClientPolicy::allows_source(const asio::ip::address& source) const noexcept {
+    if (allowed_source_cidrs.empty()) {
+        return true;
+    }
+    for (const auto& cidr : allowed_source_cidrs) {
+        if (cidr.network.is_v4() != source.is_v4()) {
+            continue;
+        }
+        if (source.is_v4()) {
+            const std::uint32_t network = cidr.network.to_v4().to_uint();
+            const std::uint32_t candidate = source.to_v4().to_uint();
+            const std::uint32_t mask =
+                cidr.prefix == 0U ? 0U
+                                  : std::numeric_limits<std::uint32_t>::max()
+                                        << (32U - cidr.prefix);
+            if ((network & mask) == (candidate & mask)) {
+                return true;
+            }
+            continue;
+        }
+        const auto network_bytes = cidr.network.to_v6().to_bytes();
+        const auto candidate_bytes = source.to_v6().to_bytes();
+        std::size_t full_bytes = cidr.prefix / 8U;
+        const std::size_t remaining_bits = cidr.prefix % 8U;
+        if (!std::equal(network_bytes.begin(), network_bytes.begin() +
+                                                   static_cast<std::ptrdiff_t>(full_bytes),
+                        candidate_bytes.begin())) {
+            continue;
+        }
+        if (remaining_bits != 0U) {
+            const std::uint8_t mask =
+                static_cast<std::uint8_t>(0xffU << (8U - remaining_bits));
+            if ((network_bytes[full_bytes] & mask) != (candidate_bytes[full_bytes] & mask)) {
+                continue;
+            }
+        }
+        return true;
+    }
+    return false;
+}
+
+class SourceConnectionLimiter::Impl final {
+  public:
+    bool allow(const std::string_view client_id, const asio::ip::address& source,
+               const std::uint32_t connections_per_minute,
+               const std::chrono::steady_clock::time_point now) noexcept {
+        if (connections_per_minute == 0U) {
+            return false;
+        }
+        const std::string key = std::string{client_id} + '\0' + source.to_string();
+        auto& bucket = buckets_[key];
+        if (bucket.last_seen == std::chrono::steady_clock::time_point{}) {
+            bucket.tokens = static_cast<double>(connections_per_minute);
+            bucket.last_seen = now;
+        } else {
+            const auto elapsed =
+                std::chrono::duration<double, std::chrono::minutes::period>(now - bucket.last_seen);
+            bucket.tokens =
+                std::min(static_cast<double>(connections_per_minute),
+                         bucket.tokens + elapsed.count() *
+                                             static_cast<double>(connections_per_minute));
+            bucket.last_seen = now;
+        }
+        if (bucket.tokens < 1.0) {
+            return false;
+        }
+        bucket.tokens -= 1.0;
+        if (buckets_.size() > kMaximumBuckets && buckets_.find(key) != buckets_.end()) {
+            buckets_.erase(buckets_.begin());
+        }
+        return true;
+    }
+
+  private:
+    static constexpr std::size_t kMaximumBuckets = 4'096U;
+
+    struct Bucket final {
+        double tokens{0.0};
+        std::chrono::steady_clock::time_point last_seen{};
+    };
+    std::unordered_map<std::string, Bucket> buckets_;
+};
+
+SourceConnectionLimiter::SourceConnectionLimiter()
+    : implementation_(std::make_unique<Impl>()) {}
+
+SourceConnectionLimiter::~SourceConnectionLimiter() = default;
+
+SourceConnectionLimiter::SourceConnectionLimiter(SourceConnectionLimiter&&) noexcept = default;
+SourceConnectionLimiter&
+SourceConnectionLimiter::operator=(SourceConnectionLimiter&&) noexcept = default;
+
+bool SourceConnectionLimiter::allow(const std::string_view client_id,
+                                    const asio::ip::address& source,
+                                    const std::uint32_t connections_per_minute,
+                                    const std::chrono::steady_clock::time_point now) noexcept {
+    return implementation_->allow(client_id, source, connections_per_minute, now);
 }
 
 ClientPolicySnapshot::ClientPolicySnapshot(std::shared_ptr<const Impl> implementation) noexcept

@@ -87,7 +87,7 @@ require_paths("${client_prefix}"
     "${staged_mandir}/man8/minitund.8"
     "usr/share/minitun/openrc/minitund"
     "usr/share/minitun/s6/minitund/run"
-    "usr/share/doc/client/examples/docker-compose.yml"
+    "usr/share/doc/minitun/client/examples/docker-compose.yml"
 )
 if(EXISTS "${client_prefix}/${staged_bindir}/minitun-server")
     message(FATAL_ERROR "Client component unexpectedly installed minitun-server")

@@ -9,6 +9,10 @@ MiniTun 的所有重要变更都会记录在此文件中。本文档以
 ### 新增
 
 - systemd 单元增加 `MemoryMax`/`TasksMax` 硬资源上限，用 drop-in 可按需放宽。
+- 客户端策略新增 `allowed_source_cidrs` 来源白名单与 `connections_per_minute`
+  每来源连接速率；`minitun-server` 新增 `--max-udp-peer-sessions`。
+- 新增每日状态备份 systemd timer、OpenRC/s6 监督配方、docker-compose 示例与
+  Let's Encrypt 自动续期配方。
 - P2P direct path 在一次性 token 认证后升级为 TLS 1.3，以 token 作为外部 PSK
   加密应用数据，不再明文传输；relay 回退行为不变。
 - 发布新增 `x86_64`/`aarch64` 的 musl 完全静态二进制归档（`static.yml`，无

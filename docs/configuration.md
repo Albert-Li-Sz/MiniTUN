@@ -21,6 +21,8 @@ MiniTun v1 有两份严格 JSON：公网服务端的客户端策略，以及每�
       "max_tunnels": 100,
       "max_connections": 1000,
       "max_idle_workers": 32,
+      "allowed_source_cidrs": ["203.0.113.0/24", "2001:db8::/32"],
+      "connections_per_minute": 60,
       "certificate_san": "URI:spiffe://example.internal/minitun/team-a"
     }
   ]
@@ -36,6 +38,15 @@ MiniTun v1 有两份严格 JSON：公网服务端的客户端策略，以及每�
 
 `allowed_ports` 是闭区间数组，只限制公网监听端口。范围不得重叠；拒绝会记录有界审计
 事件，但不会把客户端或隧道名称变成指标标签。
+
+两个可选字段控制公开端口的来源准入：
+
+- `allowed_source_cidrs`：CIDR 白名单（IPv4/IPv6，1–64 条）。存在时只有来自这些
+  网络的公开连接被接受；缺省为空，允许所有来源。
+- `connections_per_minute`：每来源 IP 的连接速率上限（每分钟，最大 1000000）。
+  缺省为 0，表示不限速。
+
+被来源策略拒绝的连接计入 `minitun_source_rejections_total` 指标。
 
 PSK 文件必须为当前服务账户拥有的普通文件，且组用户和其他用户不可访问。读取时会
 规范化末尾 CR/LF。证书和策略文件可以由组读取，但不得由组或其他用户写入。

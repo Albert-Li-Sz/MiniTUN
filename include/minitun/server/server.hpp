@@ -63,6 +63,7 @@ struct ServerMetrics final {
     std::uint64_t relay_bytes_out_total{0U};
     std::uint64_t acl_rejections_total{0U};
     std::uint64_t quota_rejections_total{0U};
+    std::uint64_t source_rejections_total{0U};
     std::uint64_t errors_total{0U};
     std::uint64_t policy_reloads_total{0U};
     std::uint64_t policy_reload_failures_total{0U};

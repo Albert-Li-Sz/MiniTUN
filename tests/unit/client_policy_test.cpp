@@ -7,6 +7,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <asio/ip/address.hpp>
 #include <gtest/gtest.h>
 
 #include <minitun/common/error.hpp>
@@ -447,6 +448,68 @@ TEST(ClientPolicyStoreTest, RejectsEveryInvalidServerLimit) {
         const auto opened = ClientPolicyStore::open(config.string(), item);
         ASSERT_FALSE(opened);
         EXPECT_EQ(opened.error().code(), common::ErrorCode::invalid_argument);
+    }
+}
+
+TEST(ClientPolicyStoreTest, ParsesSourceAclAndConnectionRateFields) {
+    TemporaryDatabaseFile temporary;
+    write_private(temporary.directory() / "client.psk", "test-psk\n", 0600);
+    const auto config = temporary.directory() / "clients.json";
+    write_private(config,
+                  policy_json(true, R"(,"allowed_source_cidrs":["203.0.113.0/24","2001:db8::/32"],"connections_per_minute":60)"),
+                  0640);
+    auto store = ClientPolicyStore::open(config.string(), limits());
+    ASSERT_TRUE(store) << store.error();
+    const auto snapshot = (*store)->snapshot();
+    const auto policy = snapshot->find(kClientId);
+    ASSERT_NE(policy, nullptr);
+    ASSERT_EQ(policy->allowed_source_cidrs.size(), 2U);
+    EXPECT_EQ(policy->connections_per_minute, 60U);
+
+    const auto loopback_v4 = asio::ip::make_address("203.0.113.42");
+    const auto outside_v4 = asio::ip::make_address("198.51.100.7");
+    const auto inside_v6 = asio::ip::make_address("2001:db8::1");
+    const auto outside_v6 = asio::ip::make_address("2001:db9::1");
+    EXPECT_TRUE(policy->allows_source(loopback_v4));
+    EXPECT_FALSE(policy->allows_source(outside_v4));
+    EXPECT_TRUE(policy->allows_source(inside_v6));
+    EXPECT_FALSE(policy->allows_source(outside_v6));
+}
+
+TEST(ClientPolicyStoreTest, EmptySourceAclAllowsEverySourceAndZeroRateDisablesLimiting) {
+    TemporaryDatabaseFile temporary;
+    write_private(temporary.directory() / "client.psk", "test-psk\n", 0600);
+    const auto config = temporary.directory() / "clients.json";
+    write_private(config, policy_json(), 0640);
+    auto store = ClientPolicyStore::open(config.string(), limits());
+    ASSERT_TRUE(store) << store.error();
+    const auto policy = (*store)->snapshot()->find(kClientId);
+    ASSERT_NE(policy, nullptr);
+    EXPECT_TRUE(policy->allows_source(asio::ip::make_address("192.0.2.1")));
+    EXPECT_EQ(policy->connections_per_minute, 0U);
+}
+
+TEST(ClientPolicyStoreTest, RejectsMalformedSourceAclAndRateFields) {
+    TemporaryDatabaseFile temporary;
+    const auto config = temporary.directory() / "clients.json";
+    const std::string_view cases[] = {
+        R"(,"allowed_source_cidrs":[])",
+        R"(,"allowed_source_cidrs":"203.0.113.0/24")",
+        R"(,"allowed_source_cidrs":["203.0.113.0"])",
+        R"(,"allowed_source_cidrs":["203.0.113.0/33"])",
+        R"(,"allowed_source_cidrs":["203.0.113.0/-1"])",
+        R"(,"allowed_source_cidrs":["not-an-ip/24"])",
+        R"(,"allowed_source_cidrs":[12])",
+        R"(,"connections_per_minute":-1)",
+        R"(,"connections_per_minute":"60")",
+        R"(,"connections_per_minute":1000001)",
+    };
+    write_private(temporary.directory() / "client.psk", "test-psk\n", 0600);
+    for (const auto extra : cases) {
+        SCOPED_TRACE(extra);
+        write_private(config, policy_json(true, extra), 0640);
+        const auto store = ClientPolicyStore::open(config.string(), limits());
+        ASSERT_FALSE(store);
     }
 }
 

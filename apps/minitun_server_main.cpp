@@ -93,6 +93,8 @@ class LoggingLifetime final {
            << metrics.acl_rejections_total << "\n"
            << "# TYPE minitun_quota_rejections_total counter\nminitun_quota_rejections_total "
            << metrics.quota_rejections_total << "\n"
+           << "# TYPE minitun_source_rejections_total counter\nminitun_source_rejections_total "
+           << metrics.source_rejections_total << "\n"
            << "# TYPE minitun_errors_total counter\nminitun_errors_total "
            << metrics.errors_total << "\n"
            << "# TYPE minitun_policy_reloads_total counter\n"

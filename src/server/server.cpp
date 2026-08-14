@@ -431,6 +431,8 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
             .relay_bytes_out_total = relay_bytes_out_total_.load(std::memory_order_relaxed),
             .acl_rejections_total = acl_rejections_total_.load(std::memory_order_relaxed),
             .quota_rejections_total = quota_rejections_total_.load(std::memory_order_relaxed),
+            .source_rejections_total =
+                source_rejections_total_.load(std::memory_order_relaxed),
             .errors_total = errors_total_.load(std::memory_order_relaxed),
             .policy_reloads_total = policy_reloads_total_.load(std::memory_order_relaxed),
             .policy_reload_failures_total =
@@ -1732,6 +1734,23 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
             public_socket.close(ignored);
             return;
         }
+        asio::error_code endpoint_error;
+        const auto source_address = public_socket.remote_endpoint(endpoint_error).address();
+        if (endpoint_error ||
+            !admits_source(*policy, source_limiter_, binding.client_id, source_address,
+                           std::chrono::steady_clock::now())) {
+            source_rejections_total_.fetch_add(1U, std::memory_order_relaxed);
+            asio::error_code ignored;
+            public_socket.close(ignored);
+            if (!endpoint_error) {
+                common::log_warn("public connection rejected by source policy",
+                                 {.component = "server.audit",
+                                  .server_id = server_id_,
+                                  .tunnel_id = binding.tunnel_id,
+                                  .error_code = common::ErrorCode::permission_denied});
+            }
+            return;
+        }
         auto connection_lease =
             connection_quota_.try_acquire(binding.client_id, policy->max_connections);
         if (!connection_lease) {
@@ -2111,6 +2130,8 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
     std::atomic<std::uint64_t> relay_bytes_out_total_{0U};
     std::atomic<std::uint64_t> acl_rejections_total_{0U};
     std::atomic<std::uint64_t> quota_rejections_total_{0U};
+    std::atomic<std::uint64_t> source_rejections_total_{0U};
+    SourceConnectionLimiter source_limiter_;
     std::atomic<std::uint64_t> errors_total_{0U};
     std::atomic<std::uint64_t> policy_reloads_total_{0U};
     std::atomic<std::uint64_t> policy_reload_failures_total_{0U};
