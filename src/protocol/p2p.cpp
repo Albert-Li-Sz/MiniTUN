@@ -85,15 +85,8 @@ inline constexpr std::string_view kDirectPskIdentity{"minitun-p2p-direct-v1"};
     return session;
 }
 
-// OpenSSL 3.5 removed the EVP_MD parameter from the server-side PSK lookup
-// callback; keep both signatures working across supported OpenSSL versions.
-#if OPENSSL_VERSION_NUMBER >= 0x30500000L
 int find_direct_psk(SSL* ssl, const unsigned char* identity,
                     const std::size_t identity_len, SSL_SESSION** session) {
-#else
-int find_direct_psk(SSL* ssl, const EVP_MD* /*md*/, const unsigned char* identity,
-                    const std::size_t identity_len, SSL_SESSION** session) {
-#endif
     const auto* token =
         static_cast<const AuthenticationNonce*>(SSL_get_ex_data(ssl, direct_psk_ex_index()));
     if (token == nullptr || identity_len != kDirectPskIdentity.size() ||
