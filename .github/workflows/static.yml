@@ -55,8 +55,8 @@ jobs:
               tar -xzf openssl.tar.gz
               cd openssl-3.0.16
               ./Configure "${{ matrix.openssl_target }}" \
-                no-shared no-tests no-apps no-docs --prefix=/usr/local
-              make -j2
+                no-shared no-tests --prefix=/usr/local --libdir=lib
+              make -j2 build_sw
               make install_sw
               cd ..
               curl -fsSL "https://www.sqlite.org/2025/sqlite-amalgamation-3500300.zip" -o sqlite.zip
