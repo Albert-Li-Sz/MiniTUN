@@ -220,7 +220,7 @@ TEST(StorageDatabaseTest, ReopeningCurrentSchemaIsIdempotentAndPreservesData) {
     EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM servers"), 1);
 }
 
-TEST(StorageDatabaseTest, MigratesVersionOneInPlaceAndPreservesData) {
+TEST(StorageDatabaseTest, RejectsVersionOneDatabasesFromPreV1Releases) {
     TemporaryDatabaseFile temporary;
     {
         auto repository = StateRepository::open(temporary.path_string());
@@ -229,38 +229,20 @@ TEST(StorageDatabaseTest, MigratesVersionOneInPlaceAndPreservesData) {
     }
     {
         NativeSqliteDatabase fixture{temporary.path()};
-        fixture.execute("ALTER TABLE tunnels DROP COLUMN managed_by_config;"
-                        "ALTER TABLE tunnels DROP COLUMN config_revision;"
-                        "ALTER TABLE tunnels DROP COLUMN last_synced_at;"
-                        "ALTER TABLE servers DROP COLUMN managed_by_config;"
-                        "ALTER TABLE servers DROP COLUMN config_revision;"
-                        "ALTER TABLE servers DROP COLUMN client_private_key_ref;"
-                        "ALTER TABLE servers DROP COLUMN client_certificate_ref;"
-                        "ALTER TABLE servers DROP COLUMN ca_credential_ref;"
-                        "ALTER TABLE servers DROP COLUMN tls_server_name;"
-                        "DROP TABLE daemon_identity;"
-                        "DELETE FROM schema_version WHERE version IN (2, 3, 4, 5)");
+        fixture.execute("DELETE FROM schema_version WHERE version IN (2, 3, 4, 5)");
     }
 
-    auto migrated = StateRepository::open(temporary.path_string());
-    ASSERT_TRUE(migrated) << migrated.error();
-    EXPECT_EQ(*(*migrated)->schema_version(), 5);
-    const auto restored = (*migrated)->servers().get_by_id(sample_server().id);
-    ASSERT_TRUE(restored) << restored.error();
-    EXPECT_EQ(*restored, sample_server());
-
+    const auto rejected = StateRepository::open(temporary.path_string());
+    ASSERT_FALSE(rejected);
+    EXPECT_EQ(rejected.error().code(), common::ErrorCode::unsupported_version);
     NativeSqliteDatabase probe{temporary.path(), SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX};
-    EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM schema_version"), 5);
-    EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM sqlite_master "
-                                "WHERE type = 'table' AND name = 'daemon_identity'"),
-              1);
+    EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM schema_version"), 1);
 }
 
-TEST(StorageDatabaseTest, MigratesVersionTwoTunnelRowsInPlace) {
+TEST(StorageDatabaseTest, RejectsVersionTwoDatabasesFromPreV1Releases) {
     TemporaryDatabaseFile temporary;
     TunnelRecord expected = sample_tunnel_with_missing_server();
     expected.server_id = sample_server().id;
-    expected.last_synced_at_unix_ms = std::nullopt;
     {
         auto repository = StateRepository::open(temporary.path_string());
         ASSERT_TRUE(repository) << repository.error();
@@ -269,73 +251,34 @@ TEST(StorageDatabaseTest, MigratesVersionTwoTunnelRowsInPlace) {
     }
     {
         NativeSqliteDatabase fixture{temporary.path()};
-        fixture.execute("ALTER TABLE tunnels DROP COLUMN managed_by_config;"
-                        "ALTER TABLE tunnels DROP COLUMN config_revision;"
-                        "ALTER TABLE tunnels DROP COLUMN last_synced_at;"
-                        "ALTER TABLE servers DROP COLUMN managed_by_config;"
-                        "ALTER TABLE servers DROP COLUMN config_revision;"
-                        "ALTER TABLE servers DROP COLUMN client_private_key_ref;"
-                        "ALTER TABLE servers DROP COLUMN client_certificate_ref;"
-                        "ALTER TABLE servers DROP COLUMN ca_credential_ref;"
-                        "ALTER TABLE servers DROP COLUMN tls_server_name;"
-                        "DELETE FROM schema_version WHERE version IN (3, 4, 5)");
+        fixture.execute("DELETE FROM schema_version WHERE version IN (3, 4, 5)");
     }
 
-    auto migrated = StateRepository::open(temporary.path_string());
-    ASSERT_TRUE(migrated) << migrated.error();
-    EXPECT_EQ(*(*migrated)->schema_version(), 5);
-    const auto restored = (*migrated)->tunnels().get_by_id(expected.id);
-    ASSERT_TRUE(restored) << restored.error();
-    EXPECT_EQ(*restored, expected);
+    const auto rejected = StateRepository::open(temporary.path_string());
+    ASSERT_FALSE(rejected);
+    EXPECT_EQ(rejected.error().code(), common::ErrorCode::unsupported_version);
 }
 
-TEST(StorageDatabaseTest, MigratesVersionThreeFromV041AndPreservesIdsCredentialsAndTunnels) {
+TEST(StorageDatabaseTest, RejectsVersionThreeDatabasesFromV041) {
     TemporaryDatabaseFile temporary;
-    ServerRecord expected_server = sample_server();
-    expected_server.credential_ref = "server/srv_00000000000000000000000000000001/psk/a";
-    expected_server.remote_server_id = "srv_remote_v041";
-    expected_server.actual_state = ServerActualState::online;
-    TunnelRecord expected_tunnel = sample_tunnel_with_missing_server();
-    expected_tunnel.server_id = expected_server.id;
-    expected_tunnel.name = "preserved-v041-tunnel";
-    expected_tunnel.local_endpoint = require_endpoint("192.0.2.10:8080");
-    expected_tunnel.remote_endpoint = require_endpoint("0.0.0.0:16000");
-
     {
         auto repository = StateRepository::open(temporary.path_string());
         ASSERT_TRUE(repository) << repository.error();
-        ASSERT_TRUE((*repository)->servers().create(expected_server));
+        ASSERT_TRUE((*repository)->servers().create(sample_server()));
+        TunnelRecord expected_tunnel = sample_tunnel_with_missing_server();
+        expected_tunnel.server_id = sample_server().id;
         ASSERT_TRUE((*repository)->tunnels().create(expected_tunnel));
     }
     {
         NativeSqliteDatabase fixture{temporary.path()};
-        fixture.execute("ALTER TABLE tunnels DROP COLUMN managed_by_config;"
-                        "ALTER TABLE tunnels DROP COLUMN config_revision;"
-                        "ALTER TABLE servers DROP COLUMN managed_by_config;"
-                        "ALTER TABLE servers DROP COLUMN config_revision;"
-                        "ALTER TABLE servers DROP COLUMN client_private_key_ref;"
-                        "ALTER TABLE servers DROP COLUMN client_certificate_ref;"
-                        "ALTER TABLE servers DROP COLUMN ca_credential_ref;"
-                        "ALTER TABLE servers DROP COLUMN tls_server_name;"
-                        "DELETE FROM schema_version WHERE version IN (4, 5);");
+        fixture.execute("DELETE FROM schema_version WHERE version IN (4, 5)");
     }
 
-    auto migrated = StateRepository::open(temporary.path_string());
-    ASSERT_TRUE(migrated) << migrated.error();
-    EXPECT_EQ(*(*migrated)->schema_version(), 5);
-    const auto server = (*migrated)->servers().get_by_id(expected_server.id);
-    const auto tunnel = (*migrated)->tunnels().get_by_id(expected_tunnel.id);
-    ASSERT_TRUE(server) << server.error();
-    ASSERT_TRUE(tunnel) << tunnel.error();
-    EXPECT_EQ(*server, expected_server);
-    EXPECT_EQ(*tunnel, expected_tunnel);
-
+    const auto rejected = StateRepository::open(temporary.path_string());
+    ASSERT_FALSE(rejected);
+    EXPECT_EQ(rejected.error().code(), common::ErrorCode::unsupported_version);
     NativeSqliteDatabase probe{temporary.path(), SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX};
-    EXPECT_EQ(probe.query_int64("SELECT MAX(version) FROM schema_version"), 5);
-    EXPECT_EQ(probe.query_int64("SELECT config_revision FROM servers"), 1);
-    EXPECT_EQ(probe.query_int64("SELECT managed_by_config FROM servers"), 0);
-    EXPECT_EQ(probe.query_int64("SELECT config_revision FROM tunnels"), 1);
-    EXPECT_EQ(probe.query_int64("SELECT managed_by_config FROM tunnels"), 0);
+    EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM schema_version"), 3);
 }
 
 TEST(StorageDatabaseTest, PersistsOneStableDaemonClientIdentity) {
@@ -508,8 +451,46 @@ TEST(StorageDatabaseTest, RejectsEveryCurrentSchemaAndHistoryDriftClass) {
     }
 }
 
-TEST(StorageDatabaseTest, HandlesAlreadyPresentColumnsAndRejectsPartialMigrationObjects) {
+TEST(StorageDatabaseTest, MigratesVersionFourInPlaceAndRejectsPartialMigrationObjects) {
     {
+        // A v1.0-era schema v4 database migrates to v5 in place.
+        TemporaryDatabaseFile temporary;
+        {
+            auto repository = StateRepository::open(temporary.path_string());
+            ASSERT_TRUE(repository) << repository.error();
+            ASSERT_TRUE((*repository)->servers().create(sample_server()));
+        }
+        {
+            NativeSqliteDatabase fixture{temporary.path()};
+            fixture.execute("DELETE FROM schema_version WHERE version = 5");
+        }
+        auto migrated = Database::open(temporary.path_string());
+        ASSERT_TRUE(migrated) << migrated.error();
+        EXPECT_EQ(*(*migrated)->schema_version(), 5);
+        NativeSqliteDatabase probe{temporary.path(), SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX};
+        EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM schema_version"), 5);
+        EXPECT_EQ(probe.query_int64("SELECT COUNT(*) FROM servers"), 1);
+    }
+    {
+        // A leftover v4 staging table from an interrupted migration is
+        // rejected instead of being silently overwritten.
+        TemporaryDatabaseFile temporary;
+        {
+            auto repository = StateRepository::open(temporary.path_string());
+            ASSERT_TRUE(repository) << repository.error();
+        }
+        {
+            NativeSqliteDatabase fixture{temporary.path()};
+            fixture.execute("CREATE TABLE tunnels_v4 AS SELECT * FROM tunnels;"
+                            "DELETE FROM schema_version WHERE version = 5");
+        }
+        const auto rejected = Database::open(temporary.path_string());
+        ASSERT_FALSE(rejected);
+        EXPECT_EQ(rejected.error().code(), common::ErrorCode::database_error);
+    }
+    {
+        // Pre-v1.0 schemas are rejected even when their tables already carry
+        // the columns later versions introduced.
         TemporaryDatabaseFile temporary;
         {
             auto repository = StateRepository::open(temporary.path_string());
@@ -519,54 +500,9 @@ TEST(StorageDatabaseTest, HandlesAlreadyPresentColumnsAndRejectsPartialMigration
             NativeSqliteDatabase fixture{temporary.path()};
             fixture.execute("DELETE FROM schema_version WHERE version IN (4, 5)");
         }
-        auto migrated = Database::open(temporary.path_string());
-        ASSERT_TRUE(migrated) << migrated.error();
-        EXPECT_EQ(*(*migrated)->schema_version(), 5);
-    }
-    {
-        TemporaryDatabaseFile temporary;
-        {
-            auto repository = StateRepository::open(temporary.path_string());
-            ASSERT_TRUE(repository) << repository.error();
-        }
-        {
-            NativeSqliteDatabase fixture{temporary.path()};
-            fixture.execute("ALTER TABLE tunnels DROP COLUMN managed_by_config;"
-                            "ALTER TABLE tunnels DROP COLUMN config_revision;"
-                            "ALTER TABLE servers DROP COLUMN managed_by_config;"
-                            "ALTER TABLE servers DROP COLUMN config_revision;"
-                            "ALTER TABLE servers DROP COLUMN client_private_key_ref;"
-                            "ALTER TABLE servers DROP COLUMN client_certificate_ref;"
-                            "ALTER TABLE servers DROP COLUMN ca_credential_ref;"
-                            "ALTER TABLE servers DROP COLUMN tls_server_name;"
-                            "DELETE FROM schema_version WHERE version IN (3, 4, 5)");
-        }
-        auto migrated = Database::open(temporary.path_string());
-        ASSERT_TRUE(migrated) << migrated.error();
-        EXPECT_EQ(*(*migrated)->schema_version(), 5);
-    }
-    {
-        TemporaryDatabaseFile temporary;
-        {
-            auto repository = StateRepository::open(temporary.path_string());
-            ASSERT_TRUE(repository) << repository.error();
-        }
-        {
-            NativeSqliteDatabase fixture{temporary.path()};
-            fixture.execute("ALTER TABLE tunnels DROP COLUMN managed_by_config;"
-                            "ALTER TABLE tunnels DROP COLUMN config_revision;"
-                            "ALTER TABLE tunnels DROP COLUMN last_synced_at;"
-                            "ALTER TABLE servers DROP COLUMN managed_by_config;"
-                            "ALTER TABLE servers DROP COLUMN config_revision;"
-                            "ALTER TABLE servers DROP COLUMN client_private_key_ref;"
-                            "ALTER TABLE servers DROP COLUMN client_certificate_ref;"
-                            "ALTER TABLE servers DROP COLUMN ca_credential_ref;"
-                            "ALTER TABLE servers DROP COLUMN tls_server_name;"
-                            "DELETE FROM schema_version WHERE version IN (2, 3, 4, 5)");
-        }
         const auto rejected = Database::open(temporary.path_string());
         ASSERT_FALSE(rejected);
-        EXPECT_EQ(rejected.error().code(), common::ErrorCode::database_error);
+        EXPECT_EQ(rejected.error().code(), common::ErrorCode::unsupported_version);
     }
 }
 

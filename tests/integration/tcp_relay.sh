@@ -253,7 +253,7 @@ start_server
     --client-cert "$runtime_dir/client.crt" \
     --client-key "$runtime_dir/client.key" >/dev/null
 printf '%s\n' "$token" |
-    "$minitun_bin" --socket "$socket_path" server login primary --token-stdin >/dev/null
+    "$minitun_bin" --socket "$socket_path" server login primary --psk-stdin >/dev/null
 "$minitun_bin" --socket "$socket_path" tun add primary "$local_port" "$remote_port" \
     --name relay >/dev/null
 "$minitun_bin" --socket "$socket_path" tun add primary 1 "$failed_remote_port" \

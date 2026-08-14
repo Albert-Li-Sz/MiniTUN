@@ -30,7 +30,7 @@ MiniTun 将公网服务器上的 TCP 或 UDP 端口转发到内网服务，也�
   `config export/plan/apply`。默认 apply 不删除；`--prune` 也只删除 apply 管理的资源。
 - `tcp`、`udp`、`socks5`、`p2p` 四种 tunnel mode；非 TCP mode 通过 capability 协商，
   旧 TCP v2 wire image 保持不变。
-- schema v5 自动迁移 schema v3/v4 数据，保留稳定 ID、名称、端点、隧道与原凭据引用。
+- schema v5 自动迁移 v4 数据，保留稳定 ID、名称、端点、隧道与原凭据引用。
 - client/server 均可启用 `/healthz`、`/readyz`、`/metrics`；指标标签有界，审计日志不
   记录 PSK、证书内容、认证摘要或用户流量。
 - 本地控制 C11 ABI/C++20 RAII SDK，以及 Remote Protocol v2 C++20 codec/decoder SDK；
@@ -175,7 +175,7 @@ SOCKS5 的 `--remote-host` 必须是数值 loopback 地址，防止误把开放�
 P2P connector 默认只监听 loopback；只有明确理解暴露面时才使用
 `--allow-non-loopback`。
 
-管道输入使用主选项 `--psk-stdin`；`--token-stdin` 仅作为旧版 CLI 迁移别名：
+管道输入使用 `--psk-stdin`：
 
 ```bash
 minitun server login edge --psk-stdin </secure/path/team-a.psk

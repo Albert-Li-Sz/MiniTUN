@@ -209,7 +209,7 @@ start_server "$server_failpoint"
 "$minitun_bin" --socket "$socket_path" server add "localhost:$control_port" --name primary \
     >/dev/null
 printf '%s\n' "$token" |
-    "$minitun_bin" --socket "$socket_path" server login primary --token-stdin >/dev/null
+    "$minitun_bin" --socket "$socket_path" server login primary --psk-stdin >/dev/null
 # The injected daemon failpoint can fire between the state commit and the IPC
 # response write, which is the exact half-write fault under test. When the
 # daemon is the victim, accept the connection being cut before the response;

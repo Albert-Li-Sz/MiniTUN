@@ -6,6 +6,16 @@ MiniTun 的所有重要变更都会记录在此文件中。本文档以
 
 ## [Unreleased]
 
+### 新增
+
+- systemd 单元增加 `MemoryMax`/`TasksMax` 硬资源上限，用 drop-in 可按需放宽。
+
+### 移除
+
+- 移除 `--token-stdin` 旧 CLI 别名，仅保留 `--psk-stdin`。
+- 移除 schema v1–v3（v0.x 时代）迁移支持，schema v4 成为可打开的最低版本；
+  更早的数据库会被拒绝且原文件保持不变。
+
 ## [1.0.0] - 2026-08-13
 
 本代源码的首个正式版本。此前全部 v0.x 与旧版发行记录均已删除，公开历史从本版本
@@ -42,7 +52,7 @@ MiniTun 的所有重要变更都会记录在此文件中。本文档以
 
 ### 数据与协议
 
-- 状态库升级到 schema v5，历史 schema v3/v4 数据自动迁移，保留稳定 ID、名称、端点、
+- 状态库升级到 schema v5，历史 schema v4 数据自动迁移，保留稳定 ID、名称、端点、
   隧道与原凭据引用，并持久化四种 mode 与 server bind host。
 - Remote Protocol v2 新增 `udp_datagrams`、`socks5_proxy`、`p2p_rendezvous` capability；
   非 TCP REGISTER/START payload 使用单字节扩展，原 TCP v2 wire image 保持不变。

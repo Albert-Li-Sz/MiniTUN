@@ -155,7 +155,7 @@ done
 "$minitun_bin" --socket "$socket_path" server add "localhost:$control_port" \
     --name primary >/dev/null
 printf '%s\n' "$token" |
-    "$minitun_bin" --socket "$socket_path" server login primary --token-stdin >/dev/null
+    "$minitun_bin" --socket "$socket_path" server login primary --psk-stdin >/dev/null
 "$minitun_bin" --socket "$socket_path" tun add primary "$udp_port" "$udp_remote" \
     --name udp-echo --protocol udp >/dev/null
 "$minitun_bin" --socket "$socket_path" tun add primary 1 "$socks_remote" \

@@ -18,6 +18,10 @@ StateDirectory=minitun
 StateDirectoryMode=0750
 UMask=0007
 LimitNOFILE=65536
+# Hard resource ceilings backing the minimal-footprint promise. Raise them
+# with a systemd drop-in when a deployment genuinely needs more capacity.
+MemoryMax=256M
+TasksMax=64
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict

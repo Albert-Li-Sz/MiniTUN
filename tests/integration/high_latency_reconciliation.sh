@@ -95,7 +95,7 @@ bash "$integration_dir/write_client_policy.sh" "$minitun_bin" "$socket_path" \
 "$minitun_bin" --socket "$socket_path" server add "localhost:$proxy_port" --name primary \
     >/dev/null
 printf '%s\n' "$token" |
-    "$minitun_bin" --socket "$socket_path" server login primary --token-stdin >/dev/null
+    "$minitun_bin" --socket "$socket_path" server login primary --psk-stdin >/dev/null
 
 tunnel_count=24
 for index in $(seq 0 $((tunnel_count - 1))); do

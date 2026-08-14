@@ -852,7 +852,7 @@ int main(int argc, char** argv) {
     server_login_command
         ->add_option("server-id-or-name", server_login_identifier, "Server ID or name")
         ->required();
-    server_login_command->add_flag("--psk-stdin,--token-stdin", psk_stdin,
+    server_login_command->add_flag("--psk-stdin", psk_stdin,
                                    "Read one PSK line from standard input");
 
     CLI::App* const server_update_command =

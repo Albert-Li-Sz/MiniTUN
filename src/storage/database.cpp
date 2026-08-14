@@ -371,39 +371,6 @@ CREATE TABLE daemon_identity (
     return exists;
 }
 
-[[nodiscard]] common::Result<bool> column_exists(sqlite3* database,
-                                                 const std::string_view table_name,
-                                                 const std::string_view column_name) {
-    auto statement = internal::Statement::prepare(
-        database, "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2",
-        "inspect SQLite table columns");
-    if (!statement) {
-        return std::move(statement).error();
-    }
-    if (auto result = statement->bind_text(1, table_name); !result) {
-        return result.error();
-    }
-    if (auto result = statement->bind_text(2, column_name); !result) {
-        return result.error();
-    }
-    auto step = statement->step();
-    if (!step) {
-        return std::move(step).error();
-    }
-    if (*step != internal::StepResult::row ||
-        sqlite3_column_type(statement->handle(), 0) != SQLITE_INTEGER) {
-        return common::Error{common::ErrorCode::database_error,
-                             "SQLite column inspection returned an invalid row"};
-    }
-    const std::int64_t count = sqlite3_column_int64(statement->handle(), 0);
-    step = statement->step();
-    if (!step || *step != internal::StepResult::done || count < 0 || count > 1) {
-        return common::Error{common::ErrorCode::database_error,
-                             "SQLite column inspection returned an invalid result"};
-    }
-    return count == 1;
-}
-
 [[nodiscard]] common::Result<std::int64_t> user_schema_object_count(sqlite3* database) {
     return internal::query_single_int64(database,
                                         "SELECT COUNT(*) FROM sqlite_master "
@@ -624,163 +591,18 @@ CREATE TABLE daemon_identity (
     return validate_current_schema(database);
 }
 
-[[nodiscard]] common::Result<void> apply_version_one(sqlite3* database) {
-    constexpr std::pair<std::string_view, std::string_view> statements[]{
-        {kCreateServers, "create servers table"},
-        {kCreateTunnels, "create tunnels table"},
-        {kCreateServerReconcileIndex, "create server reconciliation index"},
-        {kCreateTunnelReconcileIndex, "create tunnel reconciliation index"},
-        {kCreateTunnelNameIndex, "create tunnel name index"},
-    };
-
-    for (const auto& [sql, operation] : statements) {
-        auto result = internal::execute(database, sql, operation);
-        if (!result) {
-            return migration_error(result.error());
-        }
-    }
-
+[[nodiscard]] common::Result<void> record_schema_version(sqlite3* database,
+                                                                 const int version) {
     auto insert = internal::Statement::prepare(
-        database, "INSERT INTO schema_version(version, applied_at) VALUES(1, ?1)",
+        database, "INSERT INTO schema_version(version, applied_at) VALUES(?1, ?2)",
         "record schema migration");
     if (!insert) {
         return migration_error(insert.error());
     }
-    if (auto result = insert->bind_int64(1, common::unix_milliseconds_now()); !result) {
+    if (auto result = insert->bind_int64(1, version); !result) {
         return migration_error(result.error());
     }
-    auto step = insert->step();
-    if (!step || *step != internal::StepResult::done) {
-        return !step ? migration_error(step.error())
-                     : common::Error{common::ErrorCode::database_error,
-                                     "schema migration did not complete"};
-    }
-    return common::Result<void>::success();
-}
-
-[[nodiscard]] common::Result<void> apply_version_two(sqlite3* database) {
-    auto created =
-        internal::execute(database, kCreateDaemonIdentity, "create daemon identity table");
-    if (!created) {
-        return migration_error(created.error());
-    }
-
-    auto insert = internal::Statement::prepare(
-        database, "INSERT INTO schema_version(version, applied_at) VALUES(2, ?1)",
-        "record schema migration");
-    if (!insert) {
-        return migration_error(insert.error());
-    }
-    if (auto result = insert->bind_int64(1, common::unix_milliseconds_now()); !result) {
-        return migration_error(result.error());
-    }
-    auto step = insert->step();
-    if (!step || *step != internal::StepResult::done) {
-        return !step ? migration_error(step.error())
-                     : common::Error{common::ErrorCode::database_error,
-                                     "schema migration did not complete"};
-    }
-    return common::Result<void>::success();
-}
-
-[[nodiscard]] common::Result<void> apply_version_three(sqlite3* database) {
-    auto has_last_synced_at = column_exists(database, "tunnels", "last_synced_at");
-    if (!has_last_synced_at) {
-        return migration_error(has_last_synced_at.error());
-    }
-    if (!*has_last_synced_at) {
-        auto added = internal::execute(database,
-                                       "ALTER TABLE tunnels ADD COLUMN last_synced_at INTEGER "
-                                       "CHECK( last_synced_at IS NULL OR ( "
-                                       "typeof(last_synced_at) = 'integer' AND "
-                                       "last_synced_at BETWEEN created_at AND updated_at "
-                                       ") )",
-                                       "add tunnel synchronization timestamp");
-        if (!added) {
-            return migration_error(added.error());
-        }
-    }
-
-    auto insert = internal::Statement::prepare(
-        database, "INSERT INTO schema_version(version, applied_at) VALUES(3, ?1)",
-        "record schema migration");
-    if (!insert) {
-        return migration_error(insert.error());
-    }
-    if (auto result = insert->bind_int64(1, common::unix_milliseconds_now()); !result) {
-        return migration_error(result.error());
-    }
-    auto step = insert->step();
-    if (!step || *step != internal::StepResult::done) {
-        return !step ? migration_error(step.error())
-                     : common::Error{common::ErrorCode::database_error,
-                                     "schema migration did not complete"};
-    }
-    return common::Result<void>::success();
-}
-
-[[nodiscard]] common::Result<void> apply_version_four(sqlite3* database) {
-    constexpr std::pair<std::string_view, std::string_view> additions[]{
-        {"ALTER TABLE servers ADD COLUMN tls_server_name TEXT "
-         "CHECK(tls_server_name IS NULL OR (typeof(tls_server_name) = 'text' AND "
-         "length(CAST(tls_server_name AS BLOB)) BETWEEN 1 AND 253))",
-         "add per-server TLS name"},
-        {"ALTER TABLE servers ADD COLUMN ca_credential_ref TEXT "
-         "CHECK(ca_credential_ref IS NULL OR (typeof(ca_credential_ref) = 'text' AND "
-         "length(CAST(ca_credential_ref AS BLOB)) BETWEEN 1 AND 256))",
-         "add per-server CA reference"},
-        {"ALTER TABLE servers ADD COLUMN client_certificate_ref TEXT "
-         "CHECK(client_certificate_ref IS NULL OR (typeof(client_certificate_ref) = 'text' AND "
-         "length(CAST(client_certificate_ref AS BLOB)) BETWEEN 1 AND 256))",
-         "add per-server client certificate reference"},
-        {"ALTER TABLE servers ADD COLUMN client_private_key_ref TEXT "
-         "CHECK(client_private_key_ref IS NULL OR (typeof(client_private_key_ref) = 'text' AND "
-         "length(CAST(client_private_key_ref AS BLOB)) BETWEEN 1 AND 256))",
-         "add per-server client private-key reference"},
-        {"ALTER TABLE servers ADD COLUMN config_revision INTEGER NOT NULL DEFAULT 1 "
-         "CHECK(typeof(config_revision) = 'integer' AND "
-         "config_revision BETWEEN 1 AND 9223372036854775807)",
-         "add server configuration revision"},
-        {"ALTER TABLE servers ADD COLUMN managed_by_config INTEGER NOT NULL DEFAULT 0 "
-         "CHECK(typeof(managed_by_config) = 'integer' AND managed_by_config IN (0, 1))",
-         "add server configuration ownership"},
-        {"ALTER TABLE tunnels ADD COLUMN config_revision INTEGER NOT NULL DEFAULT 1 "
-         "CHECK(typeof(config_revision) = 'integer' AND "
-         "config_revision BETWEEN 1 AND 9223372036854775807)",
-         "add tunnel configuration revision"},
-        {"ALTER TABLE tunnels ADD COLUMN managed_by_config INTEGER NOT NULL DEFAULT 0 "
-         "CHECK(typeof(managed_by_config) = 'integer' AND managed_by_config IN (0, 1))",
-         "add tunnel configuration ownership"},
-    };
-
-    for (const auto& [sql, operation] : additions) {
-        const std::size_t table_end = sql.find(' ', std::string_view{"ALTER TABLE "}.size());
-        const std::size_t column_start =
-            sql.find("ADD COLUMN ") + std::string_view{"ADD COLUMN "}.size();
-        const std::size_t column_end = sql.find(' ', column_start);
-        const std::string_view table =
-            sql.substr(std::string_view{"ALTER TABLE "}.size(),
-                       table_end - std::string_view{"ALTER TABLE "}.size());
-        const std::string_view column = sql.substr(column_start, column_end - column_start);
-        auto exists = column_exists(database, table, column);
-        if (!exists) {
-            return migration_error(exists.error());
-        }
-        if (!*exists) {
-            auto added = internal::execute(database, sql, operation);
-            if (!added) {
-                return migration_error(added.error());
-            }
-        }
-    }
-
-    auto insert = internal::Statement::prepare(
-        database, "INSERT INTO schema_version(version, applied_at) VALUES(4, ?1)",
-        "record schema migration");
-    if (!insert) {
-        return migration_error(insert.error());
-    }
-    if (auto result = insert->bind_int64(1, common::unix_milliseconds_now()); !result) {
+    if (auto result = insert->bind_int64(2, common::unix_milliseconds_now()); !result) {
         return migration_error(result.error());
     }
     auto step = insert->step();
@@ -817,22 +639,7 @@ CREATE TABLE daemon_identity (
         }
     }
 
-    auto insert = internal::Statement::prepare(
-        database, "INSERT INTO schema_version(version, applied_at) VALUES(5, ?1)",
-        "record schema migration");
-    if (!insert) {
-        return migration_error(insert.error());
-    }
-    if (auto result = insert->bind_int64(1, common::unix_milliseconds_now()); !result) {
-        return migration_error(result.error());
-    }
-    auto step = insert->step();
-    if (!step || *step != internal::StepResult::done) {
-        return !step ? migration_error(step.error())
-                     : common::Error{common::ErrorCode::database_error,
-                                     "schema migration did not complete"};
-    }
-    return common::Result<void>::success();
+    return record_schema_version(database, 5);
 }
 
 } // namespace
@@ -1097,38 +904,43 @@ common::Result<void> Database::migrate() {
         if (!created) {
             return fail(migration_error(created.error()));
         }
+        constexpr std::pair<std::string_view, std::string_view> fresh_schema[]{
+            {kCreateDaemonIdentity, "create daemon identity table"},
+            {kCreateServers, "create servers table"},
+            {kCreateTunnels, "create tunnels table"},
+            {kCreateServerReconcileIndex, "create server reconciliation index"},
+            {kCreateTunnelReconcileIndex, "create tunnel reconciliation index"},
+            {kCreateTunnelNameIndex, "create tunnel name index"},
+        };
+        for (const auto& [sql, operation] : fresh_schema) {
+            auto executed = internal::execute(handle_, sql, operation);
+            if (!executed) {
+                return fail(migration_error(executed.error()));
+            }
+        }
+        // Fresh databases claim the complete contiguous migration history so
+        // the invariant expected by read_schema_version stays intact.
+        for (int recorded = 1; recorded <= kCurrentSchemaVersion; ++recorded) {
+            auto recorded_version = record_schema_version(handle_, recorded);
+            if (!recorded_version) {
+                return fail(recorded_version.error());
+            }
+        }
+        version = kCurrentSchemaVersion;
     } else {
         auto current = read_schema_version(handle_, true);
         if (!current) {
             return fail(current.error());
         }
         version = *current;
+        if (version < 4) {
+            return fail(common::Error{
+                common::ErrorCode::unsupported_version,
+                "databases created by MiniTun versions before 1.0 are no longer supported",
+            });
+        }
     }
 
-    if (version == 0) {
-        if (auto applied = apply_version_one(handle_); !applied) {
-            return fail(applied.error());
-        }
-        version = 1;
-    }
-    if (version == 1) {
-        if (auto applied = apply_version_two(handle_); !applied) {
-            return fail(applied.error());
-        }
-        version = 2;
-    }
-    if (version == 2) {
-        if (auto applied = apply_version_three(handle_); !applied) {
-            return fail(applied.error());
-        }
-        version = 3;
-    }
-    if (version == 3) {
-        if (auto applied = apply_version_four(handle_); !applied) {
-            return fail(applied.error());
-        }
-        version = 4;
-    }
     if (version == 4) {
         if (auto applied = apply_version_five(handle_); !applied) {
             return fail(applied.error());

@@ -187,7 +187,7 @@ done
 "$minitun_bin" --socket "$socket_path" server add "localhost:$proxy_port" --name primary \
     >/dev/null
 printf '%s\n' "$wrong_token" |
-    "$minitun_bin" --socket "$socket_path" server login primary --token-stdin >/dev/null
+    "$minitun_bin" --socket "$socket_path" server login primary --psk-stdin >/dev/null
 
 observed_authenticating=false
 for _ in $(seq 1 300); do
@@ -217,7 +217,7 @@ fi
 # HELLO/AUTH exchange, then rotate the token underneath that in-flight session.
 sleep 0.10
 printf '%s\n' "$correct_token" |
-    "$minitun_bin" --socket "$socket_path" server login primary --token-stdin >/dev/null
+    "$minitun_bin" --socket "$socket_path" server login primary --psk-stdin >/dev/null
 
 online=false
 for _ in $(seq 1 300); do

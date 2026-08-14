@@ -224,7 +224,7 @@ start_server
 "$minitun_bin" --socket "$socket_path" server add "localhost:$control_port" --name primary \
     >/dev/null
 printf '%s\n' "$token" |
-    "$minitun_bin" --socket "$socket_path" server login primary --token-stdin >/dev/null
+    "$minitun_bin" --socket "$socket_path" server login primary --psk-stdin >/dev/null
 "$minitun_bin" --socket "$socket_path" tun add primary "$local_port" "$remote_port" \
     --name stable >/dev/null
 wait_tunnel

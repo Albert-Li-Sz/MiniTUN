@@ -122,6 +122,12 @@ if(NOT server_service MATCHES "AmbientCapabilities=CAP_NET_BIND_SERVICE" OR
    NOT server_service MATCHES "CapabilityBoundingSet=CAP_NET_BIND_SERVICE")
     message(FATAL_ERROR "server service cannot bind the full configured TCP port range")
 endif()
+file(READ "${client_prefix}/${staged_systemd_unit_dir}/minitund.service"
+     client_service)
+if(NOT server_service MATCHES "MemoryMax=512M" OR
+   NOT client_service MATCHES "MemoryMax=256M")
+    message(FATAL_ERROR "systemd units are missing the minimal-footprint resource ceilings")
+endif()
 
 install_component(Development development_prefix)
 require_paths("${development_prefix}"

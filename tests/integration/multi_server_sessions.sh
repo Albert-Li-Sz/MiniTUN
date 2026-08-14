@@ -143,9 +143,9 @@ start_server b $((base_port + 100)) port_b server_b_pid
 "$minitun_bin" --socket "$socket_path" server add "localhost:$port_a" --name primary >/dev/null
 "$minitun_bin" --socket "$socket_path" server add "localhost:$port_b" --name backup >/dev/null
 printf '%s\n' "$token" |
-    "$minitun_bin" --socket "$socket_path" server login primary --token-stdin >/dev/null
+    "$minitun_bin" --socket "$socket_path" server login primary --psk-stdin >/dev/null
 printf '%s\n' "$token" |
-    "$minitun_bin" --socket "$socket_path" server login backup --token-stdin >/dev/null
+    "$minitun_bin" --socket "$socket_path" server login backup --psk-stdin >/dev/null
 wait_for_states online online
 
 client_id_before=$(python3 - "$state_path" <<'PY'

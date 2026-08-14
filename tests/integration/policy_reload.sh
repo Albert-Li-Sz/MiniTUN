@@ -150,7 +150,7 @@ done
 "$minitun_bin" --socket "$socket_path" server add "localhost:$control_port" --name primary \
     >/dev/null
 printf '%s\n' "$old_psk" |
-    "$minitun_bin" --socket "$socket_path" server login primary --token-stdin >/dev/null
+    "$minitun_bin" --socket "$socket_path" server login primary --psk-stdin >/dev/null
 "$minitun_bin" --socket "$socket_path" tun add primary "$local_port" "$remote_port" \
     --name relay >/dev/null
 
@@ -259,7 +259,7 @@ if not closed:
 PY
 
 printf '%s\n' "$new_psk" |
-    "$minitun_bin" --socket "$socket_path" server login primary --token-stdin >/dev/null
+    "$minitun_bin" --socket "$socket_path" server login primary --psk-stdin >/dev/null
 wait_tunnel active
 
 python3 - "$remote_port" <<'PY'

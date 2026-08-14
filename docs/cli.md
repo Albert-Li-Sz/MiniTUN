@@ -51,7 +51,7 @@ minitun server remove <id-or-name>
 minitun server login edge --psk-stdin </secure/path/edge.psk
 ```
 
-`--token-stdin` 保留为旧版 CLI 迁移别名；新脚本应使用 `--psk-stdin`。PSK 不能作为
+PSK 通过 `--psk-stdin` 或无回显 TTY 输入提供，不能作为
 位置参数或普通 option，因此不会进入 shell history、进程参数或 `/proc`。JSON 响应只
 返回 `credential_configured` 等布尔状态，不返回秘密或凭据引用。
 
