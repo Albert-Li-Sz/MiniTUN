@@ -25,11 +25,9 @@ jobs:
       matrix:
         include:
           - arch: x86_64
-            toolchain: x86_64-linux-musl-cross
-            openssl_target: linux-x86_64
+            platform: linux/amd64
           - arch: aarch64
-            toolchain: aarch64-linux-musl-cross
-            openssl_target: linux-aarch64
+            platform: linux/arm64
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -38,60 +36,28 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install musl cross toolchain
-        run: |
-          curl -fsSL "https://musl.cc/${{ matrix.toolchain }}.tgz" -o toolchain.tgz
-          tar -xzf toolchain.tgz
-          echo "$PWD/${{ matrix.toolchain }}/bin" >>"$GITHUB_PATH"
+      - name: Set up QEMU for foreign-architecture containers
+        uses: docker/setup-qemu-action@v3
 
-      - name: Build static OpenSSL
+      - name: Build static binaries in Alpine
         run: |
-          curl -fsSL "https://www.openssl.org/source/openssl-3.0.16.tar.gz" -o openssl.tar.gz
-          echo "57e03c50feab5d31b152af2b764f10379aecd8ee92f16c985983ce4a99f7ef86  openssl.tar.gz" | sha256sum -c -
-          tar -xzf openssl.tar.gz
-          cd openssl-3.0.16
-          CC="${{ matrix.toolchain }}-gcc" \
-            ./Configure "${{ matrix.openssl_target }}" \
-              no-shared no-tests no-apps no-docs \
-              --prefix="$PWD/install" --openssldir="$PWD/install"
-          make -j2
-          make install_sw
-          echo "OPENSSL_PREFIX=$PWD/install" >>"$GITHUB_ENV"
+          docker run --rm --platform "${{ matrix.platform }}" \
+            -v "$PWD:/src" -w /src \
+            alpine:3.21 sh -eu -c '
+              apk add --no-cache build-base cmake ninja openssl-dev sqlite-dev \
+                linux-headers git binutils
+              cmake -S . -B build-static -G Ninja \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DMINITUN_BUILD_TESTS=OFF \
+                -DMINITUN_BUILD_PACKAGES=OFF \
+                -DCMAKE_EXE_LINKER_FLAGS="-static"
+              cmake --build build-static --parallel 2
+              ./build-static/minitun --version
+            '
+          sudo chown -R "$(id -u):$(id -g)" build-static
 
-      - name: Build static SQLite
+      - name: Verify fully static binaries
         run: |
-          curl -fsSL "https://www.sqlite.org/2025/sqlite-amalgamation-3500300.zip" -o sqlite.zip
-          echo "9ad6d16cbc1df7cd55c8b55127c82a9bca5e9f287818de6dc87e04e73599d754  sqlite.zip" | sha256sum -c -
-          unzip -q sqlite.zip
-          cd sqlite-amalgamation-3500300
-          "${{ matrix.toolchain }}-gcc" -O2 -c sqlite3.c -o sqlite3.o
-          "${{ matrix.toolchain }}-ar" rcs libsqlite3.a sqlite3.o
-          echo "SQLITE_PREFIX=$PWD" >>"$GITHUB_ENV"
-
-      - name: Configure static build
-        run: |
-          cat > toolchain.cmake <<'CMAKE'
-          set(CMAKE_SYSTEM_NAME Linux)
-          set(CMAKE_C_COMPILER @COMPILER@-gcc)
-          set(CMAKE_CXX_COMPILER @COMPILER@-g++)
-          set(CMAKE_FIND_ROOT_PATH "@OPENSSL_PREFIX@;@SQLITE_PREFIX@")
-          set(CMAKE_EXE_LINKER_FLAGS_INIT "-static")
-          set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
-          set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
-          set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
-          set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
-          CMAKE
-          sed -i "s|@COMPILER@|${{ matrix.toolchain }}|g; s|@OPENSSL_PREFIX@|$OPENSSL_PREFIX|g; s|@SQLITE_PREFIX@|$SQLITE_PREFIX|g" toolchain.cmake
-          cmake -S . -B build-static -G Ninja \
-            -DCMAKE_TOOLCHAIN_FILE="$PWD/toolchain.cmake" \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DMINITUN_BUILD_TESTS=OFF \
-            -DMINITUN_BUILD_PACKAGES=OFF \
-            -DMINITUN_ENABLE_LTO=OFF
-
-      - name: Build static binaries
-        run: |
-          cmake --build build-static --parallel 2
           install -d dist
           for binary in minitun minitund minitun-server minitun-p2p; do
             install -m 0755 "build-static/$binary" "dist/$binary"
@@ -101,18 +67,15 @@ jobs:
               exit 1
             fi
           done
-
-      - name: Verify foreign-architecture binaries
-        if: matrix.arch == 'aarch64'
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends --yes qemu-user
-          qemu-aarch64-static ./dist/minitun --version
-          qemu-aarch64-static ./dist/minitund --version
+          file dist/minitund
 
       - name: Package static archive
         run: |
-          version=${GITHUB_REF_NAME#v}
+          if [[ "${GITHUB_REF_TYPE}" == tag ]]; then
+            version=${GITHUB_REF_NAME#v}
+          else
+            version="dev-${GITHUB_SHA::8}"
+          fi
           tar -czf "minitun-static-${version}-${{ matrix.arch }}.tar.gz" \
             -C dist minitun minitund minitun-server minitun-p2p
           sha256sum "minitun-static-${version}-${{ matrix.arch }}.tar.gz" \
@@ -129,7 +92,7 @@ jobs:
             minitun-static-*.tar.gz.sha256
 
       - name: Attach to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
+        if: github.ref_type == 'tag'
         env:
           GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
