@@ -320,30 +320,45 @@ rpmbuild 的 ELF 依赖扫描生成 soname 级 `Requires`。每个新架构都�
 发布 tag 必须是 `vMAJOR.MINOR.PATCH` 或 `vMAJOR.MINOR.PATCH-rc.NUMBER`，基础版本必须与
 `CMakeLists.txt` 一致。
 
-以下是已经完成的 v1.0 发布顺序；`v1.0.0` tag 不得移动或重建：
+### 常规发布顺序
 
-1. 发布 `v1.0.0-rc.1` 并冻结协议、schema、SDK ABI 和功能；
-2. 只修阻断项，发布 `v1.0.0-rc.2`；后续修改必须按顺序增加 `rc.N`；
+1. 发布 `v<版本>-rc.1` 并冻结协议、schema、SDK ABI 和功能；
+2. 只修阻断项，按顺序发布后续 `rc.N`；
 3. 确认最终 RC 的必需构建、测试、打包和阻断性安全检查满足 GA 要求；
 4. 确认没有未关闭的 P0/P1 issue；
-5. 在最终 RC 的同一 commit 创建 `v1.0.0`。
+5. 在最终 RC 的同一 commit 创建 annotated GA tag（如 `v1.0.1`）。
 
-候选版示例：
+`release.yml` 的 GA 门禁要求存在 rc.1 与 rc.2、所有 RC 都是 GA commit 的祖先，且最终
+RC 与 GA 指向同一 commit。RC 版本号按发布线独立计算（如 1.0.1 线从 `v1.0.1-rc.1`
+开始，不继承上一发布线的 rc.N）。候选版示例：
 
 ```bash
-git tag -s v1.0.0-rc.1 -m "MiniTun v1.0.0-rc.1"
-git push origin v1.0.0-rc.1
+git tag -s v1.0.1-rc.1 -m "MiniTun v1.0.1-rc.1"
+git push origin v1.0.1-rc.1
 ```
-
-三轮性能、24 小时压力和 7 天浸泡可通过 `performance.yml` 手动执行，生成带 OIDC
-attestation 的工程验证记录；`release.yml` 不下载或要求这些记录，它们的缺失或失败不会
-阻止 RC 或 GA。具体启动/收集命令见[性能文档](performance.md)。
 
 最终 RC 后任何源码变化仍必须发布后续 `rc.N`，因为 GA 必须与最终 RC 指向完全相同的
 commit；这一冻结规则与可选性能/浸泡验证无关。
 
-后续版本必须从当前源码另行创建连续 `v<版本>-rc.N`，验证最终 RC 后再在同一 commit 创建
-GA tag；不得把新增能力回填到已经发布的 tag。
+### 发布线首次 GA（历史重置）
+
+项目在 2026-08-13 做过一次公开历史重置：旧发行记录全部删除，当前源码以 `v1.0.0`
+重新发布。当时 `v1.0.0` tag 尚不存在，但 GA 门禁仍要求 rc.1/rc.2。做法是在同一
+commit 创建瞬态候选版并让 GA 并行构建：
+
+```bash
+git tag -a v1.0.0-rc.1 -m "MiniTun v1.0.0-rc.1"
+git tag -a v1.0.0-rc.2 -m "MiniTun v1.0.0-rc.2"
+git tag -a v1.0.0     -m "MiniTun v1.0.0"
+git push origin v1.0.0-rc.1 v1.0.0-rc.2 v1.0.0
+```
+
+GA 的 `release-gates` 只要求这两个 tag 存在并指向同一 commit，因此三条流水线可以
+同时触发。GA 发布成功后再删除瞬态 RC 的 release 与 tag，公开历史只保留最终 GA。
+
+三轮性能、24 小时压力和 7 天浸泡可通过 `performance.yml` 手动执行，生成带 OIDC
+attestation 的工程验证记录；`release.yml` 不下载或要求这些记录，它们的缺失或失败不会
+阻止 RC 或 GA。具体启动/收集命令见[性能文档](performance.md)。
 
 OCI 漏洞扫描在 RC 和 GA 中都会完整报告 High/Critical 发现，但不阻断发布。报告仍保留在
 Actions 日志中供发布决策和后续基础镜像修复使用；CodeQL、依赖审计及其他安全门禁保持
