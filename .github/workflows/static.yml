@@ -31,7 +31,7 @@ jobs:
             platform: linux/arm64
             openssl_target: linux-aarch64
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 120
     steps:
       - name: Check out source
         uses: actions/checkout@v6
@@ -56,7 +56,7 @@ jobs:
               cd openssl-3.0.16
               ./Configure "${{ matrix.openssl_target }}" \
                 no-shared no-tests --prefix=/usr/local --libdir=lib
-              make -j2 build_sw
+              make -j4 build_sw
               make install_sw
               cd ..
               curl -fsSL "https://www.sqlite.org/2025/sqlite-amalgamation-3500300.zip" -o sqlite.zip
@@ -79,7 +79,7 @@ jobs:
                 -DOPENSSL_USE_STATIC_LIBS=TRUE \
                 -DCMAKE_FIND_LIBRARY_SUFFIXES=.a \
                 -DCMAKE_EXE_LINKER_FLAGS="-static"
-              cmake --build build-static --parallel 2
+              cmake --build build-static --parallel 4
               ./build-static/minitun --version
             '
           sudo chown -R "$(id -u):$(id -g)" build-static
