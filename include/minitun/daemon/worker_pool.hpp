@@ -61,6 +61,7 @@ struct WorkerPoolOptions final {
     std::function<void()> quota_rejection_handler{};
     std::function<void()> tls_resumption_handler{};
     std::function<void(std::uint64_t bytes_in, std::uint64_t bytes_out)> relay_stats_handler{};
+    std::function<void(std::string_view path)> p2p_path_handler{};
 };
 
 class WorkerPool final {

@@ -67,6 +67,8 @@ struct RuntimeMetrics final {
     std::atomic<std::uint64_t> bytes_in{0U};
     std::atomic<std::uint64_t> bytes_out{0U};
     std::atomic<std::uint64_t> tls_resumptions{0U};
+    std::atomic<std::uint64_t> p2p_direct_total{0U};
+    std::atomic<std::uint64_t> p2p_relay_total{0U};
 };
 
 [[nodiscard]] common::Result<void> validate_options(const ServerManagerOptions& options) {
@@ -496,6 +498,14 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                                              const std::uint64_t bytes_out) {
                             metrics->bytes_in.fetch_add(bytes_in, std::memory_order_relaxed);
                             metrics->bytes_out.fetch_add(bytes_out, std::memory_order_relaxed);
+                        },
+                    .p2p_path_handler =
+                        [metrics = metrics_](const std::string_view path) {
+                            if (path == "direct") {
+                                metrics->p2p_direct_total.fetch_add(1U, std::memory_order_relaxed);
+                            } else {
+                                metrics->p2p_relay_total.fetch_add(1U, std::memory_order_relaxed);
+                            }
                         },
                 },
                 [weak = weak_from_this()](const std::string_view tunnel_id) {
@@ -1502,6 +1512,9 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                                       {"pending", 0U},
                                       {"max", connection_budget_->maximum()}}},
             {"reconnects", metrics_->reconnects.load(std::memory_order_relaxed)},
+            {"p2p_paths",
+             ipc::Json{{"direct", metrics_->p2p_direct_total.load(std::memory_order_relaxed)},
+                       {"relay", metrics_->p2p_relay_total.load(std::memory_order_relaxed)}}},
             {"tls_resumptions", metrics_->tls_resumptions.load(std::memory_order_relaxed)},
             {"quota_rejections", metrics_->quota_rejections.load(std::memory_order_relaxed)},
             {"errors", persistence_errors + protocol_errors},

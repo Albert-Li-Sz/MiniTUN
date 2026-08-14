@@ -320,6 +320,14 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
                 }
                 auto upgraded = co_await protocol::accept_p2p_upgrade(
                     stream_, candidate_address, pool->options_.connect_timeout);
+                if (upgraded && pool->options_.p2p_path_handler) {
+                    try {
+                        pool->options_.p2p_path_handler(upgraded->path == protocol::P2pPath::direct
+                                                            ? "direct"
+                                                            : "relay");
+                    } catch (...) {
+                    }
+                }
                 if (!upgraded) {
                     common::log_warn("P2P Worker negotiation failed",
                                      log_context(upgraded.error().code()));

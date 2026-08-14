@@ -1,0 +1,11 @@
+{
+  "name": "minitun",
+  "version": "1.0.0",
+  "description": "A minimal-footprint, self-hosted multi-transport reverse tunnel",
+  "homepage": "https://github.com/Albert-Li-Sz/MiniTUN",
+  "license": "MIT",
+  "dependencies": [
+    "openssl",
+    "sqlite3"
+  ]
+}
