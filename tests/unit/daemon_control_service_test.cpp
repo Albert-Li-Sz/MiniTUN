@@ -816,6 +816,162 @@ TEST_F(DaemonControlServiceTest, EnforcesProtocolSpecificTunnelUpdateRequirement
     EXPECT_EQ(require_result(converted).at("tunnel").at("local_endpoint"), "127.0.0.1:8080");
 }
 
+TEST_F(DaemonControlServiceTest, EnforcesProxyProtocolTunnelRequirements) {
+    ASSERT_TRUE(dispatch(dispatcher_, "server.add",
+                         ipc::Json{{"endpoint", "example.com:2333"}, {"name", "primary"}})
+                    .ok());
+
+    const auto added = dispatch(dispatcher_, "tun.add",
+                                ipc::Json{{"server", "primary"},
+                                          {"name", "fronted"},
+                                          {"local_port", 8'080},
+                                          {"remote_port", 6'080},
+                                          {"proxy_protocol", true}});
+    ASSERT_TRUE(added.ok()) << *added.error();
+    const auto& tunnel = require_result(added).at("tunnel");
+    EXPECT_TRUE(tunnel.at("proxy_protocol").get<bool>());
+    const std::string tunnel_id = tunnel.at("id").get<std::string>();
+
+    const auto repeated = dispatch(dispatcher_, "tun.update",
+                                   ipc::Json{{"identifier", tunnel_id},
+                                             {"proxy_protocol", true}});
+    ASSERT_TRUE(repeated.ok()) << *repeated.error();
+    EXPECT_FALSE(require_result(repeated).at("changed").get<bool>());
+
+    const auto disabled_flag = dispatch(dispatcher_, "tun.update",
+                                        ipc::Json{{"identifier", tunnel_id},
+                                                  {"proxy_protocol", false}});
+    ASSERT_TRUE(disabled_flag.ok()) << *disabled_flag.error();
+    EXPECT_TRUE(require_result(disabled_flag).at("changed").get<bool>());
+    EXPECT_FALSE(require_result(disabled_flag).at("tunnel").at("proxy_protocol").get<bool>());
+
+    const auto to_udp = dispatch(dispatcher_, "tun.update",
+                                 ipc::Json{{"identifier", tunnel_id},
+                                           {"protocol", "udp"},
+                                           {"proxy_protocol", true}});
+    ASSERT_FALSE(to_udp.ok());
+    ASSERT_NE(to_udp.error(), nullptr);
+    EXPECT_EQ(to_udp.error()->code(), common::ErrorCode::invalid_argument);
+
+    const auto udp_added = dispatch(dispatcher_, "tun.add",
+                                    ipc::Json{{"server", "primary"},
+                                              {"name", "datagram"},
+                                              {"protocol", "udp"},
+                                              {"local_port", 9'000},
+                                              {"remote_port", 9'001},
+                                              {"proxy_protocol", true}});
+    ASSERT_FALSE(udp_added.ok());
+    ASSERT_NE(udp_added.error(), nullptr);
+    EXPECT_EQ(udp_added.error()->code(), common::ErrorCode::invalid_argument);
+
+    const auto wrong_type = dispatch(dispatcher_, "tun.add",
+                                     ipc::Json{{"server", "primary"},
+                                               {"local_port", 9'100},
+                                               {"remote_port", 9'101},
+                                               {"proxy_protocol", "yes"}});
+    ASSERT_FALSE(wrong_type.ok());
+    ASSERT_NE(wrong_type.error(), nullptr);
+    EXPECT_EQ(wrong_type.error()->code(), common::ErrorCode::invalid_argument);
+}
+
+TEST_F(DaemonControlServiceTest, DeclarativeProxyProtocolRoundTripsThroughApplyPlanAndExport) {
+    const auto config_path = state_file_.directory() / "proxy-config.json";
+    const auto write_config = [&config_path](const std::string_view contents) {
+        std::ofstream stream{config_path, std::ios::binary | std::ios::trunc};
+        stream << contents;
+        stream.close();
+        ASSERT_TRUE(stream);
+        ASSERT_EQ(::chmod(config_path.c_str(), 0600), 0);
+    };
+    write_config(R"json({
+        "format_version": 1,
+        "servers": [{"name": "edge", "endpoint": "edge.example.com:2333"}],
+        "tunnels": [{
+            "name": "fronted",
+            "server": "edge",
+            "local_port": 8080,
+            "remote_port": 6080,
+            "proxy_protocol": true
+        }]
+    })json");
+    const auto applied =
+        dispatch(dispatcher_, "config.apply", ipc::Json{{"path", config_path.string()}});
+    ASSERT_TRUE(applied.ok()) << *applied.error();
+    EXPECT_EQ(require_result(applied).at("changed"), 2U);
+    auto tunnel = repository_->tunnels().get_by_name("fronted");
+    ASSERT_TRUE(tunnel) << tunnel.error();
+    EXPECT_TRUE(tunnel->proxy_protocol);
+
+    const auto exported = dispatch(dispatcher_, "config.export", ipc::Json::object());
+    ASSERT_TRUE(exported.ok()) << *exported.error();
+    ASSERT_EQ(require_result(exported).at("tunnels").size(), 1U);
+    EXPECT_TRUE(require_result(exported).at("tunnels").at(0).at("proxy_protocol").get<bool>());
+
+    write_config(R"json({
+        "format_version": 1,
+        "servers": [{"name": "edge", "endpoint": "edge.example.com:2333"}],
+        "tunnels": [{
+            "name": "fronted",
+            "server": "edge",
+            "local_port": 8080,
+            "remote_port": 6080,
+            "proxy_protocol": false
+        }]
+    })json");
+    const auto planned =
+        dispatch(dispatcher_, "config.plan", ipc::Json{{"path", config_path.string()}});
+    ASSERT_TRUE(planned.ok()) << *planned.error();
+    ASSERT_EQ(require_result(planned).at("actions").size(), 1U);
+    const auto& changes = require_result(planned).at("actions").at(0).at("changes");
+    ASSERT_EQ(changes.size(), 1U);
+    EXPECT_EQ(changes.at(0), "proxy_protocol");
+}
+
+TEST_F(DaemonControlServiceTest, RejectsDeclarativeProxyProtocolMisuse) {
+    const auto directory = state_file_.directory();
+    const auto write_config = [&directory](const std::string_view name,
+                                           const std::string_view contents) -> std::string {
+        const auto path = directory / name;
+        std::ofstream stream{path, std::ios::binary | std::ios::trunc};
+        stream << contents;
+        stream.close();
+        if (!stream || ::chmod(path.c_str(), 0600) != 0) {
+            throw std::runtime_error("failed to prepare a declarative test config");
+        }
+        return path.string();
+    };
+    const std::string udp_with_flag = write_config(
+        "udp-flag.json", R"json({
+            "format_version": 1,
+            "servers": [{"name": "edge", "endpoint": "edge.example.com:2333"}],
+            "tunnels": [{
+                "name": "datagram",
+                "server": "edge",
+                "protocol": "udp",
+                "local_port": 9000,
+                "remote_port": 9001,
+                "proxy_protocol": true
+            }]
+        })json");
+    expect_control_error(
+        dispatch(dispatcher_, "config.plan", ipc::Json{{"path", udp_with_flag}}));
+
+    const std::string wrong_type = write_config(
+        "wrong-type.json", R"json({
+            "format_version": 1,
+            "servers": [{"name": "edge", "endpoint": "edge.example.com:2333"}],
+            "tunnels": [{
+                "name": "fronted",
+                "server": "edge",
+                "local_port": 8080,
+                "remote_port": 6080,
+                "proxy_protocol": "yes"
+            }]
+        })json");
+    expect_control_error(
+        dispatch(dispatcher_, "config.plan", ipc::Json{{"path", wrong_type}}));
+}
+
 TEST_F(DaemonControlServiceTest, LogoutDeletesAuthenticationAndConvergesToUnauthenticated) {
     ASSERT_TRUE(dispatch(dispatcher_, "server.add",
                          ipc::Json{{"endpoint", "example.com:2333"}, {"name", "primary"}})

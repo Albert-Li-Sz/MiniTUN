@@ -35,6 +35,8 @@ enum class Capability : CapabilitySet {
     udp_datagrams = 1ULL << 5U,
     socks5_proxy = 1ULL << 6U,
     p2p_rendezvous = 1ULL << 7U,
+    tcp_simultaneous_open = 1ULL << 8U,
+    proxy_protocol = 1ULL << 9U,
 };
 
 [[nodiscard]] constexpr CapabilitySet capability_bit(const Capability capability) noexcept {
@@ -47,7 +49,9 @@ inline constexpr CapabilitySet kRequiredCapabilities =
 inline constexpr CapabilitySet kSupportedCapabilities =
     kRequiredCapabilities | capability_bit(Capability::client_certificate_binding) |
     capability_bit(Capability::udp_datagrams) | capability_bit(Capability::socks5_proxy) |
-    capability_bit(Capability::p2p_rendezvous);
+    capability_bit(Capability::p2p_rendezvous) |
+    capability_bit(Capability::tcp_simultaneous_open) |
+    capability_bit(Capability::proxy_protocol);
 
 enum class TunnelMode : std::uint8_t {
     tcp = 0U,
@@ -190,6 +194,10 @@ struct StartRelayMessage final {
     std::string tunnel_id;
     std::string connection_id;
     TunnelMode mode{TunnelMode::tcp};
+    /// Public client endpoint observed by the server; used for PROXY
+    /// protocol headers and TCP simultaneous open. Both or neither set.
+    std::optional<std::string> source_host{std::nullopt};
+    std::optional<std::uint16_t> source_port{std::nullopt};
 
     friend bool operator==(const StartRelayMessage&, const StartRelayMessage&) = default;
 };

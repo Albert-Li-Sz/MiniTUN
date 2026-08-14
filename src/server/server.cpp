@@ -685,6 +685,10 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
             return control_connection_ && client_id_ == client_id && generation_ == generation;
         }
 
+        [[nodiscard]] protocol::CapabilitySet selected_capabilities() const noexcept {
+            return selected_capabilities_;
+        }
+
         void enqueue_worker_request(const std::uint16_t count) {
             if (count == 0U) {
                 return;
@@ -961,6 +965,8 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
             client_id_ = hello->client_id;
             generation_ = hello->session_generation;
             worker_id_ = hello->worker_id;
+            selected_capabilities_ =
+                co_await server_->control_session_capabilities(client_id_, generation_);
 
             auto accepted_payload = protocol::encode_worker_accepted({worker_id_});
             if (!accepted_payload) {
@@ -1043,9 +1049,25 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
                 co_return;
             }
             const std::string connection_id_text = connection_id->str();
+            std::optional<std::string> source_host;
+            std::optional<std::uint16_t> source_port;
+            const bool supports_source_endpoint =
+                (selected_capabilities_ &
+                 static_cast<protocol::CapabilitySet>(protocol::Capability::proxy_protocol)) != 0U ||
+                (selected_capabilities_ & static_cast<protocol::CapabilitySet>(
+                                              protocol::Capability::tcp_simultaneous_open)) != 0U;
+            if (supports_source_endpoint) {
+                asio::error_code source_error;
+                const auto source_endpoint =
+                    worker_assignment_->public_socket.remote_endpoint(source_error);
+                if (!source_error) {
+                    source_host = source_endpoint.address().to_string();
+                    source_port = source_endpoint.port();
+                }
+            }
             auto relay_payload = protocol::encode_start_relay(
                 {worker_assignment_->binding.tunnel_id, connection_id_text,
-                 worker_assignment_->binding.mode});
+                 worker_assignment_->binding.mode, std::move(source_host), source_port});
             if (!relay_payload) {
                 co_return;
             }
@@ -1605,6 +1627,24 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
                 const auto requested =
                     reserve_worker_request_on_control_strand(client_id, generation, desired);
                 return requested.value_or(0U);
+            },
+            asio::use_awaitable);
+    }
+
+    /// Negotiated capabilities of the client's control session; workers adopt
+    /// them so extension payloads (source endpoint) are only sent to peers
+    /// that advertised the corresponding capabilities.
+    [[nodiscard]] asio::awaitable<protocol::CapabilitySet>
+    control_session_capabilities(std::string client_id, const std::uint64_t generation) {
+        return async_run_on_control_strand(
+            [this, client_id = std::move(client_id), generation] {
+                for (const auto& [key, session] : sessions_) {
+                    static_cast<void>(key);
+                    if (session->is_control_session(client_id, generation)) {
+                        return session->selected_capabilities();
+                    }
+                }
+                return protocol::CapabilitySet{0U};
             },
             asio::use_awaitable);
     }

@@ -474,6 +474,60 @@ TEST(RemoteMessagesTest, RejectsEverySemanticWireInvariant) {
     EXPECT_FALSE(decode_worker_idle_timeout_seconds(*tagged & ~timeout_bits).has_value());
 }
 
+TEST(RemoteMessagesTest, RoundTripsStartRelaySourceEndpointExtension) {
+    const std::string tunnel_id = generated_id(common::IdKind::tunnel);
+    const std::string connection_id = generated_id(common::IdKind::connection);
+    const StartRelayMessage relay{tunnel_id, connection_id, TunnelMode::tcp, "198.51.100.7", 4'321U};
+    const auto payload = encode_start_relay(relay);
+    ASSERT_TRUE(payload) << payload.error();
+    const auto decoded = decode_start_relay(*payload);
+    ASSERT_TRUE(decoded) << decoded.error();
+    EXPECT_EQ(*decoded, relay);
+
+    const StartRelayMessage without_source{tunnel_id, connection_id, TunnelMode::udp};
+    const auto plain = encode_start_relay(without_source);
+    ASSERT_TRUE(plain) << plain.error();
+    EXPECT_EQ(*decode_start_relay(*plain), without_source);
+
+    const StartRelayMessage udp_source{tunnel_id, connection_id, TunnelMode::udp,
+                                       "2001:db8::42", 53'321U};
+    const auto udp_extended = encode_start_relay(udp_source);
+    ASSERT_TRUE(udp_extended) << udp_extended.error();
+    EXPECT_EQ(*decode_start_relay(*udp_extended), udp_source);
+
+    // The legacy TCP image is a valid strict prefix of the extended image, so
+    // the generic truncation helper cannot apply; truncate the extension only.
+    const auto legacy = encode_start_relay({tunnel_id, connection_id, TunnelMode::tcp});
+    ASSERT_TRUE(legacy) << legacy.error();
+    for (std::size_t size = legacy->size() + 1U; size < payload->size(); ++size) {
+        SCOPED_TRACE(size);
+        const std::vector<std::uint8_t> prefix(
+            payload->begin(), payload->begin() + static_cast<std::ptrdiff_t>(size));
+        EXPECT_FALSE(decode_start_relay(prefix));
+    }
+    auto trailing = *payload;
+    trailing.push_back(0U);
+    EXPECT_FALSE(decode_start_relay(trailing));
+
+    EXPECT_FALSE(encode_start_relay(
+        {tunnel_id, connection_id, TunnelMode::tcp, "198.51.100.7", std::nullopt}));
+    EXPECT_FALSE(encode_start_relay(
+        {tunnel_id, connection_id, TunnelMode::tcp, std::nullopt, 4'321U}));
+
+    const auto reject = [&](const std::uint8_t mode, const std::string_view host,
+                            const std::uint16_t port) {
+        return wire_payload([&](PayloadWriter& writer) {
+            return writer.write_string(tunnel_id) && writer.write_string(connection_id) &&
+                   writer.write_u8(mode) && writer.write_string(host) &&
+                   writer.write_u16(port);
+        });
+    };
+    EXPECT_TRUE(decode_start_relay(reject(0U, "198.51.100.7", 4'321U)));
+    EXPECT_FALSE(decode_start_relay(reject(0U, "198.51.100.7", 0U)));
+    EXPECT_FALSE(decode_start_relay(reject(0U, "not-an-address", 4'321U)));
+    EXPECT_FALSE(decode_start_relay(reject(255U, "198.51.100.7", 4'321U)));
+}
+
 TEST(RemoteMessagesTest, RejectsExplicitTcpAndUnknownTransportModeExtensions) {
     const std::string tunnel_id = generated_id(common::IdKind::tunnel);
     const std::string connection_id = generated_id(common::IdKind::connection);

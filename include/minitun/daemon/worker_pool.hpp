@@ -62,6 +62,9 @@ struct WorkerPoolOptions final {
     std::function<void()> tls_resumption_handler{};
     std::function<void(std::uint64_t bytes_in, std::uint64_t bytes_out)> relay_stats_handler{};
     std::function<void(std::string_view path)> p2p_path_handler{};
+    /// Returns true when the tunnel enables PROXY protocol headers to the
+    /// local service.
+    std::function<bool(std::string_view tunnel_id)> proxy_protocol_resolver{};
 };
 
 class WorkerPool final {

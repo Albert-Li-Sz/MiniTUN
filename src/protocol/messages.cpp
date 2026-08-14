@@ -4,6 +4,8 @@
 #include <span>
 #include <utility>
 
+#include <asio/ip/address.hpp>
+
 #include <minitun/common/id.hpp>
 #include <minitun/protocol/codec.hpp>
 
@@ -750,7 +752,25 @@ common::Result<std::vector<std::uint8_t>> encode_start_relay(const StartRelayMes
     if (auto written = writer.write_string(message.connection_id); !written) {
         return common::Result<std::vector<std::uint8_t>>::failure(written.error());
     }
-    if (auto written = encode_tunnel_mode(writer, message.mode); !written) {
+    const bool has_source = message.source_host.has_value() || message.source_port.has_value();
+    if (has_source) {
+        if (!message.source_host.has_value() || !message.source_port.has_value()) {
+            return common::Result<std::vector<std::uint8_t>>::failure(
+                common::ErrorCode::invalid_argument,
+                "START_RELAY source endpoint requires both host and port");
+        }
+        // The source endpoint extension always carries an explicit mode byte,
+        // even for TCP, so the payload stays self-describing.
+        if (auto written = writer.write_u8(static_cast<std::uint8_t>(message.mode)); !written) {
+            return common::Result<std::vector<std::uint8_t>>::failure(written.error());
+        }
+        if (auto written = writer.write_string(*message.source_host); !written) {
+            return common::Result<std::vector<std::uint8_t>>::failure(written.error());
+        }
+        if (auto written = writer.write_u16(*message.source_port); !written) {
+            return common::Result<std::vector<std::uint8_t>>::failure(written.error());
+        }
+    } else if (auto written = encode_tunnel_mode(writer, message.mode); !written) {
         return common::Result<std::vector<std::uint8_t>>::failure(written.error());
     }
     return std::move(writer).finish();
@@ -760,13 +780,52 @@ common::Result<StartRelayMessage> decode_start_relay(const std::vector<std::uint
     PayloadReader reader{payload};
     auto tunnel_id = reader.read_string(kMaxProtocolIdentifierBytes);
     auto connection_id = reader.read_string(kMaxProtocolIdentifierBytes);
-    auto mode = decode_tunnel_mode(reader);
-    if (!tunnel_id || !connection_id || !mode || !validate_tunnel_id(*tunnel_id) ||
-        !validate_connection_id(*connection_id) || !reader.require_end()) {
+    if (!tunnel_id || !connection_id || !validate_tunnel_id(*tunnel_id) ||
+        !validate_connection_id(*connection_id)) {
         return common::Result<StartRelayMessage>::failure(common::ErrorCode::protocol_error,
                                                           "START_RELAY payload is invalid");
     }
-    return StartRelayMessage{std::move(*tunnel_id), std::move(*connection_id), *mode};
+    // The mode byte is omitted only for the legacy TCP wire image. Any
+    // extended payload (source endpoint) always carries it explicitly, and an
+    // explicit TCP byte is only valid when that extension follows.
+    TunnelMode mode = TunnelMode::tcp;
+    if (reader.remaining() != 0U) {
+        auto value = reader.read_u8();
+        if (!value || !valid_tunnel_mode(static_cast<TunnelMode>(*value))) {
+            return common::Result<StartRelayMessage>::failure(common::ErrorCode::protocol_error,
+                                                              "START_RELAY mode is invalid");
+        }
+        mode = static_cast<TunnelMode>(*value);
+        if (mode == TunnelMode::tcp && reader.remaining() == 0U) {
+            return common::Result<StartRelayMessage>::failure(
+                common::ErrorCode::protocol_error,
+                "START_RELAY explicit TCP mode requires the source endpoint extension");
+        }
+    }
+    std::optional<std::string> source_host;
+    std::optional<std::uint16_t> source_port;
+    if (reader.remaining() != 0U) {
+        auto host = reader.read_string(kMaxTunnelBindHostBytes);
+        auto port = reader.read_u16();
+        if (!host || !port || *port == 0U) {
+            return common::Result<StartRelayMessage>::failure(common::ErrorCode::protocol_error,
+                                                              "START_RELAY source endpoint is invalid");
+        }
+        asio::error_code address_error;
+        static_cast<void>(asio::ip::make_address(*host, address_error));
+        if (address_error) {
+            return common::Result<StartRelayMessage>::failure(common::ErrorCode::protocol_error,
+                                                              "START_RELAY source host is invalid");
+        }
+        source_host = std::move(*host);
+        source_port = *port;
+    }
+    if (!reader.require_end()) {
+        return common::Result<StartRelayMessage>::failure(common::ErrorCode::protocol_error,
+                                                          "START_RELAY payload is invalid");
+    }
+    return StartRelayMessage{std::move(*tunnel_id), std::move(*connection_id), mode,
+                             std::move(source_host), source_port};
 }
 
 common::Result<std::vector<std::uint8_t>>

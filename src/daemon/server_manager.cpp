@@ -507,6 +507,13 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                                 metrics->p2p_relay_total.fetch_add(1U, std::memory_order_relaxed);
                             }
                         },
+                    .proxy_protocol_resolver =
+                        [weak = weak_from_this()](const std::string_view tunnel_id) {
+                            if (auto self = weak.lock()) {
+                                return self->proxy_protocol_enabled(tunnel_id);
+                            }
+                            return false;
+                        },
                 },
                 [weak = weak_from_this()](const std::string_view tunnel_id) {
                     if (auto self = weak.lock()) {
@@ -818,7 +825,9 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                     continue;
                 }
                 if (registered_tunnels_.contains(tunnel_id)) {
-                    local_endpoints_.insert_or_assign(tunnel_id, tunnel.local_endpoint);
+                    local_endpoints_.insert_or_assign(
+                        tunnel_id,
+                        LocalTunnelTarget{tunnel.local_endpoint, tunnel.proxy_protocol});
                     if (tunnel.actual_state != storage::TunnelActualState::active) {
                         auto updated = co_await persist_tunnel_state(
                             tunnel.id, tunnel.config_revision, storage::TunnelActualState::active,
@@ -901,7 +910,9 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                         registered_tunnels_.insert_or_assign(
                             tunnel_id,
                             RegisteredTunnel{tunnel.config_revision, tunnel.remote_endpoint});
-                        local_endpoints_.insert_or_assign(tunnel_id, tunnel.local_endpoint);
+                        local_endpoints_.insert_or_assign(
+                            tunnel_id,
+                            LocalTunnelTarget{tunnel.local_endpoint, tunnel.proxy_protocol});
                         auto updated = co_await persist_tunnel_state(
                             tunnel.id, tunnel.config_revision, storage::TunnelActualState::active,
                             {}, true);
@@ -1169,7 +1180,12 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                 return common::Result<common::Endpoint>::failure(
                     common::ErrorCode::not_found, "Worker referenced an inactive local tunnel");
             }
-            return endpoint->second;
+            return endpoint->second.endpoint;
+        }
+
+        [[nodiscard]] bool proxy_protocol_enabled(const std::string_view tunnel_id) const noexcept {
+            const auto found = local_endpoints_.find(std::string{tunnel_id});
+            return found != local_endpoints_.end() && found->second.proxy_protocol;
         }
 
         [[nodiscard]] std::uint64_t next_request_id() noexcept {
@@ -1396,7 +1412,12 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
         };
         std::unordered_map<std::string, RegisteredTunnel> registered_tunnels_;
         std::unordered_map<std::uint64_t, protocol::Frame> pending_reconcile_responses_;
-        std::unordered_map<std::string, common::Endpoint> local_endpoints_;
+        struct LocalTunnelTarget final {
+            common::Endpoint endpoint;
+            bool proxy_protocol{false};
+        };
+
+        std::unordered_map<std::string, LocalTunnelTarget> local_endpoints_;
         std::atomic<TerminalState> terminal_state_{TerminalState::running};
         std::mutex persistence_mutex_;
         bool persistence_allowed_{true};

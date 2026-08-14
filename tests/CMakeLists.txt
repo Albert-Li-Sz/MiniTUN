@@ -366,6 +366,19 @@ if(UNIX)
         PASS_REGULAR_EXPRESSION "TCP relay integration passed"
     )
 
+    add_test(NAME integration.proxy-protocol
+        COMMAND
+            "${CMAKE_CURRENT_SOURCE_DIR}/integration/proxy_protocol.sh"
+            $<TARGET_FILE:minitun>
+            $<TARGET_FILE:minitund>
+            $<TARGET_FILE:minitun-server>
+    )
+    set_tests_properties(integration.proxy-protocol PROPERTIES
+        LABELS "integration;e2e;tls;relay"
+        TIMEOUT 90
+        PASS_REGULAR_EXPRESSION "PROXY protocol integration passed"
+    )
+
     add_test(NAME integration.extended-transports
         COMMAND
             "${CMAKE_CURRENT_SOURCE_DIR}/integration/extended_transports.sh"

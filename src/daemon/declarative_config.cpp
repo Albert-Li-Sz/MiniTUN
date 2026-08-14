@@ -290,6 +290,17 @@ struct ParseLimits final {
     return value->get<bool>();
 }
 
+[[nodiscard]] Result<bool> optional_proxy_protocol(const Json& object) {
+    const auto value = object.find("proxy_protocol");
+    if (value == object.end()) {
+        return false;
+    }
+    if (!value->is_boolean()) {
+        return Error{ErrorCode::invalid_argument, "proxy_protocol must be a boolean"};
+    }
+    return value->get<bool>();
+}
+
 [[nodiscard]] Result<std::uint16_t> required_port(const Json& object,
                                                   const std::string_view field) {
     const auto value = object.find(field);
@@ -786,7 +797,7 @@ void add_change(std::vector<std::string>& changes, const bool changed,
     std::unordered_set<std::string> desired_tunnel_names;
     for (const auto& entry : document->at("tunnels")) {
         if (!exact_fields(entry, {"id", "name", "server", "protocol", "local_host", "local_port",
-                                  "remote_host", "remote_port", "enabled"})) {
+                                  "remote_host", "remote_port", "enabled", "proxy_protocol"})) {
             return Error{ErrorCode::invalid_argument,
                          "a declarative tunnel contains an unknown field"};
         }
@@ -799,8 +810,9 @@ void add_change(std::vector<std::string>& changes, const bool changed,
         auto remote_host = nullable_string(entry, "remote_host");
         auto remote_port = required_port(entry, "remote_port");
         auto enabled = optional_enabled(entry);
+        auto proxy_protocol = optional_proxy_protocol(entry);
         if (!id_text || !name || !server_reference || !protocol_text || !local_host ||
-            !local_port || !remote_host || !remote_port || !enabled) {
+            !local_port || !remote_host || !remote_port || !enabled || !proxy_protocol) {
             return !id_text            ? id_text.error()
                    : !name             ? name.error()
                    : !server_reference ? server_reference.error()
@@ -809,7 +821,8 @@ void add_change(std::vector<std::string>& changes, const bool changed,
                    : !local_port       ? local_port.error()
                    : !remote_host      ? remote_host.error()
                    : !remote_port      ? remote_port.error()
-                                       : enabled.error();
+                   : !enabled          ? enabled.error()
+                                       : proxy_protocol.error();
         }
         auto protocol = storage::tunnel_protocol_from_string(protocol_text->value_or("tcp"));
         if (!protocol) {
@@ -818,6 +831,10 @@ void add_change(std::vector<std::string>& changes, const bool changed,
         if (*protocol != storage::TunnelProtocol::socks5 && !local_port->has_value()) {
             return Error{ErrorCode::invalid_argument,
                          "local_port is required for tcp, udp, and p2p tunnels"};
+        }
+        if (*proxy_protocol && *protocol != storage::TunnelProtocol::tcp) {
+            return Error{ErrorCode::invalid_argument,
+                         "proxy_protocol is only supported by tcp tunnels"};
         }
         if (!id_text->has_value() && !name->has_value()) {
             return Error{ErrorCode::invalid_argument,
@@ -928,6 +945,7 @@ void add_change(std::vector<std::string>& changes, const bool changed,
                                                   .managed_by_config = false};
         desired.name = *name;
         desired.protocol = *protocol;
+        desired.proxy_protocol = *proxy_protocol;
         desired.local_endpoint = *local_endpoint;
         desired.remote_endpoint = *remote_endpoint;
         desired.desired_state =
@@ -951,6 +969,8 @@ void add_change(std::vector<std::string>& changes, const bool changed,
         } else {
             add_change(item.changes, matched->name != item.desired.name, "name");
             add_change(item.changes, matched->protocol != item.desired.protocol, "protocol");
+            add_change(item.changes, matched->proxy_protocol != item.desired.proxy_protocol,
+                       "proxy_protocol");
             add_change(item.changes, matched->local_endpoint != item.desired.local_endpoint,
                        "local_endpoint");
             add_change(item.changes, matched->remote_endpoint != item.desired.remote_endpoint,
@@ -1166,6 +1186,7 @@ Result<Json> DeclarativeConfig::export_config() const {
             {"name", tunnel.name.has_value() ? Json(*tunnel.name) : Json(nullptr)},
             {"server", tunnel.server_id.str()},
             {"protocol", std::string{storage::to_string(tunnel.protocol)}},
+            {"proxy_protocol", tunnel.proxy_protocol},
             {"local_host", tunnel.local_endpoint.host()},
             {"local_port", tunnel.protocol == storage::TunnelProtocol::socks5
                                ? Json(nullptr)
@@ -1296,6 +1317,7 @@ Result<Json> DeclarativeConfig::apply(const std::string_view path, const bool pr
         }
         live->name = tunnel.desired.name;
         live->protocol = tunnel.desired.protocol;
+        live->proxy_protocol = tunnel.desired.proxy_protocol;
         live->local_endpoint = tunnel.desired.local_endpoint;
         live->remote_endpoint = tunnel.desired.remote_endpoint;
         live->desired_state = tunnel.desired.desired_state;

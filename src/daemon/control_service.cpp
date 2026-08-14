@@ -56,6 +56,15 @@ using storage::TunnelRecord;
     return Result<void>::success();
 }
 
+[[nodiscard]] Result<void> validate_proxy_protocol_mode(const storage::TunnelProtocol protocol,
+                                                        const bool proxy_protocol) {
+    if (proxy_protocol && protocol != storage::TunnelProtocol::tcp) {
+        return Error{ErrorCode::invalid_argument,
+                     "PROXY protocol headers are only supported by tcp tunnels"};
+    }
+    return Result<void>::success();
+}
+
 class StringScrubber final {
   public:
     explicit StringScrubber(std::string& value) noexcept : value_(value) {}
@@ -416,6 +425,7 @@ pending_reason(const TunnelRecord& tunnel, const TunnelServerContext* const serv
                                     ? Json(nullptr)
                                     : Json(std::string{storage::to_string(server->actual_state)})},
         {"protocol", std::string{storage::to_string(tunnel.protocol)}},
+        {"proxy_protocol", tunnel.proxy_protocol},
         {"local_endpoint", tunnel.local_endpoint.to_string()},
         {"remote_endpoint", tunnel.remote_endpoint.to_string()},
         {"desired_state", std::string{storage::to_string(tunnel.desired_state)}},
@@ -1360,9 +1370,9 @@ Result<Json> ControlService::server_remove(const ipc::Request& request) {
 }
 
 Result<Json> ControlService::tunnel_add(const ipc::Request& request) {
-    if (auto valid =
-            validate_params(request.params, {"server", "remote_port"},
-                            {"local_host", "local_port", "remote_host", "name", "protocol"});
+    if (auto valid = validate_params(request.params, {"server", "remote_port"},
+                                     {"local_host", "local_port", "remote_host", "name",
+                                      "protocol", "proxy_protocol"});
         !valid) {
         return valid.error();
     }
@@ -1373,6 +1383,7 @@ Result<Json> ControlService::tunnel_add(const ipc::Request& request) {
     auto remote_host = optional_string(request.params, "remote_host");
     auto name = optional_string(request.params, "name");
     auto protocol_text = optional_string(request.params, "protocol");
+    auto proxy_protocol = optional_bool(request.params, "proxy_protocol");
     if (!server_identifier) {
         return server_identifier.error();
     }
@@ -1394,9 +1405,16 @@ Result<Json> ControlService::tunnel_add(const ipc::Request& request) {
     if (!protocol_text) {
         return protocol_text.error();
     }
+    if (!proxy_protocol) {
+        return proxy_protocol.error();
+    }
     auto tunnel_protocol = storage::tunnel_protocol_from_string(protocol_text->value_or("tcp"));
     if (!tunnel_protocol) {
         return tunnel_protocol.error();
+    }
+    if (auto valid_mode = validate_proxy_protocol_mode(*tunnel_protocol, *proxy_protocol);
+        !valid_mode) {
+        return valid_mode.error();
     }
     if (*tunnel_protocol != storage::TunnelProtocol::socks5 && !local_port->has_value()) {
         return Error{ErrorCode::invalid_argument,
@@ -1452,6 +1470,7 @@ Result<Json> ControlService::tunnel_add(const ipc::Request& request) {
         .created_at_unix_ms = now,
         .updated_at_unix_ms = now,
         .last_synced_at_unix_ms = std::nullopt,
+        .proxy_protocol = *proxy_protocol,
     };
     auto created = repository_.tunnels().create(tunnel, *transaction);
     if (!created) {
@@ -1469,7 +1488,8 @@ Result<Json> ControlService::tunnel_add(const ipc::Request& request) {
 Result<Json> ControlService::tunnel_update(const ipc::Request& request) {
     if (auto valid = validate_params(
             request.params, {"identifier"},
-            {"name", "local_host", "local_port", "remote_host", "remote_port", "protocol"});
+            {"name", "local_host", "local_port", "remote_host", "remote_port", "protocol",
+             "proxy_protocol"});
         !valid) {
         return valid.error();
     }
@@ -1483,15 +1503,17 @@ Result<Json> ControlService::tunnel_update(const ipc::Request& request) {
     auto remote_host = optional_string(request.params, "remote_host");
     auto remote_port = optional_port(request.params, "remote_port");
     auto protocol_text = optional_string(request.params, "protocol");
+    auto proxy_protocol = optional_bool(request.params, "proxy_protocol");
     if (!identifier || !name || !local_host || !local_port || !remote_host || !remote_port ||
-        !protocol_text) {
-        return !identifier    ? identifier.error()
-               : !name        ? name.error()
-               : !local_host  ? local_host.error()
-               : !local_port  ? local_port.error()
-               : !remote_host ? remote_host.error()
-               : !remote_port ? remote_port.error()
-                              : protocol_text.error();
+        !protocol_text || !proxy_protocol) {
+        return !identifier     ? identifier.error()
+               : !name         ? name.error()
+               : !local_host   ? local_host.error()
+               : !local_port   ? local_port.error()
+               : !remote_host  ? remote_host.error()
+               : !remote_port  ? remote_port.error()
+               : !protocol_text ? protocol_text.error()
+                                : proxy_protocol.error();
     }
 
     auto transaction = repository_.begin_transaction();
@@ -1528,6 +1550,15 @@ Result<Json> ControlService::tunnel_update(const ipc::Request& request) {
         return Error{ErrorCode::invalid_argument,
                      "local_port is required when changing a SOCKS5 tunnel to tcp, udp, or p2p"};
     }
+    std::optional<bool> next_proxy_protocol;
+    if (request.params.contains("proxy_protocol")) {
+        next_proxy_protocol = *proxy_protocol;
+    }
+    if (auto valid_mode = validate_proxy_protocol_mode(
+            next_protocol, next_proxy_protocol.value_or(tunnel->proxy_protocol));
+        !valid_mode) {
+        return valid_mode.error();
+    }
     auto next_local = common::Endpoint::parse(endpoint_text(next_local_host, next_local_port));
     auto next_remote = common::Endpoint::parse(endpoint_text(next_remote_host, next_remote_port));
     if (!next_local) {
@@ -1556,6 +1587,10 @@ Result<Json> ControlService::tunnel_update(const ipc::Request& request) {
     }
     if (tunnel->protocol != next_protocol) {
         tunnel->protocol = next_protocol;
+        changed = true;
+    }
+    if (next_proxy_protocol.has_value() && tunnel->proxy_protocol != *next_proxy_protocol) {
+        tunnel->proxy_protocol = *next_proxy_protocol;
         changed = true;
     }
     if (changed) {

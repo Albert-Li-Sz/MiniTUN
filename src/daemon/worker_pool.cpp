@@ -410,6 +410,9 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
                                                pool->options_.handshake_timeout)) {
                 co_return;
             }
+            if (!co_await write_proxy_header(*relay, *pool)) {
+                co_return;
+            }
 
             co_await relay_connected_socket(*pool);
         }
@@ -427,6 +430,41 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
             const protocol::Frame connected_frame{protocol::MessageType::local_connect_ok, 0U,
                                                   request_id, std::move(*connected_payload)};
             co_return co_await write_frame(connected_frame, timeout);
+        }
+
+        [[nodiscard]] asio::awaitable<bool> write_proxy_header(const protocol::StartRelayMessage& relay,
+                                                              Impl& pool) {
+            if (!pool.options_.proxy_protocol_resolver ||
+                !pool.options_.proxy_protocol_resolver(relay.tunnel_id) ||
+                !relay.source_host.has_value()) {
+                co_return true;
+            }
+            asio::error_code endpoint_error;
+            const auto destination = local_socket_->remote_endpoint(endpoint_error);
+            const bool tcp6 = relay.source_host->find(':') != std::string::npos;
+            std::string header = "PROXY ";
+            header += tcp6 ? "TCP6 " : "TCP4 ";
+            header += *relay.source_host;
+            header += ' ';
+            header += endpoint_error ? (tcp6 ? "::" : "0.0.0.0") : destination.address().to_string();
+            header += ' ';
+            header += std::to_string(relay.source_port.value_or(0U));
+            header += ' ';
+            header += endpoint_error ? "0" : std::to_string(destination.port());
+            header += "\r\n";
+            asio::error_code write_error;
+            static_cast<void>(co_await asio::async_write(
+                *local_socket_, asio::buffer(header),
+                asio::redirect_error(asio::use_awaitable, write_error)));
+            if (write_error) {
+                auto context = log_context(common::ErrorCode::connection_failed);
+                context.tunnel_id = relay.tunnel_id;
+                common::log_warn("PROXY protocol header write failed", context);
+                asio::error_code close_error;
+                local_socket_->close(close_error);
+                co_return false;
+            }
+            co_return true;
         }
 
         [[nodiscard]] asio::awaitable<void> relay_connected_socket(Impl& pool) {

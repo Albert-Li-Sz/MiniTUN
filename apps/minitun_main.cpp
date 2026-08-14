@@ -340,6 +340,12 @@ request_daemon(const std::string& socket_path, std::string method, minitun::ipc:
     return value != object.end() && value->is_string() ? value->get<std::string>() : "-";
 }
 
+[[nodiscard]] std::string proxy_protocol_text(const minitun::ipc::Json& tunnel) {
+    const auto value = tunnel.find("proxy_protocol");
+    return value != tunnel.end() && value->is_boolean() && value->get<bool>() ? "enabled"
+                                                                              : "disabled";
+}
+
 [[nodiscard]] std::string tunnel_server_label(const minitun::ipc::Json& tunnel) {
     const auto name = tunnel.find("server_name");
     return name != tunnel.end() && name->is_string() ? name->get<std::string>()
@@ -445,6 +451,7 @@ void print_table(const std::vector<std::vector<std::string>>& rows) {
               << "  Name    " << nullable_text(*tunnel, "name") << '\n'
               << "  Server  " << tunnel_server_label(*tunnel) << '\n'
               << "  Mode    " << tunnel->at("protocol").get<std::string>() << '\n'
+              << "  Proxy   " << proxy_protocol_text(*tunnel) << '\n'
               << "  Local   " << tunnel->at("local_endpoint").get<std::string>() << '\n'
               << "  Remote  " << tunnel->at("remote_endpoint").get<std::string>() << '\n'
               << "  Status  " << tunnel->at("actual_state").get<std::string>() << '\n';
@@ -493,6 +500,7 @@ void print_table(const std::vector<std::vector<std::string>>& rows) {
               << "  Name           " << nullable_text(*tunnel, "name") << '\n'
               << "  Server         " << tunnel_server_label(*tunnel) << '\n'
               << "  Mode           " << tunnel->at("protocol").get<std::string>() << '\n'
+              << "  Proxy protocol " << proxy_protocol_text(*tunnel) << '\n'
               << "  Local          " << tunnel->at("local_endpoint").get<std::string>() << '\n'
               << "  Remote         " << tunnel->at("remote_endpoint").get<std::string>() << '\n'
               << "  Desired state  " << tunnel->at("desired_state").get<std::string>() << '\n'
@@ -963,6 +971,10 @@ int main(int argc, char** argv) {
         ->capture_default_str();
     CLI::Option* const tunnel_add_name_option =
         tunnel_add_command->add_option("--name", tunnel_add_name, "Tunnel name");
+    bool tunnel_add_proxy_protocol = false;
+    tunnel_add_command->add_flag(
+        "--proxy-protocol", tunnel_add_proxy_protocol,
+        "Send a PROXY protocol v1 header to the local target (tcp tunnels only)");
 
     CLI::App* const tunnel_update_command =
         tunnel_command->add_subcommand("update", "Update one tunnel");
@@ -998,6 +1010,15 @@ int main(int argc, char** argv) {
             ->check(CLI::IsMember({"tcp", "udp", "socks5", "p2p"}));
     tunnel_update_command->add_flag("--clear-name", tunnel_update_clear_name,
                                     "Remove the optional tunnel name");
+    bool tunnel_update_proxy_protocol = false;
+    bool tunnel_update_no_proxy_protocol = false;
+    CLI::Option* const tunnel_update_proxy_protocol_option = tunnel_update_command->add_flag(
+        "--proxy-protocol", tunnel_update_proxy_protocol,
+        "Send a PROXY protocol v1 header to the local target (tcp tunnels only)");
+    tunnel_update_command
+        ->add_flag("--no-proxy-protocol", tunnel_update_no_proxy_protocol,
+                   "Stop sending PROXY protocol headers to the local target")
+        ->excludes(tunnel_update_proxy_protocol_option);
 
     CLI::App* const tunnel_enable_command =
         tunnel_command->add_subcommand("enable", "Enable one tunnel");
@@ -1263,6 +1284,9 @@ int main(int argc, char** argv) {
             if (tunnel_add_name_option->count() != 0U) {
                 params["name"] = tunnel_add_name;
             }
+            if (tunnel_add_proxy_protocol) {
+                params["proxy_protocol"] = true;
+            }
             return execute_request(
                 socket_path, "tun.add", std::move(params),
                 [](const auto& result) { return print_tunnel_summary(result, "Tunnel added"); });
@@ -1288,6 +1312,11 @@ int main(int argc, char** argv) {
             }
             if (tunnel_update_protocol_option->count() != 0U) {
                 params["protocol"] = tunnel_update_protocol;
+            }
+            if (tunnel_update_proxy_protocol_option->count() != 0U) {
+                params["proxy_protocol"] = tunnel_update_proxy_protocol;
+            } else if (tunnel_update_no_proxy_protocol) {
+                params["proxy_protocol"] = false;
             }
             return execute_request(
                 socket_path, "tun.update", std::move(params),
