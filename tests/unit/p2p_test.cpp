@@ -381,24 +381,24 @@ TEST(P2pTest, PeerRequestsSimultaneousOpenAndReusesTheMappingPort) {
             // deterministic even though loopback answers idle ports with RSTs.
             outbound_thread.emplace([&] {
                 asio::io_context local_io;
-                asio::error_code error;
+                asio::error_code outbound_error;
                 const auto deadline =
                     std::chrono::steady_clock::now() + std::chrono::seconds{4};
                 while (std::chrono::steady_clock::now() < deadline) {
                     asio::ip::tcp::socket outbound{local_io};
-                    outbound.open(asio::ip::tcp::v4(), error);
-                    outbound.set_option(asio::socket_base::reuse_address{true}, error);
-                    outbound.bind({asio::ip::address_v4::loopback(), candidate_port}, error);
-                    if (error) {
+                    outbound.open(asio::ip::tcp::v4(), outbound_error);
+                    outbound.set_option(asio::socket_base::reuse_address{true}, outbound_error);
+                    outbound.bind({asio::ip::address_v4::loopback(), candidate_port}, outbound_error);
+                    if (outbound_error) {
                         outbound_connected = false;
                         return;
                     }
-                    outbound.connect({asio::ip::address_v4::loopback(), peer_port}, error);
-                    if (!error) {
+                    outbound.connect({asio::ip::address_v4::loopback(), peer_port}, outbound_error);
+                    if (!outbound_error) {
                         outbound_connected = true;
                         constexpr std::size_t kHandshakeSize = 4U + 32U;
                         std::array<std::uint8_t, kHandshakeSize> handshake{};
-                        asio::read(outbound, asio::buffer(handshake), error);
+                        asio::read(outbound, asio::buffer(handshake), outbound_error);
                         constexpr std::array<std::uint8_t, 4U> kMockDirectMagic{'M', 'T', 'P',
                                                                                'D'};
                         const bool magic_ok =
@@ -407,7 +407,7 @@ TEST(P2pTest, PeerRequestsSimultaneousOpenAndReusesTheMappingPort) {
                         outbound_token_valid =
                             magic_ok &&
                             std::equal(token.begin(), token.end(), handshake.begin() + 4);
-                        outbound.shutdown(asio::ip::tcp::socket::shutdown_both, error);
+                        outbound.shutdown(asio::ip::tcp::socket::shutdown_both, outbound_error);
                         outbound.close();
                         return;
                     }
