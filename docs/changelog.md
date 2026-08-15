@@ -15,6 +15,8 @@ title: 变更日志
   轮换带优雅窗口，旧会话不中断。
 - 客户端策略新增来源 CIDR 白名单与每来源连接速率；systemd 增加内存/任务上限。
 - 发布新增 musl 完全静态二进制归档（`static.yml`）。
+- P2P 新增 TCP simultaneous open（server 辅助 NAT 打洞），`--simultaneous-open`
+  默认开启，失败自动回退 relay。
 - 文档站新增英文语言（默认中文）。
 
 ## [1.0.0] - 2026-08-13

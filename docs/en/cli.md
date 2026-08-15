@@ -177,6 +177,7 @@ paired backups.
 ```text
 minitun-p2p <server-host:tunnel-port>
   [--listen <numeric-host:port>] [--relay-only]
+  [--simultaneous-open|--no-simultaneous-open]
   [--connect-timeout <seconds>] [--negotiation-timeout <seconds>]
   [--direct-timeout <seconds>] [--inactivity-timeout <seconds>]
   [--allow-non-loopback]
@@ -186,6 +187,12 @@ It listens on `127.0.0.1:6501` by default. Each local connection negotiates inde
 and prints the selected `direct` or `relay` path; `--relay-only` is useful for policy
 control and verifying fallback. Only use `--allow-non-loopback` when you explicitly want to
 expose the local entry to a trusted network.
+
+`--simultaneous-open` (default on) requests a TCP simultaneous open after a failed direct
+candidate: the daemon and the connector each connect to the other's server-observed
+endpoint from the same local port, punching NATs with endpoint-independent mappings on
+both ends; failure still falls back to the relay. This path requires both sides to be
+v1.1+; use `--no-simultaneous-open` when pairing with an older daemon.
 
 ## Output and exit codes
 

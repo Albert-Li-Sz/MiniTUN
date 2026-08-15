@@ -1,7 +1,8 @@
-# P2P NAT 打洞设计提案
+# P2P NAT 打洞设计与实现
 
-> 状态：设计提案（未实现）。本文档描述如何在不破坏 Remote Protocol v2 的前提下，
-> 为 P2P tunnel 增加 NAT 穿透，并说明为什么当前不实现、以及实现时的验收标准。
+> 状态：v1.1 已实现 TCP simultaneous open（server 辅助，无 STUN/TURN）。验证基于
+> loopback 与单元级 simultaneous open 拓扑；真实 NAT 组合的穿透率仍需按下方验收
+> 标准实测。本文档描述协议设计、触发条件与剩余验收项。
 
 ## 现状
 
@@ -49,17 +50,21 @@ connect（SO_REUSEADDR 绑定到与 listening/worker socket 相同的本地端�
 新增 `tcp_simultaneous_open` capability 位（`1ULL << 8`）。双方都宣告后才发送
 观测地址字段；旧实现忽略未知 capability，保持 wire 兼容。
 
-### 4. 为什么不现在实现
+### 4. 已实现与剩余验证
 
-- **无法本地验证**：macOS 开发机无法构造真实 NAT 环境，CI runner 也只有一个出口；
-  盲目实现只能交付「编译通过但穿透率未知」的代码，违背本项目「每个新数据面都有
-  端到端回归」的标准。
-- **需要可观测的穿透率数据**：对称 NAT、端口受限锥形等组合的成功率需要在至少
-  10+ 种 NAT 组合上实测，才能决定 SO 是否值得作为默认路径。
-- **失败延迟成本**：SO 的失败探测时间（数秒）会加长 direct→relay 的切换路径，
-  需要专门的超时策略与竞速架构，而非简单追加代码。
+v1.1 按本设计落地了 SO 数据面：peer 在普通 direct 失败后经 relay 发送 `MTPS` 请求，
+daemon 从 direct listener 的同一本地端口向 peer 的 server 观测地址发起 outbound
+connect，双方 connect 交叉后走既有 `MTPD` + token + TLS 1.3 PSK 升级；失败按原路径
+回退 relay。peer 侧以 200ms 步长在 `--direct-timeout` 窗口内重试，兼容「首个 SYN
+先于对端映射建立」的丢包窗口。capability `tcp_simultaneous_open`（`1ULL << 8`）
+由 daemon↔server 协商；connector 默认开启 `--simultaneous-open`，对接 v1.0 daemon
+时需 `--no-simultaneous-open`（旧 host 会把 `MTPS` 视为非法控制帧）。
 
-### 5. 验收标准（实现时的门槛）
+单元测试覆盖：loopback 双侧 simultaneous open（无 listener）、SO socket 与 listener
+同端口绑定及降级、peer 协议全流程（direct 失败→`MTPS`→SO 建立→`MTPD` 握手→TLS
+失败→relay 回退确认）。真实 NAT 穿透率尚未实测。
+
+### 5. 验收标准（剩余门槛）
 
 1. 双 EIM NAT 下 direct 建立成功，且数据路径走 TLS-PSK 加密（与现状一致）；
 2. 对称 NAT、无 NAT、单侧 NAT 的组合下 relay 回退时间不劣于现状；

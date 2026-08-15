@@ -162,6 +162,7 @@ minitun doctor --json --checkpoint \
 ```text
 minitun-p2p <server-host:tunnel-port>
   [--listen <numeric-host:port>] [--relay-only]
+  [--simultaneous-open|--no-simultaneous-open]
   [--connect-timeout <seconds>] [--negotiation-timeout <seconds>]
   [--direct-timeout <seconds>] [--inactivity-timeout <seconds>]
   [--allow-non-loopback]
@@ -170,6 +171,11 @@ minitun-p2p <server-host:tunnel-port>
 默认监听 `127.0.0.1:6501`。每个本地连接独立协商并打印选中的 `direct` 或 `relay`
 path；`--relay-only` 可用于策略控制和验证 fallback。只有明确要向受信网络暴露本地入口
 时才使用 `--allow-non-loopback`。
+
+`--simultaneous-open`（默认开启）在普通 direct 连接失败后请求 TCP simultaneous
+open：daemon 与 connector 从同一本地端口同时向对方的 server 观测地址发起连接，打穿
+两端均为 EIM 映射的 NAT；失败仍回退 relay。该路径需要双方均为 v1.1+；
+对接旧版 daemon 时请使用 `--no-simultaneous-open`。
 
 ## 输出与退出码
 

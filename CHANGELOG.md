@@ -23,6 +23,10 @@ MiniTun 的所有重要变更都会记录在此文件中。本文档以
 - `minitun-server` 管理端点新增 `/v1/*` 客户端策略管理 API：列表/查看、创建/更新、
   删除、PSK 轮换与热重载；PSK 轮换带优雅窗口（新旧 PSK 同时有效），旧会话在窗口内
   不中断，轮换响应一次性返回新 PSK。
+- P2P tunnel 新增 server 辅助的 TCP simultaneous open（`tcp_simultaneous_open`
+  capability）：direct 失败后双方从同一本地端口向对方的观测地址交叉 connect，
+  打穿两端 EIM 映射的 NAT；`minitun-p2p` 新增 `--simultaneous-open`/
+  `--no-simultaneous-open`，默认开启，对接 v1.0 daemon 需显式关闭。
 - 文档站点新增英文语言（默认中文），新增 `README.en.md` 与 `CHANGELOG.en.md`。
 - 发布新增 `x86_64`/`aarch64` 的 musl 完全静态二进制归档（`static.yml`，无
   glibc/OpenSSL 运行时依赖），自动附带 SHA-256。

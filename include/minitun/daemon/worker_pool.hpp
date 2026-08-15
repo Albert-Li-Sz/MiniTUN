@@ -65,6 +65,9 @@ struct WorkerPoolOptions final {
     /// Returns true when the tunnel enables PROXY protocol headers to the
     /// local service.
     std::function<bool(std::string_view tunnel_id)> proxy_protocol_resolver{};
+    /// Enables the outbound half of a P2P TCP simultaneous open when the
+    /// server observed the peer's public endpoint.
+    bool simultaneous_open_enabled{false};
 };
 
 class WorkerPool final {

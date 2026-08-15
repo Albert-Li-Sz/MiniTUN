@@ -145,7 +145,7 @@ TEST(AdminServerTest, ServesBoundedHealthReadinessAndMetricsSurface) {
             .healthy = [] { return true; },
             .ready = [&ready] { return ready.load(); },
             .metrics = [] { return std::string{"minitun_test_metric 7\n"}; },
-        }};
+            .management = {}}};
     ASSERT_NE(server.port(), 0U);
 
     const auto health = request(server.port(), "GET /healthz HTTP/1.1\r\nHost: localhost\r\n\r\n");
@@ -185,7 +185,7 @@ TEST(AdminServerTest, RejectsMissingAndWrongBearerTokensOnWildcardListener) {
                                   .healthy = [] { return true; },
                                   .ready = [] { return true; },
                                   .metrics = [] { return std::string{}; },
-                              }};
+                                  .management = {}}};
     ASSERT_NE(server.port(), 0U);
 
     const auto missing = request(server.port(), "GET /healthz HTTP/1.1\r\nHost: localhost\r\n\r\n");
@@ -276,7 +276,8 @@ TEST(AdminServerTest, StrictlyRejectsMalformedHttpAndUnknownRoutes) {
         {.listen_endpoint = "127.0.0.1:" + std::to_string(available_port()), .token_file = {}},
         {.healthy = [] { return true; },
          .ready = [] { return true; },
-         .metrics = [] { return std::string{}; }}};
+         .metrics = [] { return std::string{}; },
+         .management = {}}};
     ASSERT_NE(server.port(), 0U);
 
     constexpr std::array<std::string_view, 12> bad_requests{
@@ -320,7 +321,8 @@ TEST(AdminServerTest, ContainsProviderFailuresAndMissingProviders) {
         {.listen_endpoint = "127.0.0.1:" + std::to_string(available_port()), .token_file = {}},
         {.healthy = []() -> bool { throw std::runtime_error("health failure"); },
          .ready = []() -> bool { throw std::runtime_error("ready failure"); },
-         .metrics = []() -> std::string { throw std::runtime_error("metrics failure"); }}};
+         .metrics = []() -> std::string { throw std::runtime_error("metrics failure"); },
+         .management = {}}};
     ASSERT_NE(throwing.port(), 0U);
     EXPECT_TRUE(request(throwing.port(), "GET /healthz HTTP/1.1\r\nHost: test\r\n\r\n")
                     .starts_with("HTTP/1.1 503 Service Unavailable\r\n"));

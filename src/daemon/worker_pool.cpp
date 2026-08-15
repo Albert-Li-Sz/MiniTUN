@@ -318,8 +318,20 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
                                                    pool->options_.handshake_timeout)) {
                     co_return;
                 }
+                std::optional<asio::ip::tcp::endpoint> peer_observed_endpoint;
+                if (relay->source_host.has_value() && relay->source_port.has_value()) {
+                    asio::error_code peer_address_error;
+                    const auto peer_address =
+                        asio::ip::make_address(*relay->source_host, peer_address_error);
+                    if (!peer_address_error && !peer_address.is_unspecified()) {
+                        peer_observed_endpoint =
+                            asio::ip::tcp::endpoint{peer_address, *relay->source_port};
+                    }
+                }
                 auto upgraded = co_await protocol::accept_p2p_upgrade(
-                    stream_, candidate_address, pool->options_.connect_timeout);
+                    stream_, candidate_address, pool->options_.connect_timeout,
+                    std::move(peer_observed_endpoint),
+                    pool->options_.simultaneous_open_enabled);
                 if (upgraded && pool->options_.p2p_path_handler) {
                     try {
                         pool->options_.p2p_path_handler(upgraded->path == protocol::P2pPath::direct

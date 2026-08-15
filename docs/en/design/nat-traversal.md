@@ -1,8 +1,10 @@
-# P2P NAT Traversal Design Proposal
+# P2P NAT Traversal Design and Implementation
 
-> Status: design proposal (not implemented). This document describes how to add NAT
-> traversal to P2P tunnels without breaking Remote Protocol v2, why it is not implemented
-> now, and the acceptance criteria for when it is.
+> Status: v1.1 implements TCP simultaneous open (server-assisted, no STUN/TURN). The
+> validation so far is loopback-based plus unit-level simultaneous-open topologies; the
+> traversal rate across real NAT combinations still needs the measurements in the
+> acceptance criteria below. This document describes the protocol design, the trigger
+> conditions, and the remaining validation items.
 
 ## Current state
 
@@ -59,20 +61,25 @@ Add a `tcp_simultaneous_open` capability bit (`1ULL << 8`). The observed-address
 only sent after both sides advertise it; old implementations ignore the unknown capability
 and stay wire-compatible.
 
-### 4. Why not implement now
+### 4. Implemented and what remains to validate
 
-- **Cannot validate locally**: a macOS development machine cannot construct a real NAT
-  environment and the CI runner has only one egress; blindly implementing would only
-  deliver "compiles but with unknown traversal rate" code, violating this project's
-  standard of "every new data plane has end-to-end regression coverage".
-- **Needs observable traversal-rate data**: the success rate of symmetric NAT,
-  port-restricted cone and other combinations must be measured across at least 10+ NAT
-  combinations before deciding whether SO is worth being the default path.
-- **Failure-latency cost**: SO's failure detection time (seconds) lengthens the
-  direct→relay switch path and needs a dedicated timeout strategy and race architecture,
-  not just appended code.
+v1.1 implements the SO data plane per this design: after an ordinary direct candidate
+fails, the peer sends an `MTPS` request over the relay; the daemon initiates an outbound
+connect to the peer's server-observed endpoint from the same local port as the direct
+listener; once both connects cross, the existing `MTPD` + token + TLS 1.3 PSK upgrade
+runs; failure falls back to the relay exactly as before. The peer retries in 200ms steps
+within `--direct-timeout`, tolerating the window where its first SYN arrives before the
+peer mapping forms. The `tcp_simultaneous_open` capability (`1ULL << 8`) is negotiated
+between daemon and server; the connector enables `--simultaneous-open` by default and
+needs `--no-simultaneous-open` against v1.0 daemons (old hosts treat `MTPS` as an invalid
+control frame).
 
-### 5. Acceptance criteria (the bar at implementation time)
+Unit coverage includes: loopback simultaneous open on both sides (no listener), SO socket
+binding to the listener port with the ephemeral fallback, and the full peer protocol flow
+(direct failure → `MTPS` → SO establishment → `MTPD` handshake → TLS failure → confirmed
+relay fallback). Real-NAT traversal rates are not yet measured.
+
+### 5. Acceptance criteria (remaining bar)
 
 1. under dual EIM NAT, direct establishes and the data path uses TLS-PSK encryption (as
    today);

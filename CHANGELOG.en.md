@@ -27,6 +27,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   list/get, create/update, delete, PSK rotation, and hot reload. Rotation keeps a grace
   window during which both PSKs are accepted and established sessions are not disturbed;
   the new PSK is returned exactly once by the rotation response.
+- P2P tunnels gain server-assisted TCP simultaneous open (`tcp_simultaneous_open`
+  capability): after a failed direct candidate both sides cross-connect to the other's
+  observed endpoint from the same local port, punching NATs with endpoint-independent
+  mappings on both ends; `minitun-p2p` adds `--simultaneous-open`/
+  `--no-simultaneous-open` (default on; disable it against v1.0 daemons).
 - The documentation site adds an English language (Chinese remains the default), plus
   `README.en.md` and `CHANGELOG.en.md`.
 - Releases add musl fully static binary archives for `x86_64`/`aarch64` (`static.yml`, no

@@ -514,6 +514,10 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                             }
                             return false;
                         },
+                    .simultaneous_open_enabled =
+                        (selected_capabilities_ &
+                         static_cast<protocol::CapabilitySet>(
+                             protocol::Capability::tcp_simultaneous_open)) != 0U,
                 },
                 [weak = weak_from_this()](const std::string_view tunnel_id) {
                     if (auto self = weak.lock()) {

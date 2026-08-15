@@ -41,7 +41,8 @@ handle_connection(tcp::socket local_socket, minitun::common::Endpoint remote_end
                   const std::chrono::seconds connect_timeout,
                   const std::chrono::seconds negotiation_timeout,
                   const std::chrono::seconds direct_timeout,
-                  const std::chrono::seconds inactivity_timeout, const bool direct_enabled) {
+                  const std::chrono::seconds inactivity_timeout, const bool direct_enabled,
+                  const bool simultaneous_open_enabled) {
     auto resolver = std::make_shared<tcp::resolver>(local_socket.get_executor());
     auto bootstrap = std::make_shared<tcp::socket>(local_socket.get_executor());
     asio::steady_timer timer{local_socket.get_executor()};
@@ -67,7 +68,8 @@ handle_connection(tcp::socket local_socket, minitun::common::Endpoint remote_end
     }
     minitun::protocol::configure_tcp_transport(*bootstrap);
     auto upgraded = co_await minitun::protocol::connect_p2p_upgrade(
-        std::move(*bootstrap), negotiation_timeout, direct_timeout, direct_enabled);
+        std::move(*bootstrap), negotiation_timeout, direct_timeout, direct_enabled,
+        simultaneous_open_enabled);
     if (!upgraded || (upgraded->path == minitun::protocol::P2pPath::direct
                           ? upgraded->direct_stream == nullptr
                           : upgraded->socket == nullptr)) {
@@ -93,7 +95,8 @@ accept_connections(tcp::acceptor& acceptor, const minitun::common::Endpoint& rem
                    const std::chrono::seconds connect_timeout,
                    const std::chrono::seconds negotiation_timeout,
                    const std::chrono::seconds direct_timeout,
-                   const std::chrono::seconds inactivity_timeout, const bool direct_enabled) {
+                   const std::chrono::seconds inactivity_timeout, const bool direct_enabled,
+                   const bool simultaneous_open_enabled) {
     while (acceptor.is_open()) {
         asio::error_code error;
         tcp::socket local =
@@ -104,7 +107,7 @@ accept_connections(tcp::acceptor& acceptor, const minitun::common::Endpoint& rem
         asio::co_spawn(acceptor.get_executor(),
                        handle_connection(std::move(local), remote_endpoint, connect_timeout,
                                          negotiation_timeout, direct_timeout, inactivity_timeout,
-                                         direct_enabled),
+                                         direct_enabled, simultaneous_open_enabled),
                        [](const std::exception_ptr&) {});
     }
 }
@@ -121,6 +124,7 @@ int main(int argc, char** argv) {
     std::uint32_t inactivity_timeout_seconds{300U};
     bool allow_non_loopback = false;
     bool relay_only = false;
+    bool simultaneous_open = true;
     bool show_version = false;
     app.add_option("remote", remote_text, "P2P tunnel endpoint on minitun-server");
     app.add_option("--listen", listen_text, "Local numeric listen endpoint")->capture_default_str();
@@ -140,6 +144,9 @@ int main(int argc, char** argv) {
                  "Allow exposing the local connector beyond loopback");
     app.add_flag("--relay-only", relay_only,
                  "Disable direct candidates and always use server relay fallback");
+    app.add_flag("--simultaneous-open,!--no-simultaneous-open", simultaneous_open,
+                 "Try a TCP simultaneous open after a failed direct candidate")
+        ->capture_default_str();
     app.add_flag("--version", show_version, "Print version and exit");
     try {
         app.parse(argc, argv);
@@ -201,7 +208,8 @@ int main(int argc, char** argv) {
                        acceptor, *remote_endpoint, std::chrono::seconds{connect_timeout_seconds},
                        std::chrono::seconds{negotiation_timeout_seconds},
                        std::chrono::seconds{direct_timeout_seconds},
-                       std::chrono::seconds{inactivity_timeout_seconds}, !relay_only),
+                       std::chrono::seconds{inactivity_timeout_seconds}, !relay_only,
+                       simultaneous_open),
                    [](const std::exception_ptr&) {});
     asio::signal_set signals{io_context, SIGINT, SIGTERM};
     signals.async_wait([&acceptor, &io_context](const asio::error_code&, const int) {

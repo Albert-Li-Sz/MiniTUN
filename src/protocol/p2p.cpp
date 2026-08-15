@@ -34,6 +34,7 @@ namespace {
 inline constexpr std::array<std::uint8_t, 4U> kOfferMagic{'M', 'T', 'P', '2'};
 inline constexpr std::array<std::uint8_t, 4U> kDirectMagic{'M', 'T', 'P', 'D'};
 inline constexpr std::array<std::uint8_t, 4U> kFallbackMagic{'M', 'T', 'F', 'B'};
+inline constexpr std::array<std::uint8_t, 4U> kSimultaneousMagic{'M', 'T', 'P', 'S'};
 inline constexpr std::array<std::uint8_t, 4U> kReadyMagic{'M', 'T', 'O', 'K'};
 inline constexpr std::uint8_t kP2pVersion = 1U;
 inline constexpr std::uint8_t kAddressV4 = 4U;
@@ -227,10 +228,13 @@ read_offer(asio::ip::tcp::socket& socket) {
 class HostRace final : public std::enable_shared_from_this<HostRace> {
   public:
     HostRace(TlsStream& relay_stream, asio::ip::tcp::acceptor acceptor, AuthenticationNonce token,
-             const std::chrono::seconds timeout)
+             const std::chrono::seconds timeout,
+             std::optional<asio::ip::tcp::endpoint> peer_observed_endpoint,
+             const bool simultaneous_open_enabled)
         : relay_stream_(relay_stream), acceptor_(std::move(acceptor)), token_(token),
           timer_(relay_stream.get_executor()), completion_(relay_stream.get_executor()),
-          timeout_(timeout) {}
+          timeout_(timeout), peer_observed_endpoint_(std::move(peer_observed_endpoint)),
+          simultaneous_open_enabled_(simultaneous_open_enabled) {}
 
     [[nodiscard]] asio::awaitable<common::Result<P2pHostUpgrade>> run() {
         completion_.expires_at(std::chrono::steady_clock::time_point::max());
@@ -241,7 +245,7 @@ class HostRace final : public std::enable_shared_from_this<HostRace> {
                 self->fail(common::ErrorCode::connection_timeout, "P2P negotiation timed out");
             }
         });
-        read_fallback();
+        read_control();
         accept_direct();
         asio::error_code ignored;
         co_await completion_.async_wait(asio::redirect_error(asio::use_awaitable, ignored));
@@ -252,22 +256,75 @@ class HostRace final : public std::enable_shared_from_this<HostRace> {
     }
 
   private:
-    void read_fallback() {
+    void read_control() {
         auto self = shared_from_this();
-        asio::async_read(relay_stream_, asio::buffer(fallback_),
+        asio::async_read(relay_stream_, asio::buffer(control_),
                          [self](const asio::error_code& error, const std::size_t bytes) {
                              if (self->done_) {
                                  return;
                              }
-                             if (error || bytes != self->fallback_.size() ||
-                                 self->fallback_ != kFallbackMagic) {
+                             if (error || bytes != self->control_.size()) {
                                  self->fail(common::ErrorCode::protocol_error,
-                                            "P2P peer sent an invalid fallback request");
+                                            "P2P peer control message is truncated");
                                  return;
                              }
-                             self->path_ = P2pPath::relay;
-                             self->finish(false);
+                             if (self->control_ == kFallbackMagic) {
+                                 self->path_ = P2pPath::relay;
+                                 self->finish(false);
+                                 return;
+                             }
+                             if (self->control_ == kSimultaneousMagic) {
+                                 // Unknown or disabled hosts keep waiting for the
+                                 // regular fallback request instead of failing.
+                                 self->start_simultaneous_open();
+                                 self->read_control();
+                                 return;
+                             }
+                             self->fail(common::ErrorCode::protocol_error,
+                                        "P2P peer sent an unknown control message");
                          });
+    }
+
+    /// Starts the outbound half of a TCP simultaneous open: a socket bound to
+    /// the same local port as the direct listener connects to the peer's
+    /// server-observed endpoint while the peer connects back to the candidate.
+    void start_simultaneous_open() {
+        if (so_started_ || !simultaneous_open_enabled_ ||
+            !peer_observed_endpoint_.has_value()) {
+            return;
+        }
+        so_started_ = true;
+        asio::error_code listener_error;
+        const auto local_endpoint = acceptor_.local_endpoint(listener_error);
+        if (listener_error) {
+            return;
+        }
+        auto created = create_simultaneous_open_socket(relay_stream_.get_executor(),
+                                                       local_endpoint,
+                                                       *peer_observed_endpoint_);
+        if (!created) {
+            // Mismatched families or an unbindable port: the relay fallback
+            // remains available.
+            return;
+        }
+        auto socket = std::move(*created);
+        so_socket_ = socket;
+        auto self = shared_from_this();
+        socket->async_connect(*peer_observed_endpoint_,
+                              [self, socket](const asio::error_code& connect_error) {
+                                  if (self->done_) {
+                                      close_socket(*socket);
+                                      return;
+                                  }
+                                  if (connect_error) {
+                                      close_socket(*socket);
+                                      if (self->so_socket_ == socket) {
+                                          self->so_socket_.reset();
+                                      }
+                                      return;
+                                  }
+                                  self->begin_direct_handshake(std::move(socket));
+                              });
     }
 
     void accept_direct() {
@@ -288,53 +345,60 @@ class HostRace final : public std::enable_shared_from_this<HostRace> {
                 return;
             }
             auto candidate = std::make_shared<asio::ip::tcp::socket>(std::move(socket));
-            self->pending_direct_ = candidate;
-            auto handshake = std::make_shared<std::array<std::uint8_t, kDirectHandshakeSize>>();
-            asio::async_read(*candidate, asio::buffer(*handshake),
-                             [self, candidate, handshake](const asio::error_code& read_error,
-                                                          const std::size_t bytes) {
-                                 if (self->done_) {
-                                     close_socket(*candidate);
-                                     return;
-                                 }
-                                 const bool valid =
-                                     !read_error && bytes == handshake->size() &&
-                                     std::equal(kDirectMagic.begin(), kDirectMagic.end(),
-                                                handshake->begin()) &&
-                                     CRYPTO_memcmp(handshake->data() + kDirectMagic.size(),
-                                                   self->token_.data(), self->token_.size()) == 0;
-                                 if (!valid) {
-                                     close_socket(*candidate);
-                                     if (self->pending_direct_ == candidate) {
-                                         self->pending_direct_.reset();
-                                     }
-                                     self->accept_direct();
-                                     return;
-                                 }
-                                 auto stream = std::make_shared<TlsStream>(
-                                     std::move(*candidate), self->direct_tls_context_);
-                                 configure_direct_tls(*stream, self->token_, true);
-                                 stream->async_handshake(
-                                     asio::ssl::stream_base::server,
-                                     [self, stream](const asio::error_code& handshake_error) {
-                                         if (self->done_) {
-                                             close_tls_stream(*stream);
-                                             return;
-                                         }
-                                         if (handshake_error) {
-                                             close_tls_stream(*stream);
-                                             self->pending_direct_.reset();
-                                             self->accept_direct();
-                                             return;
-                                         }
-                                         self->path_ = P2pPath::direct;
-                                         self->direct_stream_ =
-                                             std::make_unique<TlsStream>(std::move(*stream));
-                                         self->pending_direct_.reset();
-                                         self->finish(true);
-                                     });
-                             });
+            self->begin_direct_handshake(std::move(candidate));
         });
+    }
+
+    /// Validates the MTPD token handshake on a candidate socket (accepted
+    /// direct or simultaneous open) and upgrades it to TLS 1.3 PSK.
+    void begin_direct_handshake(std::shared_ptr<asio::ip::tcp::socket> candidate) {
+        auto self = shared_from_this();
+        pending_direct_ = candidate;
+        auto handshake = std::make_shared<std::array<std::uint8_t, kDirectHandshakeSize>>();
+        asio::async_read(*candidate, asio::buffer(*handshake),
+                         [self, candidate, handshake](const asio::error_code& read_error,
+                                                      const std::size_t bytes) {
+                             if (self->done_) {
+                                 close_socket(*candidate);
+                                 return;
+                             }
+                             const bool valid =
+                                 !read_error && bytes == handshake->size() &&
+                                 std::equal(kDirectMagic.begin(), kDirectMagic.end(),
+                                            handshake->begin()) &&
+                                 CRYPTO_memcmp(handshake->data() + kDirectMagic.size(),
+                                               self->token_.data(), self->token_.size()) == 0;
+                             if (!valid) {
+                                 close_socket(*candidate);
+                                 if (self->pending_direct_ == candidate) {
+                                     self->pending_direct_.reset();
+                                 }
+                                 self->accept_direct();
+                                 return;
+                             }
+                             auto stream = std::make_shared<TlsStream>(
+                                 std::move(*candidate), self->direct_tls_context_);
+                             configure_direct_tls(*stream, self->token_, true);
+                             stream->async_handshake(
+                                 asio::ssl::stream_base::server,
+                                 [self, stream](const asio::error_code& handshake_error) {
+                                     if (self->done_) {
+                                         close_tls_stream(*stream);
+                                         return;
+                                     }
+                                     if (handshake_error) {
+                                         close_tls_stream(*stream);
+                                         self->pending_direct_.reset();
+                                         self->accept_direct();
+                                         return;
+                                     }
+                                     self->path_ = P2pPath::direct;
+                                     self->direct_stream_ =
+                                         std::make_unique<TlsStream>(std::move(*stream));
+                                     self->pending_direct_.reset();
+                                     self->finish(true);
+                                 });
+                         });
     }
 
     void fail(const common::ErrorCode code, const char* message) {
@@ -357,6 +421,10 @@ class HostRace final : public std::enable_shared_from_this<HostRace> {
             close_socket(*pending_direct_);
             pending_direct_.reset();
         }
+        if (so_socket_ != nullptr) {
+            close_socket(*so_socket_);
+            so_socket_.reset();
+        }
         try {
             static_cast<void>(timer_.cancel());
         } catch (...) {
@@ -376,10 +444,14 @@ class HostRace final : public std::enable_shared_from_this<HostRace> {
     asio::steady_timer timer_;
     asio::steady_timer completion_;
     std::chrono::seconds timeout_;
-    std::array<std::uint8_t, kFallbackMagic.size()> fallback_{};
+    std::array<std::uint8_t, kFallbackMagic.size()> control_{};
     asio::ssl::context direct_tls_context_{asio::ssl::context::tlsv13_server};
     std::unique_ptr<TlsStream> direct_stream_;
     std::shared_ptr<asio::ip::tcp::socket> pending_direct_;
+    std::shared_ptr<asio::ip::tcp::socket> so_socket_;
+    std::optional<asio::ip::tcp::endpoint> peer_observed_endpoint_;
+    bool simultaneous_open_enabled_{false};
+    bool so_started_{false};
     std::optional<common::Error> failure_;
     P2pPath path_{P2pPath::relay};
     bool done_{false};
@@ -571,9 +643,49 @@ class TcpRelayOperation final : public std::enable_shared_from_this<TcpRelayOper
 
 } // namespace
 
+common::Result<std::shared_ptr<asio::ip::tcp::socket>> create_simultaneous_open_socket(
+    const asio::any_io_executor& executor, const asio::ip::tcp::endpoint& listener_endpoint,
+    const asio::ip::tcp::endpoint& peer_endpoint) {
+    if (listener_endpoint.address().is_v4() != peer_endpoint.address().is_v4() ||
+        peer_endpoint.port() == 0U) {
+        return common::Result<std::shared_ptr<asio::ip::tcp::socket>>::failure(
+            common::ErrorCode::invalid_argument,
+            "simultaneous open requires matching address families and a peer port");
+    }
+    auto socket = std::make_shared<asio::ip::tcp::socket>(executor);
+    asio::error_code error;
+    socket->open(peer_endpoint.protocol(), error);
+    if (!error) {
+        socket->set_option(asio::socket_base::reuse_address{true}, error);
+    }
+    if (!error) {
+        socket->bind(
+            asio::ip::tcp::endpoint{listener_endpoint.address(), listener_endpoint.port()}, error);
+    }
+    if (error) {
+        // Stacks that refuse sharing the listener port degrade to an ephemeral
+        // source port; the punch still works when the peer reuses its own
+        // mapping port.
+        error.clear();
+        socket->close(error);
+        socket->open(peer_endpoint.protocol(), error);
+        if (!error) {
+            socket->bind(asio::ip::tcp::endpoint{listener_endpoint.address(), 0U}, error);
+        }
+    }
+    if (error) {
+        close_socket(*socket);
+        return common::Result<std::shared_ptr<asio::ip::tcp::socket>>::failure(
+            common::ErrorCode::connection_failed, "simultaneous open socket could not be bound");
+    }
+    return socket;
+}
+
 asio::awaitable<common::Result<P2pHostUpgrade>>
 accept_p2p_upgrade(TlsStream& relay_stream, const asio::ip::address& candidate_address,
-                   const std::chrono::seconds negotiation_timeout) {
+                   const std::chrono::seconds negotiation_timeout,
+                   std::optional<asio::ip::tcp::endpoint> peer_observed_endpoint,
+                   const bool simultaneous_open_enabled) {
     if (!valid_timeout(negotiation_timeout) || candidate_address.is_unspecified()) {
         co_return common::Result<P2pHostUpgrade>::failure(common::ErrorCode::invalid_argument,
                                                           "P2P host options are invalid");
@@ -607,15 +719,18 @@ accept_p2p_upgrade(TlsStream& relay_stream, const asio::ip::address& candidate_a
         co_return common::Result<P2pHostUpgrade>::failure(common::ErrorCode::connection_failed,
                                                           "P2P offer could not be sent");
     }
-    auto race =
-        std::make_shared<HostRace>(relay_stream, std::move(acceptor), *token, negotiation_timeout);
+    auto race = std::make_shared<HostRace>(relay_stream, std::move(acceptor), *token,
+                                           negotiation_timeout,
+                                           std::move(peer_observed_endpoint),
+                                           simultaneous_open_enabled);
     co_return co_await race->run();
 }
 
 asio::awaitable<common::Result<P2pPeerUpgrade>>
 connect_p2p_upgrade(asio::ip::tcp::socket bootstrap_socket,
                     const std::chrono::seconds negotiation_timeout,
-                    const std::chrono::seconds direct_connect_timeout, const bool direct_enabled) {
+                    const std::chrono::seconds direct_connect_timeout, const bool direct_enabled,
+                    const bool simultaneous_open_enabled) {
     if (!bootstrap_socket.is_open() || !valid_timeout(negotiation_timeout) ||
         !valid_timeout(direct_connect_timeout) || direct_connect_timeout > negotiation_timeout) {
         co_return common::Result<P2pPeerUpgrade>::failure(common::ErrorCode::invalid_argument,
@@ -636,6 +751,7 @@ connect_p2p_upgrade(asio::ip::tcp::socket bootstrap_socket,
         static_cast<void>(negotiation_timer.cancel());
         co_return common::Result<P2pPeerUpgrade>::failure(offer.error());
     }
+    std::optional<asio::ip::tcp::endpoint> direct_local_endpoint;
     if (direct_enabled) {
         asio::steady_timer direct_timer{bootstrap->get_executor()};
         direct_timer.expires_after(direct_connect_timeout);
@@ -648,6 +764,15 @@ connect_p2p_upgrade(asio::ip::tcp::socket bootstrap_socket,
         co_await direct->async_connect(offer->candidate,
                                        asio::redirect_error(asio::use_awaitable, connect_error));
         static_cast<void>(direct_timer.cancel());
+        // Remember the mapping port before the socket is consumed by the TLS
+        // stream (or closed), so the simultaneous-open attempt can reuse it.
+        {
+            asio::error_code local_error;
+            const auto endpoint = direct->local_endpoint(local_error);
+            if (!local_error) {
+                direct_local_endpoint = endpoint;
+            }
+        }
         if (!connect_error) {
             std::array<std::uint8_t, kDirectHandshakeSize> handshake{};
             std::copy(kDirectMagic.begin(), kDirectMagic.end(), handshake.begin());
@@ -679,6 +804,103 @@ connect_p2p_upgrade(asio::ip::tcp::socket bootstrap_socket,
         }
     }
     close_socket(*direct);
+    if (simultaneous_open_enabled && direct_local_endpoint.has_value() &&
+        bootstrap->is_open()) {
+        auto so = std::make_shared<asio::ip::tcp::socket>(bootstrap->get_executor());
+        asio::error_code so_error;
+        so->open(offer->candidate.protocol(), so_error);
+        if (!so_error) {
+            so->set_option(asio::socket_base::reuse_address{true}, so_error);
+        }
+        if (!so_error) {
+            so->bind(*direct_local_endpoint, so_error);
+        }
+        if (so_error) {
+            // A stack that refuses the shared-port bind degrades to an
+            // ephemeral source port instead of aborting the punch.
+            so_error.clear();
+            so->close(so_error);
+            so->open(offer->candidate.protocol(), so_error);
+        }
+        if (!so_error) {
+            // Request the host's outbound half; an unknown host ignores the
+            // request, and the fallback request below still completes.
+            if (co_await write_exact(*bootstrap, kSimultaneousMagic.data(),
+                                     kSimultaneousMagic.size())) {
+                // The first SYN can be rejected before the host's outbound
+                // half is in flight (loopback RST, mapping races), so the
+                // attempt retries from the same local port until the window
+                // closes.
+                const auto deadline = std::chrono::steady_clock::now() + direct_connect_timeout;
+                asio::error_code connect_error;
+                for (;;) {
+                    asio::steady_timer so_timer{bootstrap->get_executor()};
+                    so_timer.expires_after(std::chrono::milliseconds{200});
+                    const std::weak_ptr<asio::ip::tcp::socket> weak_so = so;
+                    so_timer.async_wait([weak_so](const asio::error_code& error) {
+                        if (!error) {
+                            if (auto socket = weak_so.lock()) {
+                                close_socket(*socket);
+                            }
+                        }
+                    });
+                    co_await so->async_connect(offer->candidate,
+                                               asio::redirect_error(asio::use_awaitable,
+                                                                    connect_error));
+                    static_cast<void>(so_timer.cancel());
+                    if (!connect_error || std::chrono::steady_clock::now() >= deadline) {
+                        break;
+                    }
+                    // Recreate the socket on the same local port for the next SYN.
+                    connect_error.clear();
+                    so->close(connect_error);
+                    connect_error.clear();
+                    so->open(offer->candidate.protocol(), connect_error);
+                    if (!connect_error) {
+                        so->set_option(asio::socket_base::reuse_address{true}, connect_error);
+                    }
+                    if (!connect_error) {
+                        so->bind(*direct_local_endpoint, connect_error);
+                    }
+                    if (connect_error) {
+                        break;
+                    }
+                }
+                if (!connect_error) {
+                    std::array<std::uint8_t, kDirectHandshakeSize> handshake{};
+                    std::copy(kDirectMagic.begin(), kDirectMagic.end(), handshake.begin());
+                    std::copy(offer->token.begin(), offer->token.end(),
+                              handshake.begin() +
+                                  static_cast<std::ptrdiff_t>(kDirectMagic.size()));
+                    if (co_await write_exact(*so, handshake.data(), handshake.size())) {
+                        asio::ssl::context direct_tls_context{asio::ssl::context::tlsv13_client};
+                        auto direct_stream =
+                            std::make_shared<TlsStream>(std::move(*so), direct_tls_context);
+                        configure_direct_tls(*direct_stream, offer->token, false);
+                        asio::error_code handshake_error;
+                        co_await direct_stream->async_handshake(
+                            asio::ssl::stream_base::client,
+                            asio::redirect_error(asio::use_awaitable, handshake_error));
+                        if (!handshake_error) {
+                            std::array<std::uint8_t, kReadyMagic.size()> ready{};
+                            if (co_await read_exact(*direct_stream, ready.data(),
+                                                    ready.size()) &&
+                                ready == kReadyMagic) {
+                                static_cast<void>(negotiation_timer.cancel());
+                                close_socket(*bootstrap);
+                                co_return P2pPeerUpgrade{
+                                    P2pPath::direct,
+                                    nullptr,
+                                    std::make_unique<TlsStream>(std::move(*direct_stream))};
+                            }
+                        }
+                        close_tls_stream(*direct_stream);
+                    }
+                }
+            }
+        }
+        close_socket(*so);
+    }
     if (!bootstrap->is_open() ||
         !co_await write_exact(*bootstrap, kFallbackMagic.data(), kFallbackMagic.size())) {
         static_cast<void>(negotiation_timer.cancel());

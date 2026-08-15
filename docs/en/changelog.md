@@ -18,6 +18,8 @@ quickly learn the latest capabilities from the docs site.
 - Client policies add source CIDR whitelisting and per-source connection rates; systemd
   units gain memory/task limits.
 - Releases add musl fully static binary archives (`static.yml`).
+- P2P gains server-assisted TCP simultaneous open (NAT hole punching); the
+  `--simultaneous-open` connector flag defaults on and falls back to relay.
 - The documentation site adds an English language (Chinese remains the default).
 
 ## [1.0.0] - 2026-08-13
