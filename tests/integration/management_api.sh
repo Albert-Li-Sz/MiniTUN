@@ -7,7 +7,6 @@ server_bin=${3:?missing minitun-server binary}
 
 runtime_root=$(cd "${TMPDIR:-/tmp}" && pwd -P)
 runtime_dir=$(mktemp -d "$runtime_root/minitun-manage.XXXXXX")
-integration_dir=$(cd "$(dirname "$0")" && pwd -P)
 socket_path="$runtime_dir/minitun.sock"
 state_path="$runtime_dir/state.db"
 credentials_path="$runtime_dir/credentials.db"

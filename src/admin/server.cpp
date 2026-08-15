@@ -348,7 +348,7 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
                                  });
                 return;
             }
-            dispatch(std::move(*request));
+            dispatch(*request);
         }
 
         void on_body(const asio::error_code& error) {
@@ -370,12 +370,12 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
                                         "request body length mismatch\n", false));
                 return;
             }
-            dispatch(std::move(*pending_));
+            dispatch(*pending_);
         }
 
-        void dispatch(Request request) {
+        void dispatch(const Request& request) {
             if (owner_->providers_.management && request.path.starts_with("/v1/")) {
-                dispatch_management(std::move(request));
+                dispatch_management(request);
                 return;
             }
             if (owner_->authentication_required_ && !authenticated(request)) {
@@ -419,7 +419,7 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
             }
         }
 
-        void dispatch_management(Request request) {
+        void dispatch_management(const Request& request) {
             if (owner_->token_ != nullptr && !authenticated(request)) {
                 write_unauthorized();
                 return;

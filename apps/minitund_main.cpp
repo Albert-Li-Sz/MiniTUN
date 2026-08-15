@@ -334,7 +334,8 @@ int run_daemon_impl(const std::string& socket_path, const std::string& database_
                             secrets->integrity_ok;
                  },
              .metrics = [manager =
-                             server_manager->get()] { return daemon_metrics_text(*manager); }});
+                             server_manager->get()] { return daemon_metrics_text(*manager); },
+             .management = {}});
         if (!configured) {
             std::cerr << "minitund: failed to configure admin listener: " << configured.error()
                       << '\n';
