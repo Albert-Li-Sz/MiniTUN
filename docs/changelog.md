@@ -8,7 +8,7 @@ title: 变更日志
 [CHANGELOG.md](https://github.com/Albert-Li-Sz/MiniTUN/blob/main/CHANGELOG.md) 为准。
 这里保留官网常用的近期版本摘要，方便从文档站快速了解最新能力。
 
-## [Unreleased]
+## [1.1.0] - 2026-08-15
 
 - tcp tunnel 支持 PROXY protocol v1 头（`--proxy-protocol`），旧版 peer 保持字节兼容。
 - `minitun-server` 新增 `/v1/*` 客户端策略管理 API（列表/创建/更新/删除/PSK 轮换），

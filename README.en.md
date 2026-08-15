@@ -10,12 +10,12 @@
 > A minimal-footprint, self-hosted, multi-transport intranet penetration (reverse tunnel)
 > tool for Linux.
 
-> **Release status:** [`v1.0.0`](https://github.com/Albert-Li-Sz/MiniTUN/releases/tag/v1.0.0)
-> was released on 2026-08-13 and is the first formal release of this generation of source
-> code. All previous v0.x and old v1.0.0 release records were deleted, and the public
-> history restarts from this version. It includes TCP, UDP, SOCKS5 and P2P tunnel modes,
-> two stable SOVERSION 1 SDKs, and focuses on a minimal footprint: no web GUI and no
-> scripting runtime.
+> **Release status:** [`v1.1.0`](https://github.com/Albert-Li-Sz/MiniTUN/releases/tag/v1.1.0)
+> was released on 2026-08-15, adding PROXY protocol headers, the `/v1/*` client policy
+> management API with graceful PSK rotation, P2P TCP simultaneous open (NAT hole
+> punching), and English documentation on top of v1.0.0. It includes TCP, UDP, SOCKS5
+> and P2P tunnel modes, two stable SOVERSION 1 SDKs, and focuses on a minimal footprint:
+> no web GUI and no scripting runtime.
 
 MiniTun forwards a TCP or UDP port on a public server to an intranet service, can also
 provide a SOCKS5 CONNECT proxy, or negotiate a P2P direct connection for routable hosts and

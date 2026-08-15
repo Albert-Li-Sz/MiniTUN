@@ -9,7 +9,7 @@ The complete version history is governed by the
 repository root. This page keeps the recent-version summary used by the website, so you can
 quickly learn the latest capabilities from the docs site.
 
-## [Unreleased]
+## [1.1.0] - 2026-08-15
 
 - tcp tunnels support PROXY protocol v1 headers (`--proxy-protocol`), staying
   byte-compatible with older peers.

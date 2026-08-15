@@ -9,11 +9,11 @@
 
 > 面向 Linux 的资源占用最小、自托管多传输内网穿透工具。
 
-> **发布状态：** [`v1.0.0`](https://github.com/Albert-Li-Sz/MiniTUN/releases/tag/v1.0.0)
-> 已于 2026-08-13 发布，是本代源码的首个正式版本。此前全部 v0.x 与旧版 v1.0.0
-> 发行记录已删除，公开历史从本版本重新开始。它包含 TCP、UDP、SOCKS5、P2P 四种
-> tunnel mode、两个稳定 SOVERSION 1 SDK，并聚焦最小资源占用：无 Web GUI、无脚本
-> 运行时。
+> **发布状态：** [`v1.1.0`](https://github.com/Albert-Li-Sz/MiniTUN/releases/tag/v1.1.0)
+> 于 2026-08-15 发布，在 v1.0.0 之上新增 PROXY protocol 头、`/v1/*` 客户端策略管理
+> API 与 PSK 优雅轮换、P2P TCP simultaneous open（NAT 打洞）与英文文档。它包含
+> TCP、UDP、SOCKS5、P2P 四种 tunnel mode、两个稳定 SOVERSION 1 SDK，并聚焦最小
+> 资源占用：无 Web GUI、无脚本运行时。
 
 MiniTun 将公网服务器上的 TCP 或 UDP 端口转发到内网服务，也可以提供 SOCKS5 CONNECT
 代理，或为可路由主机协商 P2P 直连并自动回退到 relay。当前源码由公网服务端

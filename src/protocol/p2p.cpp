@@ -311,7 +311,7 @@ class HostRace final : public std::enable_shared_from_this<HostRace> {
         so_socket_ = socket;
         auto self = shared_from_this();
         socket->async_connect(*peer_observed_endpoint_,
-                              [self, socket](const asio::error_code& connect_error) {
+                              [self, socket](const asio::error_code& connect_error) mutable {
                                   if (self->done_) {
                                       close_socket(*socket);
                                       return;
@@ -353,13 +353,14 @@ class HostRace final : public std::enable_shared_from_this<HostRace> {
     /// direct or simultaneous open) and upgrades it to TLS 1.3 PSK.
     void begin_direct_handshake(std::shared_ptr<asio::ip::tcp::socket> candidate) {
         auto self = shared_from_this();
-        pending_direct_ = candidate;
+        pending_direct_ = std::move(candidate);
+        const auto socket = pending_direct_;
         auto handshake = std::make_shared<std::array<std::uint8_t, kDirectHandshakeSize>>();
-        asio::async_read(*candidate, asio::buffer(*handshake),
-                         [self, candidate, handshake](const asio::error_code& read_error,
+        asio::async_read(*socket, asio::buffer(*handshake),
+                         [self, socket, handshake](const asio::error_code& read_error,
                                                       const std::size_t bytes) {
                              if (self->done_) {
-                                 close_socket(*candidate);
+                                 close_socket(*socket);
                                  return;
                              }
                              const bool valid =
@@ -369,15 +370,15 @@ class HostRace final : public std::enable_shared_from_this<HostRace> {
                                  CRYPTO_memcmp(handshake->data() + kDirectMagic.size(),
                                                self->token_.data(), self->token_.size()) == 0;
                              if (!valid) {
-                                 close_socket(*candidate);
-                                 if (self->pending_direct_ == candidate) {
+                                 close_socket(*socket);
+                                 if (self->pending_direct_ == socket) {
                                      self->pending_direct_.reset();
                                  }
                                  self->accept_direct();
                                  return;
                              }
                              auto stream = std::make_shared<TlsStream>(
-                                 std::move(*candidate), self->direct_tls_context_);
+                                 std::move(*socket), self->direct_tls_context_);
                              configure_direct_tls(*stream, self->token_, true);
                              stream->async_handshake(
                                  asio::ssl::stream_base::server,

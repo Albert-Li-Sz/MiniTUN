@@ -206,7 +206,8 @@ TEST(AdminServerTest, NonLoopbackListenerWithoutTokenIsRejected) {
         {.listen_endpoint = "0.0.0.0:" + std::to_string(available_port()), .token_file = {}},
         {.healthy = [] { return true; },
          .ready = [] { return true; },
-         .metrics = [] { return std::string{}; }});
+         .metrics = [] { return std::string{}; },
+         .management = {}});
     ASSERT_FALSE(created);
     EXPECT_EQ(created.error().code(), common::ErrorCode::permission_denied);
 }
@@ -399,6 +400,7 @@ TEST(AdminServerTest, RoutesManagementEndpointsWithBodiesAndBearerAuth) {
                                .timeout = std::chrono::seconds{5}},
                               {.healthy = [] { return true; },
                                .ready = [] { return true; },
+                               .metrics = [] { return std::string{}; },
                                .management =
                                    [](const ManagementRequest& management)
                                    -> common::Result<ManagementResponse> {
