@@ -294,6 +294,16 @@ class HostRace final : public std::enable_shared_from_this<HostRace> {
             return;
         }
         so_started_ = true;
+        attempt_so_connect();
+    }
+
+    /// One outbound connect attempt from the listener port. Failures retry
+    /// after a short pause until the negotiation window closes, so a SYN that
+    /// arrives before the peer's mapping forms does not abandon the punch.
+    void attempt_so_connect() {
+        if (done_) {
+            return;
+        }
         asio::error_code listener_error;
         const auto local_endpoint = acceptor_.local_endpoint(listener_error);
         if (listener_error) {
@@ -321,6 +331,18 @@ class HostRace final : public std::enable_shared_from_this<HostRace> {
                                       if (self->so_socket_ == socket) {
                                           self->so_socket_.reset();
                                       }
+                                      if (connect_error == asio::error::operation_aborted) {
+                                          return;
+                                      }
+                                      auto retry = std::make_shared<asio::steady_timer>(
+                                          self->relay_stream_.get_executor());
+                                      retry->expires_after(std::chrono::milliseconds{200});
+                                      retry->async_wait([self, retry](
+                                                            const asio::error_code& timer_error) {
+                                          if (!timer_error) {
+                                              self->attempt_so_connect();
+                                          }
+                                      });
                                       return;
                                   }
                                   self->begin_direct_handshake(std::move(socket));

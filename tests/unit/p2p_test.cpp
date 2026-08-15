@@ -269,45 +269,60 @@ TEST(P2pTest, CreatesSimultaneousOpenSocketsFromTheListenerPort) {
 
 TEST(P2pTest, SimultaneousOpenConnectsBothSidesWithoutAListener) {
     asio::io_context io_context;
-    asio::ip::tcp::socket first{io_context};
-    asio::ip::tcp::socket second{io_context};
-    asio::error_code error;
-    first.open(asio::ip::tcp::v4(), error);
-    ASSERT_FALSE(error);
-    second.open(asio::ip::tcp::v4(), error);
-    ASSERT_FALSE(error);
-    first.set_option(asio::socket_base::reuse_address{true}, error);
-    ASSERT_FALSE(error);
-    second.set_option(asio::socket_base::reuse_address{true}, error);
-    ASSERT_FALSE(error);
-
     const auto first_port = available_loopback_port(io_context);
     auto second_port = available_loopback_port(io_context);
     while (second_port == first_port) {
         second_port = available_loopback_port(io_context);
     }
-    first.bind({asio::ip::address_v4::loopback(), first_port}, error);
-    ASSERT_FALSE(error) << error.message();
-    second.bind({asio::ip::address_v4::loopback(), second_port}, error);
-    ASSERT_FALSE(error) << error.message();
-
-    std::optional<asio::error_code> first_error;
-    std::optional<asio::error_code> second_error;
-    first.async_connect({asio::ip::address_v4::loopback(), second_port},
-                        [&first_error](const asio::error_code& connect_error) {
-                            first_error = connect_error;
-                        });
-    second.async_connect({asio::ip::address_v4::loopback(), first_port},
-                         [&second_error](const asio::error_code& connect_error) {
-                             second_error = connect_error;
-                         });
+    // Each round initiates both outbound connects back-to-back before any
+    // handler runs, so both SYNs are in flight together; a round where a fast
+    // RST beats the crossing simply retries with fresh sockets on the same
+    // local ports.
+    std::optional<asio::error_code> final_error;
+    asio::co_spawn(
+        io_context,
+        [&]() -> asio::awaitable<void> {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{3};
+            asio::error_code first_error = asio::error::connection_refused;
+            asio::error_code second_error = asio::error::connection_refused;
+            while ((first_error || second_error) &&
+                   std::chrono::steady_clock::now() < deadline) {
+                asio::ip::tcp::socket first{io_context};
+                asio::ip::tcp::socket second{io_context};
+                asio::error_code error;
+                first.open(asio::ip::tcp::v4(), error);
+                first.set_option(asio::socket_base::reuse_address{true}, error);
+                first.bind({asio::ip::address_v4::loopback(), first_port}, error);
+                second.open(asio::ip::tcp::v4(), error);
+                second.set_option(asio::socket_base::reuse_address{true}, error);
+                second.bind({asio::ip::address_v4::loopback(), second_port}, error);
+                if (error) {
+                    final_error = error;
+                    co_return;
+                }
+                first_error = asio::error::connection_refused;
+                second_error = asio::error::connection_refused;
+                first.async_connect({asio::ip::address_v4::loopback(), second_port},
+                                    [&first_error](const asio::error_code& connect_error) {
+                                        first_error = connect_error;
+                                    });
+                second.async_connect({asio::ip::address_v4::loopback(), first_port},
+                                     [&second_error](const asio::error_code& connect_error) {
+                                         second_error = connect_error;
+                                     });
+                asio::steady_timer window{io_context};
+                window.expires_after(std::chrono::milliseconds{300});
+                asio::error_code ignored;
+                co_await window.async_wait(asio::redirect_error(asio::use_awaitable, ignored));
+            }
+            final_error = first_error ? first_error : second_error;
+        },
+        [](const std::exception_ptr& failure) { EXPECT_FALSE(failure); });
     io_context.run();
-    ASSERT_TRUE(first_error.has_value());
-    ASSERT_TRUE(second_error.has_value());
+    ASSERT_TRUE(final_error.has_value());
     // Both SYN-SENT sockets transition to ESTABLISHED: classic TCP
     // simultaneous open without any listener.
-    EXPECT_FALSE(*first_error) << first_error->message();
-    EXPECT_FALSE(*second_error) << second_error->message();
+    EXPECT_FALSE(*final_error) << final_error->message();
 }
 
 TEST(P2pTest, PeerRequestsSimultaneousOpenAndReusesTheMappingPort) {
@@ -362,19 +377,31 @@ TEST(P2pTest, PeerRequestsSimultaneousOpenAndReusesTheMappingPort) {
                 co_return;
             }
             // Outbound half: a socket bound to the candidate port connects to
-            // the peer's reused mapping port while the peer connects back.
+            // the peer's reused mapping port while the peer connects back,
+            // retrying so the SYNs eventually cross.
+            asio::error_code connect_error = asio::error::connection_refused;
+            const auto connect_deadline =
+                std::chrono::steady_clock::now() + std::chrono::seconds{2};
             asio::ip::tcp::socket outbound{io_context};
-            outbound.open(asio::ip::tcp::v4(), error);
-            outbound.set_option(asio::socket_base::reuse_address{true}, error);
-            outbound.bind({asio::ip::address_v4::loopback(), candidate_port}, error);
-            if (error) {
-                mock_report = "bind";
-                co_return;
+            while (connect_error && std::chrono::steady_clock::now() < connect_deadline) {
+                outbound.close(error);
+                outbound.open(asio::ip::tcp::v4(), error);
+                outbound.set_option(asio::socket_base::reuse_address{true}, error);
+                outbound.bind({asio::ip::address_v4::loopback(), candidate_port}, error);
+                if (error) {
+                    mock_report = "bind";
+                    co_return;
+                }
+                co_await outbound.async_connect(
+                    {asio::ip::address_v4::loopback(), peer_port},
+                    asio::redirect_error(asio::use_awaitable, connect_error));
+                if (connect_error) {
+                    asio::steady_timer pause{io_context};
+                    pause.expires_after(std::chrono::milliseconds{100});
+                    asio::error_code ignored;
+                    co_await pause.async_wait(asio::redirect_error(asio::use_awaitable, ignored));
+                }
             }
-            asio::error_code connect_error;
-            co_await outbound.async_connect(
-                {asio::ip::address_v4::loopback(), peer_port},
-                asio::redirect_error(asio::use_awaitable, connect_error));
             if (connect_error) {
                 mock_report = "connect";
                 co_return;

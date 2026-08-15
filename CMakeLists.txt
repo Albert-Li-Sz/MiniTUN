@@ -11,6 +11,10 @@ project(
 include(CTest)
 include(CMakePackageConfigHelpers)
 include(GNUInstallDirs)
+# Keep the documentation root lowercase on case-sensitive filesystems; the
+# staged layout test and packaging recipes rely on "minitun".
+set(CMAKE_INSTALL_DOCDIR "${CMAKE_INSTALL_DATAROOTDIR}/doc/minitun"
+    CACHE PATH "Documentation root" FORCE)
 
 option(MINITUN_USE_SYSTEM_DEPS "Use distribution-provided dependencies" ON)
 option(MINITUN_BUILD_TESTS "Build the MiniTun test suite" ON)
