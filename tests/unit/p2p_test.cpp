@@ -1,4 +1,5 @@
 #include <chrono>
+#include <thread>
 #include <exception>
 #include <array>
 #include <cstdint>
@@ -268,61 +269,56 @@ TEST(P2pTest, CreatesSimultaneousOpenSocketsFromTheListenerPort) {
 }
 
 TEST(P2pTest, SimultaneousOpenConnectsBothSidesWithoutAListener) {
-    asio::io_context io_context;
-    const auto first_port = available_loopback_port(io_context);
-    auto second_port = available_loopback_port(io_context);
+    const auto first_port = [] {
+        asio::io_context io_context;
+        return available_loopback_port(io_context);
+    }();
+    auto second_port = [] {
+        asio::io_context io_context;
+        return available_loopback_port(io_context);
+    }();
     while (second_port == first_port) {
+        asio::io_context io_context;
         second_port = available_loopback_port(io_context);
     }
-    // Each round initiates both outbound connects back-to-back before any
-    // handler runs, so both SYNs are in flight together; a round where a fast
-    // RST beats the crossing simply retries with fresh sockets on the same
-    // local ports.
-    std::optional<asio::error_code> final_error;
-    asio::co_spawn(
-        io_context,
-        [&]() -> asio::awaitable<void> {
-            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{3};
-            asio::error_code first_error = asio::error::connection_refused;
-            asio::error_code second_error = asio::error::connection_refused;
-            while ((first_error || second_error) &&
-                   std::chrono::steady_clock::now() < deadline) {
-                asio::ip::tcp::socket first{io_context};
-                asio::ip::tcp::socket second{io_context};
-                asio::error_code error;
-                first.open(asio::ip::tcp::v4(), error);
-                first.set_option(asio::socket_base::reuse_address{true}, error);
-                first.bind({asio::ip::address_v4::loopback(), first_port}, error);
-                second.open(asio::ip::tcp::v4(), error);
-                second.set_option(asio::socket_base::reuse_address{true}, error);
-                second.bind({asio::ip::address_v4::loopback(), second_port}, error);
-                if (error) {
-                    final_error = error;
-                    co_return;
-                }
-                first_error = asio::error::connection_refused;
-                second_error = asio::error::connection_refused;
-                first.async_connect({asio::ip::address_v4::loopback(), second_port},
-                                    [&first_error](const asio::error_code& connect_error) {
-                                        first_error = connect_error;
-                                    });
-                second.async_connect({asio::ip::address_v4::loopback(), first_port},
-                                     [&second_error](const asio::error_code& connect_error) {
-                                         second_error = connect_error;
-                                     });
-                asio::steady_timer window{io_context};
-                window.expires_after(std::chrono::milliseconds{300});
-                asio::error_code ignored;
-                co_await window.async_wait(asio::redirect_error(asio::use_awaitable, ignored));
+    // Two OS threads keep each side blocked inside connect(), so both sockets
+    // stay in SYN-SENT while the other side's SYN arrives: classic TCP
+    // simultaneous open without any listener. Fast loopback RSTs make the
+    // same interleaving racy on a single thread, so each thread retries with
+    // a fresh socket on the same local port until the SYNs cross.
+    const auto connector = [](const std::uint16_t local_port,
+                              const std::uint16_t peer_port) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{4};
+        asio::error_code last_error = asio::error::connection_refused;
+        while (last_error && std::chrono::steady_clock::now() < deadline) {
+            asio::io_context io_context;
+            asio::ip::tcp::socket socket{io_context};
+            socket.open(asio::ip::tcp::v4(), last_error);
+            socket.set_option(asio::socket_base::reuse_address{true}, last_error);
+            socket.bind({asio::ip::address_v4::loopback(), local_port}, last_error);
+            if (last_error) {
+                return last_error;
             }
-            final_error = first_error ? first_error : second_error;
-        },
-        [](const std::exception_ptr& failure) { EXPECT_FALSE(failure); });
-    io_context.run();
-    ASSERT_TRUE(final_error.has_value());
+            socket.connect({asio::ip::address_v4::loopback(), peer_port}, last_error);
+            if (!last_error) {
+                return last_error;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds{50});
+        }
+        return last_error;
+    };
+    std::optional<asio::error_code> first_error;
+    std::optional<asio::error_code> second_error;
+    std::thread first_thread{[&] { first_error = connector(first_port, second_port); }};
+    std::thread second_thread{[&] { second_error = connector(second_port, first_port); }};
+    first_thread.join();
+    second_thread.join();
+    ASSERT_TRUE(first_error.has_value());
+    ASSERT_TRUE(second_error.has_value());
     // Both SYN-SENT sockets transition to ESTABLISHED: classic TCP
     // simultaneous open without any listener.
-    EXPECT_FALSE(*final_error) << final_error->message();
+    EXPECT_FALSE(*first_error) << first_error->message();
+    EXPECT_FALSE(*second_error) << second_error->message();
 }
 
 TEST(P2pTest, PeerRequestsSimultaneousOpenAndReusesTheMappingPort) {
@@ -342,6 +338,9 @@ TEST(P2pTest, PeerRequestsSimultaneousOpenAndReusesTheMappingPort) {
 
     std::optional<common::Result<P2pPeerUpgrade>> peer_result;
     std::string mock_report;
+    std::optional<bool> outbound_connected;
+    std::optional<bool> outbound_token_valid;
+    std::optional<std::thread> outbound_thread;
     asio::co_spawn(
         io_context,
         [&]() -> asio::awaitable<void> {
@@ -376,54 +375,48 @@ TEST(P2pTest, PeerRequestsSimultaneousOpenAndReusesTheMappingPort) {
                               std::string{reinterpret_cast<const char*>(control.data()), 4U};
                 co_return;
             }
-            // Outbound half: a socket bound to the candidate port connects to
-            // the peer's reused mapping port while the peer connects back,
-            // retrying so the SYNs eventually cross.
-            asio::error_code connect_error = asio::error::connection_refused;
-            const auto connect_deadline =
-                std::chrono::steady_clock::now() + std::chrono::seconds{2};
-            asio::ip::tcp::socket outbound{io_context};
-            while (connect_error && std::chrono::steady_clock::now() < connect_deadline) {
-                outbound.close(error);
-                outbound.open(asio::ip::tcp::v4(), error);
-                outbound.set_option(asio::socket_base::reuse_address{true}, error);
-                outbound.bind({asio::ip::address_v4::loopback(), candidate_port}, error);
-                if (error) {
-                    mock_report = "bind";
-                    co_return;
+            // Outbound half on a dedicated OS thread: a socket bound to the
+            // candidate port blocks inside connect(), keeping SYN-SENT open
+            // while the peer's SYN arrives, which makes the crossing
+            // deterministic even though loopback answers idle ports with RSTs.
+            outbound_thread.emplace([&] {
+                asio::io_context local_io;
+                asio::error_code error;
+                const auto deadline =
+                    std::chrono::steady_clock::now() + std::chrono::seconds{4};
+                while (std::chrono::steady_clock::now() < deadline) {
+                    asio::ip::tcp::socket outbound{local_io};
+                    outbound.open(asio::ip::tcp::v4(), error);
+                    outbound.set_option(asio::socket_base::reuse_address{true}, error);
+                    outbound.bind({asio::ip::address_v4::loopback(), candidate_port}, error);
+                    if (error) {
+                        outbound_connected = false;
+                        return;
+                    }
+                    outbound.connect({asio::ip::address_v4::loopback(), peer_port}, error);
+                    if (!error) {
+                        outbound_connected = true;
+                        constexpr std::size_t kHandshakeSize = 4U + 32U;
+                        std::array<std::uint8_t, kHandshakeSize> handshake{};
+                        asio::read(outbound, asio::buffer(handshake), error);
+                        constexpr std::array<std::uint8_t, 4U> kMockDirectMagic{'M', 'T', 'P',
+                                                                               'D'};
+                        const bool magic_ok =
+                            std::equal(kMockDirectMagic.begin(), kMockDirectMagic.end(),
+                                       handshake.begin());
+                        outbound_token_valid =
+                            magic_ok &&
+                            std::equal(token.begin(), token.end(), handshake.begin() + 4);
+                        outbound.shutdown(asio::ip::tcp::socket::shutdown_both, error);
+                        outbound.close();
+                        return;
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds{50});
                 }
-                co_await outbound.async_connect(
-                    {asio::ip::address_v4::loopback(), peer_port},
-                    asio::redirect_error(asio::use_awaitable, connect_error));
-                if (connect_error) {
-                    asio::steady_timer pause{io_context};
-                    pause.expires_after(std::chrono::milliseconds{100});
-                    asio::error_code ignored;
-                    co_await pause.async_wait(asio::redirect_error(asio::use_awaitable, ignored));
-                }
-            }
-            if (connect_error) {
-                mock_report = "connect";
-                co_return;
-            }
-            // The peer's SO socket carries the same MTPD + token handshake.
-            constexpr std::size_t kHandshakeSize = 4U + 32U;
-            std::array<std::uint8_t, kHandshakeSize> handshake{};
-            if (!co_await raw_read_exact(outbound, handshake.data(), handshake.size())) {
-                mock_report = "handshake";
-                co_return;
-            }
-
-            constexpr std::array<std::uint8_t, 4U> kMockDirectMagic{'M', 'T', 'P', 'D'};
-            const bool magic_ok = std::equal(kMockDirectMagic.begin(), kMockDirectMagic.end(),
-                                             handshake.begin());
-            const bool valid_token =
-                magic_ok && std::equal(token.begin(), token.end(), handshake.begin() + 4);
-            // The mock speaks no TLS; shutting down forces the peer onto the
-            // relay fallback, which the mock then confirms.
-            asio::error_code shutdown_error;
-            outbound.shutdown(asio::ip::tcp::socket::shutdown_both, shutdown_error);
-            outbound.close();
+                outbound_connected = false;
+            });
+            // The mock spoke no TLS and closed the SO socket on its thread, so
+            // the peer must fall back to the relay, which the mock confirms.
             std::array<std::uint8_t, 4U> fallback{};
             if (!co_await raw_read_exact(host_relay, fallback.data(), fallback.size())) {
                 mock_report = "fallback";
@@ -434,9 +427,7 @@ TEST(P2pTest, PeerRequestsSimultaneousOpenAndReusesTheMappingPort) {
             const std::array<std::uint8_t, 4U> ready_magic{'M', 'T', 'O', 'K'};
             static_cast<void>(
                 co_await raw_write_exact(host_relay, ready_magic.data(), ready_magic.size()));
-            mock_report = !magic_ok ? "hs-magic" : !valid_token ? "hs-token"
-                          : !valid_fallback ? "fb-magic"
-                                            : "ok";
+            mock_report = valid_fallback ? "ok" : "fb-magic";
         },
         [](const std::exception_ptr& failure) { EXPECT_FALSE(failure); });
     asio::co_spawn(
@@ -448,8 +439,15 @@ TEST(P2pTest, PeerRequestsSimultaneousOpenAndReusesTheMappingPort) {
         },
         [](const std::exception_ptr& failure) { EXPECT_FALSE(failure); });
     io_context.run();
+    if (outbound_thread.has_value()) {
+        outbound_thread->join();
+    }
 
     EXPECT_EQ(mock_report, "ok");
+    ASSERT_TRUE(outbound_connected.has_value());
+    ASSERT_TRUE(outbound_token_valid.has_value());
+    EXPECT_TRUE(*outbound_connected) << "the simultaneous-open connect never crossed";
+    EXPECT_TRUE(*outbound_token_valid) << "the SO socket did not carry the MTPD token";
     ASSERT_TRUE(peer_result.has_value());
     // The mock dropped the SO socket before TLS, so the peer ends on the
     // confirmed relay fallback with the bootstrap socket intact.
