@@ -5,6 +5,7 @@
 #include <cerrno>
 #include <cctype>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <sstream>
@@ -21,6 +22,7 @@
 #include <asio/error.hpp>
 #include <asio/ip/address.hpp>
 #include <asio/ip/tcp.hpp>
+#include <asio/read.hpp>
 #include <asio/read_until.hpp>
 #include <asio/steady_timer.hpp>
 #include <asio/strand.hpp>
@@ -100,6 +102,7 @@ struct Request final {
     std::string method;
     std::string path;
     std::optional<std::string> authorization;
+    std::size_t content_length{0U};
 
     ~Request() {
         if (authorization.has_value()) {
@@ -129,7 +132,7 @@ struct Request final {
     }
     Request request{std::string{first.substr(0U, first_space)},
                     std::string{first.substr(first_space + 1U, second_space - first_space - 1U)},
-                    std::nullopt};
+                    std::nullopt, 0U};
     if (request.path.empty() || request.path.front() != '/' || request.path.find('?') != std::string::npos) {
         return Error{ErrorCode::invalid_argument, "admin HTTP request target is invalid"};
     }
@@ -152,10 +155,24 @@ struct Request final {
             value.remove_prefix(1U);
         }
         if (name == "content-length") {
-            if (content_length_seen || value != "0") {
-                return Error{ErrorCode::invalid_argument, "admin HTTP request bodies are forbidden"};
+            if (content_length_seen || value.empty() ||
+                !std::all_of(value.begin(), value.end(), [](const char byte) {
+                    return byte >= '0' && byte <= '9';
+                })) {
+                return Error{ErrorCode::invalid_argument,
+                             "admin HTTP content-length header is invalid"};
             }
             content_length_seen = true;
+            std::size_t parsed = 0U;
+            for (const char byte : value) {
+                const unsigned digit = static_cast<unsigned>(byte - '0');
+                if (parsed > (std::numeric_limits<std::size_t>::max() - digit) / 10U) {
+                    return Error{ErrorCode::invalid_argument,
+                                 "admin HTTP content-length overflows"};
+                }
+                parsed = parsed * 10U + digit;
+            }
+            request.content_length = parsed;
         } else if (name == "transfer-encoding") {
             return Error{ErrorCode::invalid_argument, "admin HTTP transfer encoding is forbidden"};
         } else if (name == "authorization") {
@@ -168,6 +185,29 @@ struct Request final {
         cursor = line_end + 2U;
     }
     return request;
+}
+
+[[nodiscard]] std::pair<unsigned int, std::string_view>
+status_for_error(const common::ErrorCode code) noexcept {
+    switch (code) {
+    case ErrorCode::not_found:
+        return {404U, "Not Found"};
+    case ErrorCode::already_exists:
+        return {409U, "Conflict"};
+    case ErrorCode::permission_denied:
+        return {403U, "Forbidden"};
+    case ErrorCode::not_authenticated:
+    case ErrorCode::authentication_failed:
+        return {401U, "Unauthorized"};
+    case ErrorCode::resource_exhausted:
+        return {413U, "Content Too Large"};
+    case ErrorCode::invalid_argument:
+    case ErrorCode::protocol_error:
+    case ErrorCode::unsupported_version:
+        return {400U, "Bad Request"};
+    default:
+        return {500U, "Internal Server Error"};
+    }
 }
 
 [[nodiscard]] std::string response(const unsigned int status, const std::string_view reason,
@@ -251,50 +291,114 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
             });
             asio::async_read_until(socket_, buffer_, "\r\n\r\n",
                                    [self](const asio::error_code& error, const std::size_t bytes) {
-                                       self->on_read(error, bytes);
+                                       self->on_headers(error, bytes);
                                    });
         }
 
       private:
-        void on_read(const asio::error_code& error, const std::size_t bytes) {
-            if (error || bytes > owner_->options_.max_header_bytes || bytes != buffer_.size()) {
+        void on_headers(const asio::error_code& error, const std::size_t bytes) {
+            if (error || bytes > owner_->options_.max_header_bytes) {
                 write_response(response(431U, "Request Header Fields Too Large", "text/plain",
                                         "request headers rejected\n", false));
                 return;
             }
             std::string text(bytes, '\0');
-            std::istream input{&buffer_};
-            input.read(text.data(), static_cast<std::streamsize>(text.size()));
+            {
+                std::istream input{&buffer_};
+                input.read(text.data(), static_cast<std::streamsize>(text.size()));
+            }
             auto request = parse_request(text);
             common::secure_erase_memory(text.data(), text.size());
             if (!request) {
                 write_response(response(400U, "Bad Request", "text/plain", "bad request\n", false));
                 return;
             }
-            if (owner_->authentication_required_ && !authenticated(*request)) {
-                auto denied = response(401U, "Unauthorized", "text/plain", "unauthorized\n", false);
-                denied.insert(denied.find("\r\n") + 2U,
-                              "WWW-Authenticate: Bearer realm=\"minitun-admin\"\r\n");
-                write_response(std::move(denied));
+            if ((request->method == "GET" || request->method == "HEAD") &&
+                request->content_length != 0U) {
+                write_response(response(400U, "Bad Request", "text/plain",
+                                        "GET requests cannot carry a body\n", false));
                 return;
             }
-            const bool head = request->method == "HEAD";
-            if (request->method != "GET" && !head) {
+            if (request->content_length > owner_->options_.max_body_bytes) {
+                write_response(response(413U, "Content Too Large", "text/plain",
+                                        "request body rejected\n", false));
+                return;
+            }
+            const std::size_t buffered = buffer_.size();
+            if (buffered > request->content_length) {
+                write_response(response(400U, "Bad Request", "text/plain",
+                                        "request pipelining is forbidden\n", false));
+                return;
+            }
+            body_.reserve(request->content_length);
+            if (buffered != 0U) {
+                const auto previous = body_.size();
+                body_.resize(previous + buffered);
+                std::istream input{&buffer_};
+                input.read(body_.data() + static_cast<std::ptrdiff_t>(previous),
+                           static_cast<std::streamsize>(buffered));
+            }
+            if (body_.size() < request->content_length) {
+                pending_ = std::move(*request);
+                auto self = shared_from_this();
+                asio::async_read(socket_, buffer_,
+                                 asio::transfer_exactly(request->content_length - body_.size()),
+                                 [self](const asio::error_code& read_error, const std::size_t) {
+                                     self->on_body(read_error);
+                                 });
+                return;
+            }
+            dispatch(std::move(*request));
+        }
+
+        void on_body(const asio::error_code& error) {
+            if (error) {
+                write_response(response(400U, "Bad Request", "text/plain",
+                                        "request body truncated\n", false));
+                return;
+            }
+            const std::size_t buffered = buffer_.size();
+            const auto previous = body_.size();
+            body_.resize(previous + buffered);
+            {
+                std::istream input{&buffer_};
+                input.read(body_.data() + static_cast<std::ptrdiff_t>(previous),
+                           static_cast<std::streamsize>(buffered));
+            }
+            if (body_.size() != pending_->content_length) {
+                write_response(response(400U, "Bad Request", "text/plain",
+                                        "request body length mismatch\n", false));
+                return;
+            }
+            dispatch(std::move(*pending_));
+        }
+
+        void dispatch(Request request) {
+            if (owner_->providers_.management && request.path.starts_with("/v1/")) {
+                dispatch_management(std::move(request));
+                return;
+            }
+            if (owner_->authentication_required_ && !authenticated(request)) {
+                write_unauthorized();
+                return;
+            }
+            const bool head = request.method == "HEAD";
+            if (request.method != "GET" && !head) {
                 write_response(response(405U, "Method Not Allowed", "text/plain",
                                         "method not allowed\n", false));
                 return;
             }
-            if (request->path == "/healthz") {
+            if (request.path == "/healthz") {
                 const bool healthy = safe_status(owner_->providers_.healthy);
                 write_response(response(healthy ? 200U : 503U,
                                         healthy ? "OK" : "Service Unavailable", "text/plain",
                                         healthy ? "ok\n" : "unhealthy\n", head));
-            } else if (request->path == "/readyz") {
+            } else if (request.path == "/readyz") {
                 const bool ready = safe_status(owner_->providers_.ready);
                 write_response(response(ready ? 200U : 503U,
                                         ready ? "OK" : "Service Unavailable", "text/plain",
                                         ready ? "ready\n" : "not ready\n", head));
-            } else if (request->path == "/metrics") {
+            } else if (request.path == "/metrics") {
                 if (head) {
                     write_response(response(405U, "Method Not Allowed", "text/plain",
                                             "method not allowed\n", true));
@@ -313,6 +417,45 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
             } else {
                 write_response(response(404U, "Not Found", "text/plain", "not found\n", head));
             }
+        }
+
+        void dispatch_management(Request request) {
+            if (owner_->token_ != nullptr && !authenticated(request)) {
+                write_unauthorized();
+                return;
+            }
+            if (request.method != "GET" && request.method != "PUT" &&
+                request.method != "POST" && request.method != "DELETE") {
+                write_response(response(405U, "Method Not Allowed", "text/plain",
+                                        "method not allowed\n", false));
+                return;
+            }
+            ManagementRequest management{request.method, request.path, std::move(body_)};
+            const auto invoke = [this, &management]() -> common::Result<ManagementResponse> {
+                try {
+                    return owner_->providers_.management(management);
+                } catch (...) {
+                    return common::Result<ManagementResponse>::failure(
+                        common::ErrorCode::internal_error, "management handler failed");
+                }
+            };
+            const auto result = invoke();
+            if (!result) {
+                const auto [status, reason] = status_for_error(result.error().code());
+                std::string body = "{\"error\":\"" + std::string{common::to_string(result.error().code())} +
+                                   "\",\"message\":\"" + result.error().message() + "\"}\n";
+                write_response(response(status, reason, "application/json", body, false));
+                return;
+            }
+            write_response(response(result->status, result->reason, result->content_type,
+                                    result->body, false));
+        }
+
+        void write_unauthorized() {
+            auto denied = response(401U, "Unauthorized", "text/plain", "unauthorized\n", false);
+            denied.insert(denied.find("\r\n") + 2U,
+                          "WWW-Authenticate: Bearer realm=\"minitun-admin\"\r\n");
+            write_response(std::move(denied));
         }
 
         [[nodiscard]] bool authenticated(const Request& request) const {
@@ -363,6 +506,8 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
         asio::steady_timer timer_;
         asio::streambuf buffer_;
         std::string response_;
+        std::string body_;
+        std::optional<Request> pending_;
         std::atomic_bool finished_{false};
     };
 
@@ -401,7 +546,8 @@ Result<std::unique_ptr<Server>> Server::create(asio::io_context& io_context, Ser
                                                Providers providers) {
     if (options.listen_endpoint.empty() || options.max_connections == 0U ||
         options.max_connections > 1'024U || options.max_header_bytes < 1'024U ||
-        options.max_header_bytes > 64U * 1024U || options.timeout <= std::chrono::seconds::zero() ||
+        options.max_header_bytes > 64U * 1024U || options.max_body_bytes < 1'024U ||
+        options.max_body_bytes > 1024U * 1024U || options.timeout <= std::chrono::seconds::zero() ||
         options.timeout > std::chrono::seconds{60}) {
         return Error{ErrorCode::invalid_argument, "admin listener options are invalid"};
     }

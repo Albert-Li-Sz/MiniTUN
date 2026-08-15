@@ -1,5 +1,7 @@
 # MiniTun
 
+> English: [README.en.md](README.en.md)
+
 [![CI](https://github.com/Albert-Li-Sz/MiniTUN/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Albert-Li-Sz/MiniTUN/actions/workflows/ci.yml)
 [![Sanitizers](https://github.com/Albert-Li-Sz/MiniTUN/actions/workflows/sanitizers.yml/badge.svg?branch=main)](https://github.com/Albert-Li-Sz/MiniTUN/actions/workflows/sanitizers.yml)
 [![Packages](https://github.com/Albert-Li-Sz/MiniTUN/actions/workflows/package.yml/badge.svg?branch=main)](https://github.com/Albert-Li-Sz/MiniTUN/actions/workflows/package.yml)

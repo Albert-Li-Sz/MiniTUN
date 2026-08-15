@@ -83,12 +83,23 @@ class Server final {
     Server& operator=(Server&&) = delete;
 
     [[nodiscard]] common::Result<void> start();
-    [[nodiscard]] common::Result<void> reload();
+    /// Reloads TLS credentials and the client policy document from disk,
+    /// returning the client IDs whose policy changed.
+    [[nodiscard]] common::Result<std::vector<std::string>> reload();
     void stop() noexcept;
 
     [[nodiscard]] std::uint16_t listening_port() const noexcept;
     [[nodiscard]] const std::string& server_id() const noexcept;
     [[nodiscard]] ServerMetrics metrics() const noexcept;
+
+    /// Serialized client policy document currently in effect.
+    [[nodiscard]] common::Result<std::string> policy_document() const;
+    /// Directory holding the PSK files referenced by the policy document.
+    [[nodiscard]] std::string policy_config_directory() const;
+    /// Validates, atomically persists, and activates a replacement policy
+    /// document, returning the client IDs whose policy changed.
+    [[nodiscard]] common::Result<std::vector<std::string>>
+    replace_policies(std::string document);
 
   private:
     class Impl;

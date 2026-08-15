@@ -24,6 +24,7 @@
 #include <minitun/common/error.hpp>
 #include <minitun/common/logging.hpp>
 #include <minitun/common/version.hpp>
+#include <minitun/server/policy_management.hpp>
 #include <minitun/server/server.hpp>
 
 namespace {
@@ -138,12 +139,31 @@ int run_server(const minitun::server::ServerOptions& options,
     const auto ready = std::make_shared<std::atomic_bool>(false);
     std::unique_ptr<minitun::admin::Server> admin_server;
     if (!admin_options.listen_endpoint.empty()) {
+        auto management = minitun::server::make_policy_management_handler(
+            {
+                .document = [server = server->get()] { return server->policy_document(); },
+                .replace = [server = server->get()](std::string document) {
+                    return server->replace_policies(std::move(document));
+                },
+                .reload = [server = server->get()] { return server->reload(); },
+                .server_id = [server = server->get()] { return server->server_id(); },
+                .config_directory = [server = server->get()] {
+                    return server->policy_config_directory();
+                },
+            },
+            minitun::server::PolicyManagementOptions{});
+        if (!management) {
+            std::cerr << "minitun-server: invalid management handler: " << management.error()
+                      << '\n';
+            return kInternalErrorExitCode;
+        }
         auto configured = minitun::admin::Server::create(
             io_context, admin_options,
             {
                 .healthy = [] { return true; },
                 .ready = [ready] { return ready->load(std::memory_order_relaxed); },
                 .metrics = [server = server->get()] { return server_metrics_text(*server); },
+                .management = std::move(*management),
             });
         if (!configured) {
             std::cerr << "minitun-server: invalid admin listener: " << configured.error() << '\n';

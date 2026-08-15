@@ -43,6 +43,10 @@ struct ClientPolicy final {
     std::string client_id;
     bool enabled{true};
     std::shared_ptr<const common::SecureString> psk;
+    /// Rotation predecessor accepted until previous_psk_valid_until (unix
+    /// seconds); both fields are either present together or absent.
+    std::shared_ptr<const common::SecureString> previous_psk{nullptr};
+    std::optional<std::int64_t> previous_psk_valid_until{std::nullopt};
     std::vector<common::PortRange> allowed_ports;
     std::size_t max_tunnels{0U};
     std::size_t max_connections{0U};
@@ -55,9 +59,17 @@ struct ClientPolicy final {
 
     /// A non-reversible digest used only to identify policy changes on reload.
     std::string revision_fingerprint;
+    /// Like revision_fingerprint but excludes PSK material so a pure rotation
+    /// does not disturb established sessions.
+    std::string session_fingerprint;
 
     [[nodiscard]] bool allows_port(std::uint16_t port) const noexcept;
     [[nodiscard]] bool allows_source(const asio::ip::address& source) const noexcept;
+
+    /// Returns the predecessor PSK when the rotation grace window is still
+    /// open at the given unix time, or nullptr.
+    [[nodiscard]] std::shared_ptr<const common::SecureString>
+    rotation_psk(std::int64_t unix_seconds_now) const noexcept;
 };
 
 /// Bounded per-client per-source connection rate limiter. Entries are keyed
@@ -130,13 +142,30 @@ class ClientPolicyStore final {
     [[nodiscard]] common::Result<std::vector<std::string>>
     reload(const SnapshotValidator& validator = {});
 
+    /// Returns the serialized policy document currently in effect. The text is
+    /// the lossless source for management mutations and round-trips through
+    /// replace() unchanged.
+    [[nodiscard]] common::Result<std::string> document() const;
+
+    /// Validates a replacement document in memory, atomically writes it to the
+    /// configured path, and swaps the snapshot only after the write succeeded.
+    /// Returns the stable IDs whose effective policy changed. The file is
+    /// never left partially written.
+    [[nodiscard]] common::Result<std::vector<std::string>>
+    replace(std::string document, const SnapshotValidator& validator = {});
+
     [[nodiscard]] std::shared_ptr<const ClientPolicySnapshot> snapshot() const noexcept;
     [[nodiscard]] std::shared_ptr<const ClientPolicy> find(std::string_view client_id) const;
     [[nodiscard]] const std::string& config_path() const noexcept;
 
   private:
     ClientPolicyStore(std::string config_path, ClientPolicyLimits limits,
-                      std::shared_ptr<const ClientPolicySnapshot> snapshot) noexcept;
+                      std::shared_ptr<const ClientPolicySnapshot> snapshot,
+                      std::string document_text) noexcept;
+
+    [[nodiscard]] static common::Result<std::vector<std::string>>
+    compute_changed(const std::shared_ptr<const ClientPolicySnapshot>& previous,
+                    const std::shared_ptr<const ClientPolicySnapshot>& replacement);
 
     std::string config_path_;
     ClientPolicyLimits limits_;

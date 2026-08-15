@@ -11,6 +11,7 @@
 #include <gtest/gtest.h>
 
 #include <minitun/common/error.hpp>
+#include <minitun/common/time.hpp>
 #include <minitun/server/client_policy.hpp>
 
 #include "storage_test_support.hpp"
@@ -120,6 +121,74 @@ TEST(ClientPolicyStoreTest, ReloadIsAtomicAndReportsOnlyEffectiveChanges) {
     auto unchanged = (*store)->reload();
     ASSERT_TRUE(unchanged) << unchanged.error();
     EXPECT_TRUE(unchanged->empty());
+}
+
+TEST(ClientPolicyStoreTest, LoadsRotationPredecessorOnlyTogetherWithExpiry) {
+    TemporaryDatabaseFile temporary;
+    const auto config = temporary.directory() / "clients.json";
+    write_private(temporary.directory() / "client.psk", "current-secret", 0600);
+    write_private(temporary.directory() / "client.psk.previous", "old-secret", 0600);
+    const std::int64_t expiry = common::unix_seconds_now() + 600;
+
+    const auto rotation_fields = [&expiry] {
+        return std::string{R"(,"previous_psk_file":"client.psk.previous",)"} +
+               R"("previous_psk_expires_at":)" + std::to_string(expiry);
+    };
+    write_private(config, policy_json(true, rotation_fields()), 0640);
+    auto store = ClientPolicyStore::open(config.string(), limits());
+    ASSERT_TRUE(store) << store.error();
+    const auto policy = (*store)->find(kClientId);
+    ASSERT_NE(policy, nullptr);
+    ASSERT_NE(policy->previous_psk, nullptr);
+    EXPECT_EQ(policy->previous_psk->view(), "old-secret");
+    ASSERT_TRUE(policy->previous_psk_valid_until.has_value());
+    EXPECT_EQ(*policy->previous_psk_valid_until, expiry);
+    ASSERT_NE(policy->rotation_psk(expiry - 1), nullptr);
+    EXPECT_EQ(policy->rotation_psk(expiry - 1)->view(), "old-secret");
+    EXPECT_EQ(policy->rotation_psk(expiry), nullptr);
+    EXPECT_EQ(policy->rotation_psk(expiry + 1), nullptr);
+
+    // The predecessor contributes to the change fingerprint.
+    const auto original = policy->revision_fingerprint;
+    write_private(temporary.directory() / "client.psk.previous", "newer-secret", 0600);
+    auto changed = (*store)->reload();
+    ASSERT_TRUE(changed) << changed.error();
+    ASSERT_EQ(changed->size(), 1U);
+    EXPECT_EQ(changed->front(), kClientId);
+    EXPECT_NE((*store)->find(kClientId)->revision_fingerprint, original);
+}
+
+TEST(ClientPolicyStoreTest, RejectsIncompleteOrMalformedRotationFields) {
+    TemporaryDatabaseFile temporary;
+    const auto config = temporary.directory() / "clients.json";
+    write_private(temporary.directory() / "client.psk", "current-secret", 0600);
+    write_private(temporary.directory() / "client.psk.previous", "old-secret", 0600);
+
+    struct Case final {
+        std::string name;
+        std::string extra;
+    };
+    const std::vector<Case> cases{
+        {"file-only",
+         R"(,"previous_psk_file":"client.psk.previous")"},
+        {"expiry-only", R"(,"previous_psk_expires_at":1234)"},
+        {"missing-file", R"(,"previous_psk_file":"absent.psk","previous_psk_expires_at":1234)"},
+        {"negative-expiry", R"(,"previous_psk_file":"client.psk.previous","previous_psk_expires_at":-1)"},
+        {"zero-expiry", R"(,"previous_psk_file":"client.psk.previous","previous_psk_expires_at":0)"},
+        {"string-expiry",
+         R"(,"previous_psk_file":"client.psk.previous","previous_psk_expires_at":"soon")"},
+        {"non-string-file", R"(,"previous_psk_file":7,"previous_psk_expires_at":1234)"},
+    };
+    for (const auto& item : cases) {
+        SCOPED_TRACE(item.name);
+        write_private(config, policy_json(true, item.extra), 0640);
+        auto store = ClientPolicyStore::open(config.string(), limits());
+        ASSERT_FALSE(store) << item.name;
+    }
+    // After the failures the well-formed document still loads.
+    write_private(config, policy_json(), 0640);
+    auto store = ClientPolicyStore::open(config.string(), limits());
+    ASSERT_TRUE(store) << store.error();
 }
 
 TEST(ClientPolicyStoreTest, RejectsDuplicateFieldsOverlappingAclAndLooseSecrets) {

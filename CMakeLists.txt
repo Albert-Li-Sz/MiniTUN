@@ -320,6 +320,7 @@ add_library(minitun_server_core STATIC
     src/server/accept_recovery.cpp
     src/server/client_policy.cpp
     src/server/connection_quota.cpp
+    src/server/policy_management.cpp
     src/server/server.cpp
     src/server/session_registry.cpp
     src/server/tunnel_registry.cpp
@@ -335,6 +336,7 @@ target_link_libraries(minitun_server_core
     PUBLIC
         MiniTun::protocol
     PRIVATE
+        MiniTun::admin
         nlohmann_json::nlohmann_json
         Threads::Threads
         minitun_project_warnings

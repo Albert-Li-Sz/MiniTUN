@@ -10,6 +10,13 @@ title: 变更日志
 
 ## [Unreleased]
 
+- tcp tunnel 支持 PROXY protocol v1 头（`--proxy-protocol`），旧版 peer 保持字节兼容。
+- `minitun-server` 新增 `/v1/*` 客户端策略管理 API（列表/创建/更新/删除/PSK 轮换），
+  轮换带优雅窗口，旧会话不中断。
+- 客户端策略新增来源 CIDR 白名单与每来源连接速率；systemd 增加内存/任务上限。
+- 发布新增 musl 完全静态二进制归档（`static.yml`）。
+- 文档站新增英文语言（默认中文）。
+
 ## [1.0.0] - 2026-08-13
 
 ### 主要变化

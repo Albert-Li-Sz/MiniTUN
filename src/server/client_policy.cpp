@@ -361,7 +361,8 @@ load_psk(const std::filesystem::path& config_directory, const std::string& confi
     return std::make_shared<const common::SecureString>(std::move(secret));
 }
 
-[[nodiscard]] common::Result<std::string> policy_fingerprint(const ClientPolicy& policy) {
+[[nodiscard]] common::Result<std::string>
+policy_fingerprint(const ClientPolicy& policy, const bool include_secrets) {
     EVP_MD_CTX* raw = EVP_MD_CTX_new();
     if (raw == nullptr) {
         return common::Result<std::string>::failure(common::ErrorCode::internal_error,
@@ -384,14 +385,31 @@ load_psk(const std::filesystem::path& config_directory, const std::string& confi
               update_number(policy.max_tunnels) && update_number(policy.max_connections) &&
               update_number(policy.max_idle_workers) &&
               update(std::to_string(static_cast<std::uint8_t>(policy.certificate.kind))) &&
-              update("\0") && update(policy.certificate.value) && update("\0");
+              update("\0") && update(policy.certificate.value) && update("\0") &&
+              update(std::to_string(policy.connections_per_minute)) && update("\0");
     for (const auto& range : policy.allowed_ports) {
         ok = ok && update(range.to_string()) && update("\0");
     }
-    if (policy.psk != nullptr) {
-        ok = ok && update(policy.psk->view());
-    } else {
-        ok = false;
+    for (const auto& cidr : policy.allowed_source_cidrs) {
+        ok = ok && update(cidr.network.to_string()) && update("/") &&
+              update(std::to_string(cidr.prefix)) && update("\0");
+    }
+    if (include_secrets) {
+        if (policy.psk != nullptr) {
+            ok = ok && update(policy.psk->view());
+        } else {
+            ok = false;
+        }
+        if (policy.previous_psk != nullptr) {
+            ok = ok && update(policy.previous_psk->view());
+        } else {
+            ok = ok && update("-");
+        }
+        ok = ok && update("\0") &&
+             update(policy.previous_psk_valid_until.has_value()
+                        ? std::to_string(*policy.previous_psk_valid_until)
+                        : "-") &&
+             update("\0");
     }
     std::array<unsigned char, EVP_MAX_MD_SIZE> digest{};
     unsigned int size = 0U;
@@ -414,35 +432,68 @@ load_snapshot(const std::string& config_path, const ClientPolicyLimits& limits);
 
 } // namespace
 
+
 class ClientPolicySnapshot::Impl final {
   public:
     std::unordered_map<std::string, std::shared_ptr<const ClientPolicy>> policies;
 };
 
+common::Result<std::vector<std::string>> ClientPolicyStore::compute_changed(
+    const std::shared_ptr<const ClientPolicySnapshot>& previous,
+    const std::shared_ptr<const ClientPolicySnapshot>& replacement) {
+    std::set<std::string, std::less<>> changed;
+    if (previous != nullptr && previous->implementation_ != nullptr) {
+        for (const auto& [client_id, policy] : previous->implementation_->policies) {
+            const auto current = replacement->find(client_id);
+            if (current == nullptr ||
+                current->revision_fingerprint != policy->revision_fingerprint) {
+                changed.emplace(client_id);
+            }
+        }
+    }
+    if (replacement->implementation_ != nullptr) {
+        for (const auto& [client_id, policy] : replacement->implementation_->policies) {
+            static_cast<void>(policy);
+            if (previous == nullptr || previous->find(client_id) == nullptr) {
+                changed.emplace(client_id);
+            }
+        }
+    }
+    return std::vector<std::string>{changed.begin(), changed.end()};
+}
+
 class ClientPolicyStore::AtomicSnapshot final {
   public:
-    explicit AtomicSnapshot(std::shared_ptr<const ClientPolicySnapshot> value) noexcept
-        : value_(std::move(value)) {}
+    struct Stored final {
+        std::shared_ptr<const ClientPolicySnapshot> snapshot;
+        std::string document_text;
+    };
 
-    [[nodiscard]] std::shared_ptr<const ClientPolicySnapshot> load() const noexcept {
+    explicit AtomicSnapshot(std::shared_ptr<const ClientPolicySnapshot> value,
+                            std::string document_text) noexcept
+        : stored_{std::move(value), std::move(document_text)} {}
+
+    [[nodiscard]] Stored load() const noexcept {
         const std::scoped_lock lock{mutex_};
-        return value_;
+        return stored_;
     }
 
-    void store(std::shared_ptr<const ClientPolicySnapshot> value) noexcept {
+    void store(std::shared_ptr<const ClientPolicySnapshot> value,
+               std::string document_text) noexcept {
         const std::scoped_lock lock{mutex_};
-        value_ = std::move(value);
+        stored_ = {std::move(value), std::move(document_text)};
     }
 
   private:
     mutable std::mutex mutex_;
-    std::shared_ptr<const ClientPolicySnapshot> value_;
+    Stored stored_;
 };
 
 namespace {
 
 [[nodiscard]] common::Result<std::shared_ptr<const ClientPolicySnapshot>>
-load_snapshot(const std::string& config_path, const ClientPolicyLimits& limits) {
+build_snapshot(const Json& document, const std::filesystem::path& config_directory,
+               const ClientPolicyLimits& limits) {
     if (limits.max_clients == 0U || limits.max_clients > 100'000U ||
         limits.max_tunnels_per_client == 0U || limits.max_tunnels_per_client > 4'096U ||
         limits.max_connections_per_client == 0U ||
@@ -452,24 +503,16 @@ load_snapshot(const std::string& config_path, const ClientPolicyLimits& limits) 
         return common::Result<std::shared_ptr<const ClientPolicySnapshot>>::failure(
             common::ErrorCode::invalid_argument, "client policy server limits are invalid");
     }
-    auto bytes = read_secure_file(config_path, FileKind::policy);
-    if (!bytes) {
-        return common::Result<std::shared_ptr<const ClientPolicySnapshot>>::failure(bytes.error());
-    }
-    auto document = parse_policy_json(*bytes);
-    if (!document) {
-        return common::Result<std::shared_ptr<const ClientPolicySnapshot>>::failure(document.error());
-    }
     static const std::set<std::string_view> top_fields{"format_version", "clients"};
-    if (!has_exact_fields(*document, top_fields) || document->size() != top_fields.size() ||
-        !document->at("format_version").is_number_unsigned() ||
-        document->at("format_version").get<std::uint64_t>() != 1U ||
-        !document->at("clients").is_array()) {
+    if (!has_exact_fields(document, top_fields) || document.size() != top_fields.size() ||
+        !document.at("format_version").is_number_unsigned() ||
+        document.at("format_version").get<std::uint64_t>() != 1U ||
+        !document.at("clients").is_array()) {
         return common::Result<std::shared_ptr<const ClientPolicySnapshot>>::failure(
             common::ErrorCode::invalid_argument,
             "client policy requires only format_version 1 and a clients array");
     }
-    const auto& clients = document->at("clients");
+    const auto& clients = document.at("clients");
     if (clients.empty() || clients.size() > limits.max_clients) {
         return common::Result<std::shared_ptr<const ClientPolicySnapshot>>::failure(
             common::ErrorCode::invalid_argument, "client policy client count is outside the limit");
@@ -479,10 +522,9 @@ load_snapshot(const std::string& config_path, const ClientPolicyLimits& limits) 
         "client_id",          "enabled",        "psk_file",          "allowed_ports",
         "max_tunnels",       "max_connections", "max_idle_workers", "certificate_sha256",
         "certificate_san",   "allowed_source_cidrs", "connections_per_minute",
+        "previous_psk_file", "previous_psk_expires_at",
     };
     auto implementation = std::make_shared<ClientPolicySnapshot::Impl>();
-    const std::filesystem::path config_directory =
-        std::filesystem::path{config_path}.parent_path();
     for (const auto& entry : clients) {
         if (!has_exact_fields(entry, client_fields) ||
             !entry.contains("client_id") || !entry.contains("enabled") ||
@@ -509,6 +551,36 @@ load_snapshot(const std::string& config_path, const ClientPolicyLimits& limits) 
             return common::Result<std::shared_ptr<const ClientPolicySnapshot>>::failure(psk.error());
         }
         policy.psk = std::move(*psk);
+        const bool has_previous_psk_file = entry.contains("previous_psk_file");
+        const bool has_previous_expiry = entry.contains("previous_psk_expires_at");
+        if (has_previous_psk_file != has_previous_expiry) {
+            return common::Result<std::shared_ptr<const ClientPolicySnapshot>>::failure(
+                common::ErrorCode::invalid_argument,
+                "previous_psk_file and previous_psk_expires_at must be configured together");
+        }
+        if (has_previous_psk_file) {
+            if (!entry.at("previous_psk_file").is_string() ||
+                !entry.at("previous_psk_expires_at").is_number_unsigned()) {
+                return common::Result<std::shared_ptr<const ClientPolicySnapshot>>::failure(
+                    common::ErrorCode::invalid_argument,
+                    "previous_psk_file must be a string and previous_psk_expires_at an "
+                    "unsigned unix timestamp");
+            }
+            const auto expiry = entry.at("previous_psk_expires_at").get<std::uint64_t>();
+            if (expiry == 0U || expiry > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
+                return common::Result<std::shared_ptr<const ClientPolicySnapshot>>::failure(
+                    common::ErrorCode::invalid_argument,
+                    "previous_psk_expires_at is outside the valid unix time range");
+            }
+            auto previous_psk = load_psk(
+                config_directory, entry.at("previous_psk_file").get_ref<const std::string&>());
+            if (!previous_psk) {
+                return common::Result<std::shared_ptr<const ClientPolicySnapshot>>::failure(
+                    previous_psk.error());
+            }
+            policy.previous_psk = std::move(*previous_psk);
+            policy.previous_psk_valid_until = static_cast<std::int64_t>(expiry);
+        }
         const auto& allowed_ports = entry.at("allowed_ports");
         if (allowed_ports.empty() || allowed_ports.size() > 256U) {
             return common::Result<std::shared_ptr<const ClientPolicySnapshot>>::failure(
@@ -602,12 +674,18 @@ load_snapshot(const std::string& config_path, const ClientPolicyLimits& limits) 
             }
             policy.connections_per_minute = static_cast<std::uint32_t>(rate.get<std::uint64_t>());
         }
-        auto fingerprint = policy_fingerprint(policy);
+        auto fingerprint = policy_fingerprint(policy, true);
         if (!fingerprint) {
             return common::Result<std::shared_ptr<const ClientPolicySnapshot>>::failure(
                 fingerprint.error());
         }
         policy.revision_fingerprint = std::move(*fingerprint);
+        auto session_fingerprint = policy_fingerprint(policy, false);
+        if (!session_fingerprint) {
+            return common::Result<std::shared_ptr<const ClientPolicySnapshot>>::failure(
+                session_fingerprint.error());
+        }
+        policy.session_fingerprint = std::move(*session_fingerprint);
         auto owned = std::make_shared<const ClientPolicy>(std::move(policy));
         if (!implementation->policies.emplace(owned->client_id, std::move(owned)).second) {
             return common::Result<std::shared_ptr<const ClientPolicySnapshot>>::failure(
@@ -619,11 +697,88 @@ load_snapshot(const std::string& config_path, const ClientPolicyLimits& limits) 
         new ClientPolicySnapshot{std::move(implementation)}};
 }
 
+[[nodiscard]] common::Result<std::shared_ptr<const ClientPolicySnapshot>>
+load_snapshot(const std::string& config_path, const ClientPolicyLimits& limits) {
+    auto bytes = read_secure_file(config_path, FileKind::policy);
+    if (!bytes) {
+        return common::Result<std::shared_ptr<const ClientPolicySnapshot>>::failure(bytes.error());
+    }
+    auto document = parse_policy_json(*bytes);
+    if (!document) {
+        return common::Result<std::shared_ptr<const ClientPolicySnapshot>>::failure(document.error());
+    }
+    return build_snapshot(*document, std::filesystem::path{config_path}.parent_path(), limits);
+}
+
+[[nodiscard]] common::Result<void> write_secure_file_atomic(const std::string& path,
+                                                            const std::vector<char>& bytes) {
+    if (bytes.empty()) {
+        return common::Result<void>::failure(common::ErrorCode::invalid_argument,
+                                             "refusing to write an empty policy file");
+    }
+    const auto parent = std::filesystem::path{path}.parent_path();
+    const std::string directory = parent.empty() ? "." : parent.string();
+    std::string temporary = directory + "/.minitun-policy-XXXXXX";
+    std::vector<char> template_bytes{temporary.begin(), temporary.end()};
+    template_bytes.push_back('\0');
+    const int raw_descriptor = ::mkstemp(template_bytes.data());
+    if (raw_descriptor < 0) {
+        return common::Result<void>::failure(common::ErrorCode::permission_denied,
+                                             "policy directory is not writable");
+    }
+    const FileDescriptor descriptor{raw_descriptor};
+    temporary.assign(template_bytes.begin(), template_bytes.end() - 1U);
+
+    mode_t mode = 0600U;
+    struct stat existing {};
+    if (::stat(path.c_str(), &existing) == 0 && S_ISREG(existing.st_mode)) {
+        mode = existing.st_mode & 0777U;
+    }
+    if (::fchmod(descriptor.get(), mode) != 0 || ::fchown(descriptor.get(), ::geteuid(), static_cast<gid_t>(-1)) != 0) {
+        static_cast<void>(::unlink(temporary.c_str()));
+        return common::Result<void>::failure(common::ErrorCode::permission_denied,
+                                             "policy file ownership cannot be preserved");
+    }
+    std::size_t offset = 0U;
+    while (offset < bytes.size()) {
+        const ssize_t count = ::write(descriptor.get(), bytes.data() + offset, bytes.size() - offset);
+        if (count < 0 && errno == EINTR) {
+            continue;
+        }
+        if (count <= 0) {
+            static_cast<void>(::unlink(temporary.c_str()));
+            return common::Result<void>::failure(common::ErrorCode::internal_error,
+                                                 "policy file write failed");
+        }
+        offset += static_cast<std::size_t>(count);
+    }
+    if (::fsync(descriptor.get()) != 0 || ::rename(temporary.c_str(), path.c_str()) != 0) {
+        static_cast<void>(::unlink(temporary.c_str()));
+        return common::Result<void>::failure(common::ErrorCode::internal_error,
+                                             "policy file replacement failed");
+    }
+    const FileDescriptor directory_descriptor{
+        ::open(directory.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC)};
+    if (directory_descriptor.get() >= 0) {
+        static_cast<void>(::fsync(directory_descriptor.get()));
+    }
+    return common::Result<void>::success();
+}
+
 } // namespace
 
 bool ClientPolicy::allows_port(const std::uint16_t port) const noexcept {
     return std::any_of(allowed_ports.begin(), allowed_ports.end(),
                        [port](const common::PortRange& range) { return range.contains(port); });
+}
+
+std::shared_ptr<const common::SecureString>
+ClientPolicy::rotation_psk(const std::int64_t unix_seconds_now) const noexcept {
+    if (previous_psk == nullptr || !previous_psk_valid_until.has_value() ||
+        unix_seconds_now >= *previous_psk_valid_until) {
+        return nullptr;
+    }
+    return previous_psk;
 }
 
 bool admits_source(const ClientPolicy& policy, SourceConnectionLimiter& limiter,
@@ -768,14 +923,20 @@ ClientPolicyStore::open(std::string config_path, const ClientPolicyLimits limits
     if (!loaded) {
         return common::Result<std::shared_ptr<ClientPolicyStore>>::failure(loaded.error());
     }
-    return std::shared_ptr<ClientPolicyStore>{
-        new ClientPolicyStore{std::move(config_path), limits, std::move(*loaded)}};
+    auto bytes = read_secure_file(config_path, FileKind::policy);
+    if (!bytes) {
+        return common::Result<std::shared_ptr<ClientPolicyStore>>::failure(bytes.error());
+    }
+    return std::shared_ptr<ClientPolicyStore>{new ClientPolicyStore{
+        std::move(config_path), limits, std::move(*loaded), std::string{bytes->begin(), bytes->end()}}};
 }
 
 ClientPolicyStore::ClientPolicyStore(std::string config_path, const ClientPolicyLimits limits,
-                                     std::shared_ptr<const ClientPolicySnapshot> snapshot) noexcept
+                                     std::shared_ptr<const ClientPolicySnapshot> snapshot,
+                                     std::string document_text) noexcept
     : config_path_(std::move(config_path)), limits_(limits),
-      snapshot_(std::make_unique<AtomicSnapshot>(std::move(snapshot))) {}
+      snapshot_(std::make_unique<AtomicSnapshot>(std::move(snapshot),
+                                                 std::move(document_text))) {}
 
 common::Result<std::vector<std::string>>
 ClientPolicyStore::reload(const SnapshotValidator& validator) {
@@ -789,31 +950,65 @@ ClientPolicyStore::reload(const SnapshotValidator& validator) {
             return common::Result<std::vector<std::string>>::failure(validated.error());
         }
     }
+    auto bytes = read_secure_file(config_path_, FileKind::policy);
+    if (!bytes) {
+        return common::Result<std::vector<std::string>>::failure(bytes.error());
+    }
     const auto previous = snapshot();
-    std::set<std::string, std::less<>> changed;
-    if (previous != nullptr && previous->implementation_ != nullptr) {
-        for (const auto& [client_id, policy] : previous->implementation_->policies) {
-            const auto current = (*replacement)->find(client_id);
-            if (current == nullptr ||
-                current->revision_fingerprint != policy->revision_fingerprint) {
-                changed.emplace(client_id);
-            }
+    auto changed = compute_changed(previous, *replacement);
+    if (!changed) {
+        return common::Result<std::vector<std::string>>::failure(changed.error());
+    }
+    snapshot_->store(std::move(*replacement), std::string{bytes->begin(), bytes->end()});
+    return changed;
+}
+
+common::Result<std::string> ClientPolicyStore::document() const {
+    const auto stored = snapshot_->load();
+    if (stored.document_text.empty()) {
+        return common::Result<std::string>::failure(
+            common::ErrorCode::invalid_argument, "client policy document is unavailable");
+    }
+    return stored.document_text;
+}
+
+common::Result<std::vector<std::string>>
+ClientPolicyStore::replace(std::string document_text, const SnapshotValidator& validator) {
+    if (document_text.empty() || document_text.size() > kMaxPolicyBytes) {
+        return common::Result<std::vector<std::string>>::failure(
+            common::ErrorCode::invalid_argument, "client policy document size is invalid");
+    }
+    const std::vector<char> bytes{document_text.begin(), document_text.end()};
+    auto parsed = parse_policy_json(bytes);
+    if (!parsed) {
+        return common::Result<std::vector<std::string>>::failure(parsed.error());
+    }
+    auto replacement =
+        build_snapshot(*parsed, std::filesystem::path{config_path_}.parent_path(), limits_);
+    if (!replacement) {
+        return common::Result<std::vector<std::string>>::failure(replacement.error());
+    }
+    if (validator) {
+        auto validated = validator(**replacement);
+        if (!validated) {
+            return common::Result<std::vector<std::string>>::failure(validated.error());
         }
     }
-    if ((*replacement)->implementation_ != nullptr) {
-        for (const auto& [client_id, policy] : (*replacement)->implementation_->policies) {
-            static_cast<void>(policy);
-            if (previous == nullptr || previous->find(client_id) == nullptr) {
-                changed.emplace(client_id);
-            }
-        }
+    auto written = write_secure_file_atomic(config_path_, bytes);
+    if (!written) {
+        return common::Result<std::vector<std::string>>::failure(written.error());
     }
-    snapshot_->store(std::move(*replacement));
-    return std::vector<std::string>{changed.begin(), changed.end()};
+    const auto previous = snapshot();
+    auto changed = compute_changed(previous, *replacement);
+    if (!changed) {
+        return common::Result<std::vector<std::string>>::failure(changed.error());
+    }
+    snapshot_->store(std::move(*replacement), std::move(document_text));
+    return changed;
 }
 
 std::shared_ptr<const ClientPolicySnapshot> ClientPolicyStore::snapshot() const noexcept {
-    return snapshot_->load();
+    return snapshot_->load().snapshot;
 }
 
 std::shared_ptr<const ClientPolicy> ClientPolicyStore::find(const std::string_view client_id) const {

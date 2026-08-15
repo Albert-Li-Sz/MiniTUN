@@ -4,6 +4,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <filesystem>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -245,6 +246,21 @@ inline constexpr std::chrono::hours kMaximumRelayTimeout{24};
 
 } // namespace
 
+namespace {
+
+/// Stop criteria for one client across a policy change: sessions still on the
+/// old policy are stopped, while sessions that already authenticated with the
+/// new policy survive. API-driven changes additionally keep sessions alive
+/// when only PSK material rotated (old_session == new_session).
+struct PolicyChangeCriteria final {
+    bool api_driven{false};
+    std::string old_revision;
+    std::string old_session;
+    std::string new_session;
+};
+
+} // namespace
+
 class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
   public:
     [[nodiscard]] static common::Result<std::shared_ptr<Impl>> create(asio::io_context& io_context,
@@ -354,7 +370,27 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
         asio::dispatch(strand_, [self] { self->begin_shutdown(); });
     }
 
-    [[nodiscard]] common::Result<void> reload() {
+    [[nodiscard]] common::Result<std::vector<std::string>> reload() {
+        return apply_policy_update(std::nullopt);
+    }
+
+    [[nodiscard]] common::Result<std::vector<std::string>>
+    replace_policies(std::string document) {
+        return apply_policy_update(std::move(document));
+    }
+
+    [[nodiscard]] common::Result<std::string> policy_document() const {
+        return client_policies_->document();
+    }
+
+    [[nodiscard]] std::string policy_config_directory() const {
+        const std::string config_path = client_policies_->config_path();
+        const std::filesystem::path parent = std::filesystem::path{config_path}.parent_path();
+        return parent.empty() ? "." : parent.string();
+    }
+
+    [[nodiscard]] common::Result<std::vector<std::string>>
+    apply_policy_update(std::optional<std::string> replacement_document) {
         auto context = protocol::make_server_tls_context({
             .certificate_chain_path = options_.tls_certificate_path,
             .private_key_path = options_.tls_private_key_path,
@@ -362,45 +398,85 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
         });
         if (!context) {
             policy_reload_failures_total_.fetch_add(1U, std::memory_order_relaxed);
-            return context.error();
+            return common::Result<std::vector<std::string>>::failure(context.error());
         }
+        const auto validator = [this](const ClientPolicySnapshot& snapshot) {
+            if (snapshot.has_certificate_bindings() && options_.client_ca_path.empty()) {
+                return common::Result<void>::failure(
+                    common::ErrorCode::invalid_argument,
+                    "client-ca is required when a client policy binds a certificate");
+            }
+            return common::Result<void>::success();
+        };
+        const auto previous_snapshot = client_policies_->snapshot();
+        const bool api_driven = replacement_document.has_value();
         auto changed_clients =
-            client_policies_->reload([this](const ClientPolicySnapshot& snapshot) {
-                if (snapshot.has_certificate_bindings() && options_.client_ca_path.empty()) {
-                    return common::Result<void>::failure(
-                        common::ErrorCode::invalid_argument,
-                        "client-ca is required when a client policy binds a certificate");
-                }
-                return common::Result<void>::success();
-            });
+            replacement_document.has_value()
+                ? client_policies_->replace(std::move(*replacement_document), validator)
+                : client_policies_->reload(validator);
         if (!changed_clients) {
             policy_reload_failures_total_.fetch_add(1U, std::memory_order_relaxed);
-            return changed_clients.error();
+            return changed_clients;
         }
         if (!running_.load()) {
             policy_reload_failures_total_.fetch_add(1U, std::memory_order_relaxed);
-            return common::Error{common::ErrorCode::connection_failed, "TLS server is not running"};
+            return common::Result<std::vector<std::string>>::failure(
+                common::ErrorCode::connection_failed, "TLS server is not running");
         }
+        auto stop_criteria =
+            std::make_shared<const std::unordered_map<std::string, PolicyChangeCriteria>>([&] {
+                std::unordered_map<std::string, PolicyChangeCriteria> criteria;
+                for (const auto& client_id : *changed_clients) {
+                    PolicyChangeCriteria entry;
+                    entry.api_driven = api_driven;
+                    if (previous_snapshot != nullptr) {
+                        const auto previous = previous_snapshot->find(client_id);
+                        if (previous != nullptr) {
+                            entry.old_revision = previous->revision_fingerprint;
+                            entry.old_session = previous->session_fingerprint;
+                        }
+                    }
+                    const auto current = client_policies_->find(client_id);
+                    if (current != nullptr) {
+                        entry.new_session = current->session_fingerprint;
+                    }
+                    criteria.emplace(client_id, std::move(entry));
+                }
+                return criteria;
+            }());
         auto self = shared_from_this();
         asio::post(strand_, [self, context = std::move(*context),
-                             changed_clients = std::move(*changed_clients)]() mutable {
+                             changed_clients = *changed_clients,
+                             stop_criteria = std::move(stop_criteria),
+                             api_driven]() mutable {
             self->tls_context_ = std::move(context);
             for (const auto& client_id : changed_clients) {
-                self->worker_pool_.remove_client(client_id);
-                self->tunnel_registry_.remove_client(client_id);
+                // API-driven changes that only rotate PSK material keep the
+                // client's tunnels and idle workers; every other change, and
+                // every file-driven reload, tears them down.
+                bool session_affecting = !api_driven;
+                if (api_driven) {
+                    const auto criteria = stop_criteria->find(client_id);
+                    session_affecting = criteria != stop_criteria->end() &&
+                                        criteria->second.new_session != criteria->second.old_session;
+                }
+                if (session_affecting) {
+                    self->worker_pool_.remove_client(client_id);
+                    self->tunnel_registry_.remove_client(client_id);
+                }
             }
             self->refresh_resource_gauges();
             const auto affected =
                 std::make_shared<const std::vector<std::string>>(std::move(changed_clients));
             for (auto& [key, session] : self->sessions_) {
                 static_cast<void>(key);
-                session->request_reload_stop(affected);
+                session->request_reload_stop(affected, stop_criteria);
             }
             common::log_info("TLS credentials and client policies reloaded",
                              {.component = "server.audit", .server_id = self->server_id_});
         });
         policy_reloads_total_.fetch_add(1U, std::memory_order_relaxed);
-        return common::Result<void>::success();
+        return changed_clients;
     }
 
     [[nodiscard]] std::uint16_t listening_port() const noexcept { return listening_port_.load(); }
@@ -643,13 +719,38 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
                            [self, graceful] { self->request_stop_on_executor(graceful); });
         }
 
-        void request_reload_stop(std::shared_ptr<const std::vector<std::string>> affected_clients) {
+        void request_reload_stop(
+            std::shared_ptr<const std::vector<std::string>> affected_clients,
+            std::shared_ptr<const std::unordered_map<std::string, PolicyChangeCriteria>>
+                stop_criteria) {
             auto self = shared_from_this();
             asio::dispatch(
-                stream_.get_executor(), [self, affected_clients = std::move(affected_clients)] {
+                stream_.get_executor(),
+                [self, affected_clients = std::move(affected_clients),
+                 stop_criteria = std::move(stop_criteria)] {
                     if (std::find(affected_clients->begin(), affected_clients->end(),
                                   self->client_id_) == affected_clients->end()) {
                         return;
+                    }
+                    const auto criteria = stop_criteria->find(self->client_id_);
+                    if (criteria == stop_criteria->end()) {
+                        return;
+                    }
+                    if (self->policy_owner_ != nullptr) {
+                        if (criteria->second.api_driven) {
+                            // Survive a pure rotation, and survive when the
+                            // session already holds the new policy.
+                            if (criteria->second.new_session == criteria->second.old_session ||
+                                self->policy_owner_->session_fingerprint !=
+                                    criteria->second.old_session) {
+                                return;
+                            }
+                        } else if (self->policy_owner_->revision_fingerprint !=
+                                   criteria->second.old_revision) {
+                            // The session authenticated after the change and
+                            // must survive this deferred reload pass.
+                            return;
+                        }
                     }
                     // A policy change stops listeners and idle capacity immediately,
                     // while an already assigned relay receives the same bounded drain
@@ -879,6 +980,16 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
                 server_->nonce_cache_, psk, auth->client_id, server_->server_id_,
                 auth->timestamp_seconds, auth->nonce, auth->selected_capabilities,
                 auth->authentication_data, now);
+            if ((!verified || !*verified) && policy_eligible && policy_owner_ != nullptr) {
+                const auto rotated_psk =
+                    policy_owner_->rotation_psk(common::unix_seconds_now());
+                if (rotated_psk != nullptr) {
+                    verified = protocol::verify_and_consume_authentication_data(
+                        server_->nonce_cache_, rotated_psk->view(), auth->client_id,
+                        server_->server_id_, auth->timestamp_seconds, auth->nonce,
+                        auth->selected_capabilities, auth->authentication_data, now);
+                }
+            }
             accepted = accepted && verified && *verified;
             if (!accepted) {
                 server_->auth_rate_limiter_.record_failure(remote_endpoint_, now);
@@ -959,6 +1070,16 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
                 server_->nonce_cache_, policy_owner_->psk->view(), hello->client_id,
                 server_->server_id_, hello->session_generation, hello->worker_id,
                 hello->timestamp_seconds, hello->nonce, hello->authentication_data);
+            if ((!verified || !*verified) && policy_owner_ != nullptr) {
+                const auto rotated_psk =
+                    policy_owner_->rotation_psk(common::unix_seconds_now());
+                if (rotated_psk != nullptr) {
+                    verified = protocol::verify_and_consume_worker_authentication_data(
+                        server_->nonce_cache_, rotated_psk->view(), hello->client_id,
+                        server_->server_id_, hello->session_generation, hello->worker_id,
+                        hello->timestamp_seconds, hello->nonce, hello->authentication_data);
+                }
+            }
             if (!verified || !*verified) {
                 co_return;
             }
@@ -2206,7 +2327,9 @@ Server::~Server() noexcept { stop(); }
 
 common::Result<void> Server::start() { return implementation_->start(); }
 
-common::Result<void> Server::reload() { return implementation_->reload(); }
+common::Result<std::vector<std::string>> Server::reload() {
+    return implementation_->reload();
+}
 
 void Server::stop() noexcept { implementation_->stop(); }
 
@@ -2215,5 +2338,17 @@ std::uint16_t Server::listening_port() const noexcept { return implementation_->
 const std::string& Server::server_id() const noexcept { return implementation_->server_id(); }
 
 ServerMetrics Server::metrics() const noexcept { return implementation_->metrics(); }
+
+common::Result<std::string> Server::policy_document() const {
+    return implementation_->policy_document();
+}
+
+std::string Server::policy_config_directory() const {
+    return implementation_->policy_config_directory();
+}
+
+common::Result<std::vector<std::string>> Server::replace_policies(std::string document) {
+    return implementation_->replace_policies(std::move(document));
+}
 
 } // namespace minitun::server

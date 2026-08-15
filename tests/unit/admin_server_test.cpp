@@ -388,5 +388,100 @@ TEST(AdminServerTest, StartStopAreIdempotentAndPortConflictsAreContained) {
     EXPECT_EQ((*first)->listening_port(), 0U);
 }
 
+TEST(AdminServerTest, RoutesManagementEndpointsWithBodiesAndBearerAuth) {
+    PrivateTokenFile token_file("manage-token\n");
+    RunningAdminServer server{{.listen_endpoint = "127.0.0.1:" + std::to_string(available_port()),
+                               .token_file = token_file.path(),
+                               .max_header_bytes = 8U * 1024U,
+                               .max_body_bytes = 4U * 1024U,
+                               .timeout = std::chrono::seconds{5}},
+                              {.healthy = [] { return true; },
+                               .ready = [] { return true; },
+                               .management =
+                                   [](const ManagementRequest& management)
+                                   -> common::Result<ManagementResponse> {
+                                       if (management.path == "/v1/echo") {
+                                           return ManagementResponse{
+                                               200U, "OK", "application/json",
+                                               "{\"method\":\"" + management.method +
+                                                   "\",\"body\":\"" + management.body + "\"}"};
+                                       }
+                                       if (management.path == "/v1/missing") {
+                                           return common::Result<ManagementResponse>::failure(
+                                               common::Error{common::ErrorCode::not_found,
+                                                             "no such endpoint"});
+                                       }
+                                       return common::Result<ManagementResponse>::failure(
+                                           common::Error{common::ErrorCode::invalid_argument,
+                                                         "bad management request"});
+                                   }}};
+    ASSERT_NE(server.port(), 0U);
+
+    // The configured token gates the /v1/* surface even on a loopback listener.
+    auto denied = request(server.port(),
+                          "PUT /v1/echo HTTP/1.1\r\nContent-Length: 5\r\n\r\nhello");
+    EXPECT_TRUE(denied.starts_with("HTTP/1.1 401 Unauthorized\r\n"));
+    EXPECT_NE(denied.find("WWW-Authenticate: Bearer"), std::string::npos);
+
+    auto accepted = request(
+        server.port(),
+        "PUT /v1/echo HTTP/1.1\r\nAuthorization: Bearer manage-token\r\nContent-Length: 5\r\n\r\n"
+        "hello");
+    EXPECT_TRUE(accepted.starts_with("HTTP/1.1 200 OK\r\n"));
+    EXPECT_NE(accepted.find(R"("method":"PUT")"), std::string::npos);
+    EXPECT_NE(accepted.find(R"("body":"hello")"), std::string::npos);
+
+    // Provider failures map to their status codes.
+    auto not_found = request(server.port(),
+                             "GET /v1/missing HTTP/1.1\r\nAuthorization: Bearer manage-token\r\n\r\n");
+    EXPECT_TRUE(not_found.starts_with("HTTP/1.1 404 Not Found\r\n"));
+    auto bad_request =
+        request(server.port(),
+                "GET /v1/other HTTP/1.1\r\nAuthorization: Bearer manage-token\r\n\r\n");
+    EXPECT_TRUE(bad_request.starts_with("HTTP/1.1 400 Bad Request\r\n"));
+
+    // Bodies are required to match Content-Length and to stay bounded. A
+    // half-closed writer with a truncated body gets an explicit 400.
+    {
+        asio::io_context io_context;
+        asio::ip::tcp::socket socket{io_context};
+        socket.connect({asio::ip::make_address("127.0.0.1"), server.port()});
+        asio::write(socket, asio::buffer(
+                                "PUT /v1/echo HTTP/1.1\r\nAuthorization: Bearer manage-token"
+                                "\r\nContent-Length: 9\r\n\r\nhello"));
+        asio::error_code shutdown_error;
+        socket.shutdown(asio::ip::tcp::socket::shutdown_send, shutdown_error);
+        EXPECT_FALSE(shutdown_error);
+        std::string body_short;
+        std::array<char, 1'024U> bytes{};
+        asio::error_code error;
+        for (;;) {
+            const auto count = socket.read_some(asio::buffer(bytes), error);
+            body_short.append(bytes.data(), count);
+            if (error) {
+                break;
+            }
+        }
+        EXPECT_TRUE(body_short.starts_with("HTTP/1.1 400 Bad Request\r\n"));
+    }
+    auto get_with_body = request(
+        server.port(),
+        "GET /v1/echo HTTP/1.1\r\nAuthorization: Bearer manage-token\r\nContent-Length: 5\r\n\r\n"
+        "hello");
+    EXPECT_TRUE(get_with_body.starts_with("HTTP/1.1 400 Bad Request\r\n"));
+    auto oversized = request(server.port(),
+                             "PUT /v1/echo HTTP/1.1\r\nAuthorization: Bearer manage-token\r\n"
+                             "Content-Length: 5000\r\n\r\n");
+    EXPECT_TRUE(oversized.starts_with("HTTP/1.1 413 Content Too Large\r\n"));
+    auto chunked = request(server.port(),
+                           "PUT /v1/echo HTTP/1.1\r\nAuthorization: Bearer manage-token\r\n"
+                           "Transfer-Encoding: chunked\r\n\r\n");
+    EXPECT_TRUE(chunked.starts_with("HTTP/1.1 400 Bad Request\r\n"));
+
+    // Non-/v1 endpoints keep the existing loopback behavior: no token needed.
+    auto health = request(server.port(), "GET /healthz HTTP/1.1\r\n\r\n");
+    EXPECT_TRUE(health.starts_with("HTTP/1.1 200 OK\r\n"));
+}
+
 } // namespace
 } // namespace minitun::admin

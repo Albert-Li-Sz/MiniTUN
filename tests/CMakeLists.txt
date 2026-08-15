@@ -17,6 +17,7 @@ add_executable(minitun_unit_tests
     unit/logging_test.cpp
     unit/port_range_test.cpp
     unit/p2p_test.cpp
+    unit/policy_management_test.cpp
     unit/remote_codec_test.cpp
     unit/remote_auth_test.cpp
     unit/remote_frame_test.cpp
@@ -338,6 +339,19 @@ if(UNIX)
         LABELS "integration;tls;auth;relay;policy"
         TIMEOUT 60
         PASS_REGULAR_EXPRESSION "client policy reload integration passed"
+    )
+
+    add_test(NAME integration.management-api
+        COMMAND
+            "${CMAKE_CURRENT_SOURCE_DIR}/integration/management_api.sh"
+            $<TARGET_FILE:minitun>
+            $<TARGET_FILE:minitund>
+            $<TARGET_FILE:minitun-server>
+    )
+    set_tests_properties(integration.management-api PROPERTIES
+        LABELS "integration;e2e;tls;admin;relay"
+        TIMEOUT 90
+        PASS_REGULAR_EXPRESSION "management API integration passed"
     )
 
     add_test(NAME integration.worker-pool

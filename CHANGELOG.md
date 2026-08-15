@@ -1,5 +1,7 @@
 # 变更日志
 
+> English: [CHANGELOG.en.md](CHANGELOG.en.md)
+
 MiniTun 的所有重要变更都会记录在此文件中。本文档以
 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 的结构为基础，项目
 版本遵循[语义化版本](https://semver.org/lang/zh-CN/)。
@@ -15,6 +17,13 @@ MiniTun 的所有重要变更都会记录在此文件中。本文档以
   Let's Encrypt 自动续期配方。
 - P2P direct path 在一次性 token 认证后升级为 TLS 1.3，以 token 作为外部 PSK
   加密应用数据，不再明文传输；relay 回退行为不变。
+- tcp tunnel 支持 PROXY protocol v1 头（`tun add --proxy-protocol`）；server 在
+  START_RELAY 中携带公网客户端来源端点，daemon 在本地目标前写入
+  `PROXY TCP4/TCP6` 头，旧版 peer 保持字节兼容。
+- `minitun-server` 管理端点新增 `/v1/*` 客户端策略管理 API：列表/查看、创建/更新、
+  删除、PSK 轮换与热重载；PSK 轮换带优雅窗口（新旧 PSK 同时有效），旧会话在窗口内
+  不中断，轮换响应一次性返回新 PSK。
+- 文档站点新增英文语言（默认中文），新增 `README.en.md` 与 `CHANGELOG.en.md`。
 - 发布新增 `x86_64`/`aarch64` 的 musl 完全静态二进制归档（`static.yml`，无
   glibc/OpenSSL 运行时依赖），自动附带 SHA-256。
 
