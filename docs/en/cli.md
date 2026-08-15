@@ -176,7 +176,7 @@ paired backups.
 
 ```text
 minitun-p2p <server-host:tunnel-port>
-  [--listen <numeric-host:port>] [--relay-only]
+  [--listen <numeric-host:port>] [--relay-only] [--udp]
   [--simultaneous-open|--no-simultaneous-open]
   [--connect-timeout <seconds>] [--negotiation-timeout <seconds>]
   [--direct-timeout <seconds>] [--inactivity-timeout <seconds>]
@@ -193,6 +193,10 @@ candidate: the daemon and the connector each connect to the other's server-obser
 endpoint from the same local port, punching NATs with endpoint-independent mappings on
 both ends; failure still falls back to the relay. This path requires both sides to be
 v1.1+; use `--no-simultaneous-open` when pairing with an older daemon.
+
+`--udp` makes the connector forward local UDP datagrams: one P2P session per local peer,
+datagrams travel as 2-byte length-prefixed records over the direct or relay path and the
+daemon delivers them to the tunnel's local target; both sides must be v1.1.1+.
 
 ## Output and exit codes
 

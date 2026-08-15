@@ -6,6 +6,14 @@ MiniTun 的所有重要变更都会记录在此文件中。本文档以
 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 的结构为基础，项目
 版本遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.1.1] - 2026-08-15
+
+### 新增
+
+- P2P 路径支持 UDP：`minitun-p2p --udp` 将本地 UDP datagram 以 2 字节长度前缀
+  record 经 direct 或 relay 路径转发到 tunnel 本地目标（`MTPV`/`MTFU` 协商，需双方
+  v1.1.1+；旧 TCP wire image 不变）。
+
 ## [1.1.0] - 2026-08-15
 
 ### 新增

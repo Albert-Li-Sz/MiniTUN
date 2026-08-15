@@ -24,8 +24,10 @@ SO); still fall back to relay on failure.
 Explicitly out of scope:
 
 - no full STUN/TURN/ICE stack — keep the minimal footprint and single-server architecture;
-- no UDP hole punching or UDP-over-TCP encapsulation — keep the "one relay per one
-  authenticated Worker" model;
+- no UDP hole punching — UDP keeps the authenticated Worker relay path; since
+  v1.1.1 the P2P path itself may optionally carry UDP datagram records with a
+  2-byte length prefix (direct and relay paths alike), still keeping the "one
+  relay per one authenticated Worker" model and no new ports;
 - no new external ports or listeners — reuse the existing public tunnel listener.
 
 ## Proposal: server-assisted TCP simultaneous open

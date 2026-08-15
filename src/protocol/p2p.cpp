@@ -33,7 +33,9 @@ namespace {
 
 inline constexpr std::array<std::uint8_t, 4U> kOfferMagic{'M', 'T', 'P', '2'};
 inline constexpr std::array<std::uint8_t, 4U> kDirectMagic{'M', 'T', 'P', 'D'};
+inline constexpr std::array<std::uint8_t, 4U> kUdpDirectMagic{'M', 'T', 'P', 'V'};
 inline constexpr std::array<std::uint8_t, 4U> kFallbackMagic{'M', 'T', 'F', 'B'};
+inline constexpr std::array<std::uint8_t, 4U> kUdpFallbackMagic{'M', 'T', 'F', 'U'};
 inline constexpr std::array<std::uint8_t, 4U> kSimultaneousMagic{'M', 'T', 'P', 'S'};
 inline constexpr std::array<std::uint8_t, 4U> kReadyMagic{'M', 'T', 'O', 'K'};
 inline constexpr std::uint8_t kP2pVersion = 1U;
@@ -252,7 +254,7 @@ class HostRace final : public std::enable_shared_from_this<HostRace> {
         if (failure_.has_value()) {
             co_return common::Result<P2pHostUpgrade>::failure(std::move(*failure_));
         }
-        co_return P2pHostUpgrade{path_, std::move(direct_stream_)};
+        co_return P2pHostUpgrade{path_, transport_, std::move(direct_stream_)};
     }
 
   private:
@@ -268,8 +270,12 @@ class HostRace final : public std::enable_shared_from_this<HostRace> {
                                             "P2P peer control message is truncated");
                                  return;
                              }
-                             if (self->control_ == kFallbackMagic) {
+                             if (self->control_ == kFallbackMagic ||
+                                 self->control_ == kUdpFallbackMagic) {
                                  self->path_ = P2pPath::relay;
+                                 self->transport_ =
+                                     self->control_ == kUdpFallbackMagic ? P2pTransport::udp
+                                                                         : P2pTransport::tcp;
                                  self->finish(false);
                                  return;
                              }
@@ -385,10 +391,14 @@ class HostRace final : public std::enable_shared_from_this<HostRace> {
                                  close_socket(*socket);
                                  return;
                              }
-                             const bool valid =
+                             const bool magic_ok =
                                  !read_error && bytes == handshake->size() &&
-                                 std::equal(kDirectMagic.begin(), kDirectMagic.end(),
-                                            handshake->begin()) &&
+                                 (std::equal(kDirectMagic.begin(), kDirectMagic.end(),
+                                             handshake->begin()) ||
+                                  std::equal(kUdpDirectMagic.begin(), kUdpDirectMagic.end(),
+                                             handshake->begin()));
+                             const bool valid =
+                                 magic_ok &&
                                  CRYPTO_memcmp(handshake->data() + kDirectMagic.size(),
                                                self->token_.data(), self->token_.size()) == 0;
                              if (!valid) {
@@ -399,12 +409,16 @@ class HostRace final : public std::enable_shared_from_this<HostRace> {
                                  self->accept_direct();
                                  return;
                              }
+                             const bool udp_transport =
+                                 std::equal(kUdpDirectMagic.begin(), kUdpDirectMagic.end(),
+                                            handshake->begin());
                              auto stream = std::make_shared<TlsStream>(
                                  std::move(*socket), self->direct_tls_context_);
                              configure_direct_tls(*stream, self->token_, true);
                              stream->async_handshake(
                                  asio::ssl::stream_base::server,
-                                 [self, stream](const asio::error_code& handshake_error) {
+                                 [self, stream, udp_transport](
+                                     const asio::error_code& handshake_error) {
                                      if (self->done_) {
                                          close_tls_stream(*stream);
                                          return;
@@ -416,6 +430,8 @@ class HostRace final : public std::enable_shared_from_this<HostRace> {
                                          return;
                                      }
                                      self->path_ = P2pPath::direct;
+                                     self->transport_ =
+                                         udp_transport ? P2pTransport::udp : P2pTransport::tcp;
                                      self->direct_stream_ =
                                          std::make_unique<TlsStream>(std::move(*stream));
                                      self->pending_direct_.reset();
@@ -477,6 +493,7 @@ class HostRace final : public std::enable_shared_from_this<HostRace> {
     bool so_started_{false};
     std::optional<common::Error> failure_;
     P2pPath path_{P2pPath::relay};
+    P2pTransport transport_{P2pTransport::tcp};
     bool done_{false};
 };
 
@@ -753,7 +770,7 @@ asio::awaitable<common::Result<P2pPeerUpgrade>>
 connect_p2p_upgrade(asio::ip::tcp::socket bootstrap_socket,
                     const std::chrono::seconds negotiation_timeout,
                     const std::chrono::seconds direct_connect_timeout, const bool direct_enabled,
-                    const bool simultaneous_open_enabled) {
+                    const bool simultaneous_open_enabled, const P2pTransport transport) {
     if (!bootstrap_socket.is_open() || !valid_timeout(negotiation_timeout) ||
         !valid_timeout(direct_connect_timeout) || direct_connect_timeout > negotiation_timeout) {
         co_return common::Result<P2pPeerUpgrade>::failure(common::ErrorCode::invalid_argument,
@@ -769,6 +786,8 @@ connect_p2p_upgrade(asio::ip::tcp::socket bootstrap_socket,
             close_socket(*direct);
         }
     });
+    const auto& direct_magic =
+        transport == P2pTransport::udp ? kUdpDirectMagic : kDirectMagic;
     auto offer = co_await read_offer(*bootstrap);
     if (!offer) {
         static_cast<void>(negotiation_timer.cancel());
@@ -798,7 +817,7 @@ connect_p2p_upgrade(asio::ip::tcp::socket bootstrap_socket,
         }
         if (!connect_error) {
             std::array<std::uint8_t, kDirectHandshakeSize> handshake{};
-            std::copy(kDirectMagic.begin(), kDirectMagic.end(), handshake.begin());
+            std::copy(direct_magic.begin(), direct_magic.end(), handshake.begin());
             std::copy(offer->token.begin(), offer->token.end(),
                       handshake.begin() + static_cast<std::ptrdiff_t>(kDirectMagic.size()));
             if (co_await write_exact(*direct, handshake.data(), handshake.size())) {
@@ -818,6 +837,7 @@ connect_p2p_upgrade(asio::ip::tcp::socket bootstrap_socket,
                         close_socket(*bootstrap);
                         co_return P2pPeerUpgrade{
                             P2pPath::direct,
+                            transport,
                             nullptr,
                             std::make_unique<TlsStream>(std::move(*direct_stream))};
                     }
@@ -891,7 +911,7 @@ connect_p2p_upgrade(asio::ip::tcp::socket bootstrap_socket,
                 }
                 if (!connect_error) {
                     std::array<std::uint8_t, kDirectHandshakeSize> handshake{};
-                    std::copy(kDirectMagic.begin(), kDirectMagic.end(), handshake.begin());
+                    std::copy(direct_magic.begin(), direct_magic.end(), handshake.begin());
                     std::copy(offer->token.begin(), offer->token.end(),
                               handshake.begin() +
                                   static_cast<std::ptrdiff_t>(kDirectMagic.size()));
@@ -913,6 +933,7 @@ connect_p2p_upgrade(asio::ip::tcp::socket bootstrap_socket,
                                 close_socket(*bootstrap);
                                 co_return P2pPeerUpgrade{
                                     P2pPath::direct,
+                                    transport,
                                     nullptr,
                                     std::make_unique<TlsStream>(std::move(*direct_stream))};
                             }
@@ -924,8 +945,10 @@ connect_p2p_upgrade(asio::ip::tcp::socket bootstrap_socket,
         }
         close_socket(*so);
     }
+    const auto& fallback_magic =
+        transport == P2pTransport::udp ? kUdpFallbackMagic : kFallbackMagic;
     if (!bootstrap->is_open() ||
-        !co_await write_exact(*bootstrap, kFallbackMagic.data(), kFallbackMagic.size())) {
+        !co_await write_exact(*bootstrap, fallback_magic.data(), fallback_magic.size())) {
         static_cast<void>(negotiation_timer.cancel());
         co_return common::Result<P2pPeerUpgrade>::failure(
             common::ErrorCode::connection_failed, "P2P relay fallback could not be requested");
@@ -938,6 +961,7 @@ connect_p2p_upgrade(asio::ip::tcp::socket bootstrap_socket,
     }
     static_cast<void>(negotiation_timer.cancel());
     co_return P2pPeerUpgrade{P2pPath::relay,
+                             transport,
                              std::make_unique<asio::ip::tcp::socket>(std::move(*bootstrap)),
                              nullptr};
 }

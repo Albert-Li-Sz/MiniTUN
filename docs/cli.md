@@ -161,7 +161,7 @@ minitun doctor --json --checkpoint \
 
 ```text
 minitun-p2p <server-host:tunnel-port>
-  [--listen <numeric-host:port>] [--relay-only]
+  [--listen <numeric-host:port>] [--relay-only] [--udp]
   [--simultaneous-open|--no-simultaneous-open]
   [--connect-timeout <seconds>] [--negotiation-timeout <seconds>]
   [--direct-timeout <seconds>] [--inactivity-timeout <seconds>]
@@ -176,6 +176,10 @@ path；`--relay-only` 可用于策略控制和验证 fallback。只有明确要�
 open：daemon 与 connector 从同一本地端口同时向对方的 server 观测地址发起连接，打穿
 两端均为 EIM 映射的 NAT；失败仍回退 relay。该路径需要双方均为 v1.1+；
 对接旧版 daemon 时请使用 `--no-simultaneous-open`。
+
+`--udp` 让 connector 转发本地 UDP datagram：每个本地 peer 一条 P2P 会话，datagram
+以 2 字节长度前缀的 record 在 direct 或 relay 路径上传送，daemon 交付到 tunnel 的
+本地目标；需双方均为 v1.1.1+。
 
 ## 输出与退出码
 

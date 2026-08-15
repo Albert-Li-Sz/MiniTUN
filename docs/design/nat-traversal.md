@@ -20,7 +20,9 @@ simultaneous open（TCP SO）直接互通；失败时仍回退 relay。
 明确不做：
 
 - 不做 STUN/TURN/ICE 完整栈——维持最小资源占用与单 server 架构；
-- 不做 UDP 打洞与 UDP-over-TCP 封装——保持「一 relay 一认证 Worker」模型；
+- 不做 UDP 打洞——UDP 仍走认证 Worker 的中继路径；v1.1.1 起 P2P 路径本身可选
+  承载带 2 字节长度前缀的 UDP datagram record（direct 与 relay 路径皆可），
+  仍保持「一 relay 一认证 Worker」模型，不引入新端口；
 - 不引入新的对外端口或监听器——复用现有公开 tunnel listener。
 
 ## 方案：server 辅助的 TCP simultaneous open

@@ -36,12 +36,13 @@ token='extended-transports-test-token'
 printf '%s\n' "$token" >"$runtime_dir/token"
 chmod 0600 "$runtime_dir/token"
 
-read -r control_port tcp_port udp_port udp_remote socks_remote p2p_remote p2p_local < <(
+read -r control_port tcp_port udp_port udp_remote socks_remote p2p_remote p2p_local \
+    p2p_udp_remote p2p_udp_local < <(
     python3 - <<'PY'
 import socket
 
 ports = []
-for _ in range(7):
+for _ in range(9):
     probe = socket.socket()
     probe.bind(("127.0.0.1", 0))
     ports.append(probe.getsockname()[1])
@@ -162,6 +163,8 @@ printf '%s\n' "$token" |
     --name socks --protocol socks5 --remote-host 127.0.0.1 >/dev/null
 "$minitun_bin" --socket "$socket_path" tun add primary "$tcp_port" "$p2p_remote" \
     --name p2p-echo --protocol p2p >/dev/null
+"$minitun_bin" --socket "$socket_path" tun add primary "$udp_port" "$p2p_udp_remote" \
+    --name p2p-udp --protocol p2p >/dev/null
 
 wait_tunnel() {
     local name=$1
@@ -284,5 +287,59 @@ PY
 
 run_p2p_round_trip "" direct
 run_p2p_round_trip "--relay-only" relay
+
+run_p2p_udp_round_trip() {
+    local mode=$1
+    local expected=$2
+    : >"$runtime_dir/p2p-udp.log"
+    if [[ -n "$mode" ]]; then
+        "$p2p_bin" "127.0.0.1:$p2p_udp_remote" --listen "127.0.0.1:$p2p_udp_local" \
+            --udp --negotiation-timeout 5 --direct-timeout 2 "$mode" \
+            >>"$runtime_dir/p2p-udp.log" 2>&1 &
+    else
+        "$p2p_bin" "127.0.0.1:$p2p_udp_remote" --listen "127.0.0.1:$p2p_udp_local" \
+            --udp --negotiation-timeout 5 --direct-timeout 2 \
+            >>"$runtime_dir/p2p-udp.log" 2>&1 &
+    fi
+    p2p_pid=$!
+    python3 - "$p2p_udp_local" <<'PY'
+import hashlib
+import socket
+import sys
+import time
+
+port = int(sys.argv[1])
+payload = b"p2p-udp-datagram" * 512
+client = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+client.settimeout(2)
+last_error = None
+for _ in range(100):
+    try:
+        client.sendto(payload, ("127.0.0.1", port))
+        echoed, _ = client.recvfrom(65535)
+        if hashlib.sha256(echoed).digest() != hashlib.sha256(payload).digest():
+            raise SystemExit("P2P UDP payload mismatch")
+        last_error = None
+        break
+    except OSError as error:
+        last_error = error
+        time.sleep(0.1)
+client.close()
+if last_error is not None:
+    raise last_error
+PY
+    for _ in $(seq 1 50); do
+        grep -q "selected $expected path" "$runtime_dir/p2p-udp.log" && break
+        sleep 0.05
+    done
+    grep -q "selected $expected path" "$runtime_dir/p2p-udp.log"
+    kill -TERM "$p2p_pid"
+    wait "$p2p_pid"
+    p2p_pid=
+    sleep 0.1
+}
+
+run_p2p_udp_round_trip "" direct
+run_p2p_udp_round_trip "--relay-only" relay
 
 printf 'extended transport integration passed\n'

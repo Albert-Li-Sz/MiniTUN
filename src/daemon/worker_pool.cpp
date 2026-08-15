@@ -346,6 +346,82 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
                     co_return;
                 }
 
+                if (upgraded->transport == protocol::P2pTransport::udp) {
+                    // UDP-over-P2P: the peer negotiated datagram records, so the
+                    // local target is a UDP endpoint reached from a connected
+                    // ephemeral socket over either P2P path.
+                    local_udp_socket_ =
+                        std::make_unique<asio::ip::udp::socket>(stream_.get_executor());
+                    arm_timeout(pool->options_.connect_timeout);
+                    auto udp_endpoints = co_await udp_resolver_.async_resolve(
+                        local_endpoint->host(), std::to_string(local_endpoint->port()),
+                        asio::redirect_error(asio::use_awaitable, error));
+                    if (!error && udp_endpoints.empty()) {
+                        error = asio::error::host_not_found;
+                    }
+                    if (!error) {
+                        const auto& first = *udp_endpoints.begin();
+                        local_udp_socket_->open(first.endpoint().protocol(), error);
+                        if (!error) {
+                            local_udp_socket_->bind(
+                                asio::ip::udp::endpoint{first.endpoint().protocol(), 0U}, error);
+                        }
+                        if (!error) {
+                            local_udp_socket_->connect(first.endpoint(), error);
+                        }
+                    }
+                    cancel_timeout();
+                    if (error) {
+                        common::log_warn("P2P UDP local target is unreachable",
+                                         log_context(common::ErrorCode::local_connect_failed));
+                        co_return;
+                    }
+                    if (upgraded->path == protocol::P2pPath::direct &&
+                        upgraded->direct_stream != nullptr) {
+                        p2p_socket_ = std::move(upgraded->direct_stream);
+                        auto confirmed = co_await protocol::confirm_p2p_direct(*p2p_socket_);
+                        if (!confirmed) {
+                            co_return;
+                        }
+                        auto relayed = co_await protocol::relay_tls_and_udp(
+                            *p2p_socket_, *local_udp_socket_,
+                            {.inactivity_timeout = pool->options_.relay_inactivity_timeout});
+                        if (relayed && pool->options_.relay_stats_handler) {
+                            try {
+                                pool->options_.relay_stats_handler(relayed->tls_to_udp_bytes,
+                                                                   relayed->udp_to_tls_bytes);
+                            } catch (...) {
+                            }
+                        }
+                        if (!relayed &&
+                            relayed.error().code() != common::ErrorCode::connection_timeout) {
+                            common::log_warn("direct P2P UDP relay ended with a transport error",
+                                             log_context(relayed.error().code()));
+                        }
+                        co_return;
+                    }
+                    auto confirmed = co_await protocol::confirm_p2p_relay(stream_);
+                    if (!confirmed) {
+                        co_return;
+                    }
+                    auto relayed = co_await protocol::relay_tls_and_udp(
+                        stream_, *local_udp_socket_,
+                        {.inactivity_timeout = pool->options_.relay_inactivity_timeout});
+                    if (relayed && pool->options_.relay_stats_handler) {
+                        try {
+                            pool->options_.relay_stats_handler(relayed->tls_to_udp_bytes,
+                                                               relayed->udp_to_tls_bytes);
+                        } catch (...) {
+                        }
+                    }
+                    if (!relayed &&
+                        relayed.error().code() != common::ErrorCode::connection_timeout) {
+                        common::log_warn("relay P2P UDP session ended with a transport error",
+                                         log_context(relayed.error().code()));
+                    }
+                    co_return;
+                }
+
                 local_socket_ = std::make_unique<asio::ip::tcp::socket>(stream_.get_executor());
                 arm_timeout(pool->options_.connect_timeout);
                 auto local_endpoints = co_await resolver_.async_resolve(

@@ -6,6 +6,15 @@ All notable changes to MiniTun are recorded in this file. This document is based
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) structure, and project versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] - 2026-08-15
+
+### Added
+
+- P2P paths can carry UDP: `minitun-p2p --udp` forwards local UDP datagrams as
+  2-byte length-prefixed records over the direct or relay path to the tunnel's local
+  target (negotiated via `MTPV`/`MTFU`, requiring v1.1.1+ on both sides; the legacy TCP
+  wire images are unchanged).
+
 ## [1.1.0] - 2026-08-15
 
 ### Added

@@ -8,6 +8,10 @@ title: 变更日志
 [CHANGELOG.md](https://github.com/Albert-Li-Sz/MiniTUN/blob/main/CHANGELOG.md) 为准。
 这里保留官网常用的近期版本摘要，方便从文档站快速了解最新能力。
 
+## [1.1.1] - 2026-08-15
+
+- P2P 路径新增 UDP 转发（`minitun-p2p --udp`），direct 与 relay 路径均支持。
+
 ## [1.1.0] - 2026-08-15
 
 - tcp tunnel 支持 PROXY protocol v1 头（`--proxy-protocol`），旧版 peer 保持字节兼容。

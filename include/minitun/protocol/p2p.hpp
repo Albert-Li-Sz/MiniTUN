@@ -19,8 +19,16 @@ enum class P2pPath : std::uint8_t {
     relay,
 };
 
+/// Payload carried by an established P2P path: a raw TCP relay or framed
+/// UDP datagram records.
+enum class P2pTransport : std::uint8_t {
+    tcp,
+    udp,
+};
+
 struct P2pHostUpgrade final {
     P2pPath path{P2pPath::relay};
+    P2pTransport transport{P2pTransport::tcp};
     /// Direct path only: the accepted candidate socket upgraded to TLS 1.3
     /// with the one-time rendezvous token as an external PSK.
     std::unique_ptr<TlsStream> direct_stream;
@@ -28,6 +36,7 @@ struct P2pHostUpgrade final {
 
 struct P2pPeerUpgrade final {
     P2pPath path{P2pPath::relay};
+    P2pTransport transport{P2pTransport::tcp};
     /// Relay path only: the raw bootstrap socket kept as the TLS relay.
     std::unique_ptr<asio::ip::tcp::socket> socket;
     /// Direct path only: the candidate socket upgraded to TLS 1.3 with the
@@ -66,7 +75,8 @@ accept_p2p_upgrade(TlsStream& relay_stream, const asio::ip::address& candidate_a
 connect_p2p_upgrade(asio::ip::tcp::socket bootstrap_socket,
                     std::chrono::seconds negotiation_timeout = std::chrono::seconds{5},
                     std::chrono::seconds direct_connect_timeout = std::chrono::seconds{2},
-                    bool direct_enabled = true, bool simultaneous_open_enabled = true);
+                    bool direct_enabled = true, bool simultaneous_open_enabled = true,
+                    P2pTransport transport = P2pTransport::tcp);
 
 /// Creates the outbound half of a TCP simultaneous open: a connecting socket
 /// bound to the same local port as the direct listener so both NAT mappings

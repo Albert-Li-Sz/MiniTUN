@@ -12,6 +12,7 @@
 #include <asio/buffer.hpp>
 #include <asio/co_spawn.hpp>
 #include <asio/error.hpp>
+#include <asio/ip/tcp.hpp>
 #include <asio/read.hpp>
 #include <asio/redirect_error.hpp>
 #include <asio/ssl/error.hpp>
@@ -26,7 +27,7 @@ namespace {
 
 inline constexpr std::chrono::hours kMaximumRelayTimeout{24};
 
-[[nodiscard]] bool normal_disconnect(const asio::error_code& error) noexcept {
+[[nodiscard]] bool is_graceful_eof(const asio::error_code& error) noexcept {
     return error == asio::error::eof || error == asio::ssl::error::stream_truncated ||
            error == asio::error::connection_reset || error == asio::error::broken_pipe ||
            error == asio::error::operation_aborted;
@@ -38,33 +39,46 @@ void close_udp(asio::ip::udp::socket& socket) noexcept {
     socket.close(ignored);
 }
 
-class DatagramRelayOperation final : public std::enable_shared_from_this<DatagramRelayOperation> {
+template <typename Stream>
+void close_stream(Stream& stream) noexcept {
+    try {
+        asio::error_code ignored;
+        stream.lowest_layer().cancel(ignored);
+        stream.lowest_layer().shutdown(asio::ip::tcp::socket::shutdown_both, ignored);
+        stream.lowest_layer().close(ignored);
+    } catch (...) {
+    }
+}
+
+template <typename Stream>
+class DatagramRelayOperation final
+    : public std::enable_shared_from_this<DatagramRelayOperation<Stream>> {
   public:
-    DatagramRelayOperation(TlsStream& tls_stream, asio::ip::udp::socket& udp_socket,
+    DatagramRelayOperation(Stream& stream, asio::ip::udp::socket& udp_socket,
                            const std::chrono::seconds inactivity_timeout)
-        : tls_stream_(tls_stream), udp_socket_(udp_socket), inactivity_timeout_(inactivity_timeout),
-          activity_timer_(tls_stream.get_executor()), completion_timer_(tls_stream.get_executor()),
+        : stream_(stream), udp_socket_(udp_socket), inactivity_timeout_(inactivity_timeout),
+          activity_timer_(stream.get_executor()), completion_timer_(stream.get_executor()),
           started_(std::chrono::steady_clock::now()) {}
 
     [[nodiscard]] asio::awaitable<common::Result<DatagramRelayStats>> run() {
         activity_timer_.expires_after(inactivity_timeout_);
         completion_timer_.expires_at(std::chrono::steady_clock::time_point::max());
-        auto self = shared_from_this();
-        asio::co_spawn(tls_stream_.get_executor(), pump_tls_to_udp(),
+        auto self = this->shared_from_this();
+        asio::co_spawn(stream_.get_executor(), pump_stream_to_udp(),
                        [self](const std::exception_ptr& failure) {
                            if (failure) {
                                self->fail(common::ErrorCode::internal_error,
-                                          "TLS-to-UDP relay failed unexpectedly");
+                                          "stream-to-UDP relay failed unexpectedly");
                            }
                        });
-        asio::co_spawn(tls_stream_.get_executor(), pump_udp_to_tls(),
+        asio::co_spawn(stream_.get_executor(), pump_udp_to_stream(),
                        [self](const std::exception_ptr& failure) {
                            if (failure) {
                                self->fail(common::ErrorCode::internal_error,
-                                          "UDP-to-TLS relay failed unexpectedly");
+                                          "UDP-to-stream relay failed unexpectedly");
                            }
                        });
-        asio::co_spawn(tls_stream_.get_executor(), watch_inactivity(),
+        asio::co_spawn(stream_.get_executor(), watch_inactivity(),
                        [self](const std::exception_ptr& failure) {
                            if (failure) {
                                self->fail(common::ErrorCode::internal_error,
@@ -85,12 +99,12 @@ class DatagramRelayOperation final : public std::enable_shared_from_this<Datagra
     }
 
   private:
-    [[nodiscard]] asio::awaitable<void> pump_tls_to_udp() {
+    [[nodiscard]] asio::awaitable<void> pump_stream_to_udp() {
         for (;;) {
             std::array<std::uint8_t, kDatagramRecordHeaderSize> header{};
             asio::error_code error;
             const std::size_t header_read =
-                co_await asio::async_read(tls_stream_, asio::buffer(header),
+                co_await asio::async_read(stream_, asio::buffer(header),
                                           asio::redirect_error(asio::use_awaitable, error));
             if (error || header_read != header.size()) {
                 finish_transport(error, "UDP relay record header read failed");
@@ -101,7 +115,7 @@ class DatagramRelayOperation final : public std::enable_shared_from_this<Datagra
             std::array<std::uint8_t, kMaximumUdpPayloadSize> payload{};
             if (length != 0U) {
                 const std::size_t payload_read =
-                    co_await asio::async_read(tls_stream_, asio::buffer(payload.data(), length),
+                    co_await asio::async_read(stream_, asio::buffer(payload.data(), length),
                                               asio::redirect_error(asio::use_awaitable, error));
                 if (error || payload_read != length) {
                     finish_transport(error, "UDP relay record payload read failed");
@@ -121,7 +135,7 @@ class DatagramRelayOperation final : public std::enable_shared_from_this<Datagra
         }
     }
 
-    [[nodiscard]] asio::awaitable<void> pump_udp_to_tls() {
+    [[nodiscard]] asio::awaitable<void> pump_udp_to_stream() {
         std::array<std::uint8_t, kMaximumUdpPayloadSize> payload{};
         for (;;) {
             asio::error_code error;
@@ -137,7 +151,7 @@ class DatagramRelayOperation final : public std::enable_shared_from_this<Datagra
             const std::array<asio::const_buffer, 2U> buffers{
                 asio::buffer(header), asio::buffer(payload.data(), received)};
             const std::size_t written = co_await asio::async_write(
-                tls_stream_, buffers, asio::redirect_error(asio::use_awaitable, error));
+                stream_, buffers, asio::redirect_error(asio::use_awaitable, error));
             if (error || written != received + header.size()) {
                 finish_transport(error, "UDP relay record write failed");
                 co_return;
@@ -166,7 +180,7 @@ class DatagramRelayOperation final : public std::enable_shared_from_this<Datagra
     }
 
     void finish_transport(const asio::error_code& error, const char* message) {
-        if (!error || normal_disconnect(error)) {
+        if (!error || is_graceful_eof(error)) {
             finish();
             return;
         }
@@ -185,7 +199,7 @@ class DatagramRelayOperation final : public std::enable_shared_from_this<Datagra
             return;
         }
         done_ = true;
-        close_tls_stream(tls_stream_);
+        close_stream(stream_);
         close_udp(udp_socket_);
         cancel(activity_timer_);
         cancel(completion_timer_);
@@ -204,7 +218,7 @@ class DatagramRelayOperation final : public std::enable_shared_from_this<Datagra
         }
     }
 
-    TlsStream& tls_stream_;
+    Stream& stream_;
     asio::ip::udp::socket& udp_socket_;
     std::chrono::seconds inactivity_timeout_;
     asio::steady_timer activity_timer_;
@@ -245,8 +259,22 @@ relay_tls_and_udp(TlsStream& tls_stream, asio::ip::udp::socket& udp_socket,
         co_return common::Result<DatagramRelayStats>::failure(
             common::ErrorCode::invalid_argument, "UDP relay options or socket are invalid");
     }
-    auto operation = std::make_shared<DatagramRelayOperation>(tls_stream, udp_socket,
-                                                              options.inactivity_timeout);
+    auto operation = std::make_shared<DatagramRelayOperation<TlsStream>>(tls_stream, udp_socket,
+                                                                         options.inactivity_timeout);
+    co_return co_await operation->run();
+}
+
+asio::awaitable<common::Result<DatagramRelayStats>>
+relay_tcp_and_udp(asio::ip::tcp::socket& tcp_socket, asio::ip::udp::socket& udp_socket,
+                  const DatagramRelayOptions options) {
+    if (options.inactivity_timeout <= std::chrono::seconds::zero() ||
+        options.inactivity_timeout > kMaximumRelayTimeout || !udp_socket.is_open() ||
+        !tcp_socket.is_open()) {
+        co_return common::Result<DatagramRelayStats>::failure(
+            common::ErrorCode::invalid_argument, "UDP relay options or socket are invalid");
+    }
+    auto operation = std::make_shared<DatagramRelayOperation<asio::ip::tcp::socket>>(
+        tcp_socket, udp_socket, options.inactivity_timeout);
     co_return co_await operation->run();
 }
 

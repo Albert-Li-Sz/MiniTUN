@@ -7,6 +7,7 @@
 #include <vector>
 
 #include <asio/awaitable.hpp>
+#include <asio/ip/tcp.hpp>
 #include <asio/ip/udp.hpp>
 
 #include <minitun/common/result.hpp>
@@ -37,6 +38,12 @@ encode_datagram_record(std::span<const std::uint8_t> payload);
 
 [[nodiscard]] asio::awaitable<common::Result<DatagramRelayStats>>
 relay_tls_and_udp(TlsStream& tls_stream, asio::ip::udp::socket& udp_socket,
+                  DatagramRelayOptions options = {});
+
+/// Relays length-prefixed UDP datagram records over a raw TCP socket,
+/// mirroring relay_tls_and_udp for the P2P relay fallback path.
+[[nodiscard]] asio::awaitable<common::Result<DatagramRelayStats>>
+relay_tcp_and_udp(asio::ip::tcp::socket& tcp_socket, asio::ip::udp::socket& udp_socket,
                   DatagramRelayOptions options = {});
 
 } // namespace minitun::protocol
