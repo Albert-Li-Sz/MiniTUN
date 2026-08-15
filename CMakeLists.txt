@@ -482,29 +482,30 @@ install(
     DESTINATION "${MINITUN_SYSTEMD_UNIT_DIR}"
     COMPONENT Client
 )
+# The openrc/s6 recipes ship without execute bits so rpmbuild's automatic
+# dependency scanner does not drag in their supervisors (openrc-run,
+# execlineb), which would make the client/server RPMs uninstallable on
+# distributions without those init systems. Users enable the bits when
+# adopting a recipe.
 install(
     FILES packaging/openrc/minitund
     DESTINATION "${CMAKE_INSTALL_DATADIR}/minitun/openrc"
     COMPONENT Client
-    PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
 )
 install(
     FILES packaging/openrc/minitun-server
     DESTINATION "${CMAKE_INSTALL_DATADIR}/minitun/openrc"
     COMPONENT Server
-    PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
 )
 install(
     FILES packaging/s6/minitund/run
     DESTINATION "${CMAKE_INSTALL_DATADIR}/minitun/s6/minitund"
     COMPONENT Client
-    PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
 )
 install(
     FILES packaging/s6/minitun-server/run
     DESTINATION "${CMAKE_INSTALL_DATADIR}/minitun/s6/minitun-server"
     COMPONENT Server
-    PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
 )
 install(
     FILES contrib/docker-compose.yml

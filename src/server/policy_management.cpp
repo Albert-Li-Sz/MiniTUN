@@ -208,7 +208,7 @@ class FileDescriptor final {
     return summary;
 }
 
-[[nodiscard]] Result<ManagementResponse> response_json(Json body,
+[[nodiscard]] Result<ManagementResponse> response_json(const Json& body,
                                                        const unsigned int status = 200U) {
     std::string text;
     try {
@@ -580,7 +580,7 @@ class Handler final {
             result["psk"] = *generated_psk;
             common::secure_erase_memory(generated_psk->data(), generated_psk->size());
         }
-        return response_json(std::move(result));
+        return response_json(result);
     }
 
     Result<ManagementResponse> delete_client(const std::string_view client_id) const {
@@ -683,7 +683,7 @@ class Handler final {
         const std::int64_t expires_at = entry->at("previous_psk_expires_at").get<std::int64_t>();
         Json result{{"psk", *generated}, {"previous_psk_expires_at", expires_at}};
         common::secure_erase_memory(generated->data(), generated->size());
-        return response_json(std::move(result));
+        return response_json(result);
     }
 
     PolicyManagementBindings bindings_;
