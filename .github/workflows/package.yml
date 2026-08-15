@@ -836,14 +836,14 @@ jobs:
       - name: Attest server image provenance
         uses: actions/attest@v4
         with:
-          subject-name: ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/minitun-server
+          subject-name: ghcr.io/${{ github.repository_owner }}/minitun-server
           subject-digest: ${{ steps.image-digests.outputs.server_digest }}
           push-to-registry: true
 
       - name: Attest client image provenance
         uses: actions/attest@v4
         with:
-          subject-name: ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/minitun-client
+          subject-name: ghcr.io/${{ github.repository_owner }}/minitun-client
           subject-digest: ${{ steps.image-digests.outputs.client_digest }}
           push-to-registry: true
 

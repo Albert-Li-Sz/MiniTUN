@@ -247,6 +247,119 @@ TEST(PolicyManagementTest, RotatesPsksWithGraceWindowAndAlternatingFiles) {
     EXPECT_EQ(missing.error().code(), ErrorCode::not_found);
 }
 
+TEST(PolicyManagementTest, RejectsMalformedPathsAndUnavailableProviders) {
+    // A handler without any bindings rejects document access and mutations.
+    auto bare = make_policy_management_handler(PolicyManagementBindings{},
+                                               PolicyManagementOptions{});
+    ASSERT_TRUE(bare) << bare.error();
+    auto no_document = (*bare)(ManagementRequest{"GET", "/v1/clients", ""});
+    ASSERT_FALSE(no_document);
+    EXPECT_EQ(no_document.error().code(), ErrorCode::internal_error);
+    auto no_reload = (*bare)(ManagementRequest{"POST", "/v1/reload", ""});
+    ASSERT_FALSE(no_reload);
+    EXPECT_EQ(no_reload.error().code(), ErrorCode::internal_error);
+
+    Fixture fixture;
+    for (const std::string_view path : {"/v1", "/v1/clients/a/b/c/d", "/v1/clients/a/b/c/d/e"}) {
+        SCOPED_TRACE(path);
+        auto rejected = fixture.call("GET", path);
+        ASSERT_FALSE(rejected) << path;
+        EXPECT_EQ(rejected.error().code(), ErrorCode::not_found);
+    }
+    for (const std::string_view path :
+         {"/v1/", "/v1//clients", "/v1/clients/", "v1/clients"}) {
+        SCOPED_TRACE(path);
+        auto rejected = fixture.call("GET", path);
+        ASSERT_FALSE(rejected) << path;
+        EXPECT_EQ(rejected.error().code(), ErrorCode::invalid_argument);
+    }
+
+    // Methods outside the documented surface are not found.
+    const std::string first = std::string{kFirstClientId};
+    EXPECT_EQ(fixture.call("DELETE", "/v1/clients").error().code(), ErrorCode::not_found);
+    EXPECT_EQ(fixture.call("PATCH", "/v1/clients/" + first).error().code(),
+              ErrorCode::not_found);
+    EXPECT_EQ(fixture.call("GET", "/v1/clients/" + first + "/rotate-psk").error().code(),
+              ErrorCode::not_found);
+    EXPECT_EQ(fixture.call("DELETE", "/v1/clients/" + first + "/rotate-psk").error().code(),
+              ErrorCode::not_found);
+    EXPECT_EQ(fixture.call("POST", "/v1/clients/" + first + "/rotate-psk", "not-json")
+                  .error()
+                  .code(),
+              ErrorCode::invalid_argument);
+    EXPECT_EQ(fixture.call("POST", "/v1/clients/" + first + "/rotate-psk", "[]").error().code(),
+              ErrorCode::invalid_argument);
+    EXPECT_EQ(
+        fixture.call("POST", "/v1/clients/" + first + "/rotate-psk", R"({"grace_seconds":"x"})")
+            .error()
+            .code(),
+        ErrorCode::invalid_argument);
+    EXPECT_EQ(fixture.call("POST", "/v1/reload", "{}").error().code(),
+              ErrorCode::invalid_argument);
+
+    // Reload through a binding that fails propagates the failure.
+    PolicyManagementBindings failing = fixture.bindings;
+    failing.reload = [] {
+        return common::Result<std::vector<std::string>>::failure(
+            common::ErrorCode::permission_denied, "reload denied");
+    };
+    auto failing_handler =
+        make_policy_management_handler(failing, PolicyManagementOptions{});
+    ASSERT_TRUE(failing_handler) << failing_handler.error();
+    auto denied = (*failing_handler)(ManagementRequest{"POST", "/v1/reload", ""});
+    ASSERT_FALSE(denied);
+    EXPECT_EQ(denied.error().code(), ErrorCode::permission_denied);
+
+    // A directory that does not exist surfaces the PSK write failure.
+    PolicyManagementBindings bad_directory = fixture.bindings;
+    bad_directory.config_directory = [] { return std::string{"/nonexistent/minitun-dir"}; };
+    auto bad_handler =
+        make_policy_management_handler(bad_directory, PolicyManagementOptions{});
+    ASSERT_TRUE(bad_handler) << bad_handler.error();
+    const auto created = (*bad_handler)(
+        ManagementRequest{"PUT", "/v1/clients/" + std::string{kSecondClientId},
+                          R"({"allowed_ports":["8000"],"max_tunnels":5,"max_connections":7,)"
+                          R"("max_idle_workers":9})"});
+    ASSERT_FALSE(created);
+    EXPECT_EQ(created.error().code(), ErrorCode::permission_denied);
+
+    // A replace binding that fails surfaces the persistence failure.
+    PolicyManagementBindings bad_replace = fixture.bindings;
+    bad_replace.replace = [](std::string) {
+        return common::Result<std::vector<std::string>>::failure(
+            common::ErrorCode::database_error, "write denied");
+    };
+    auto replace_handler =
+        make_policy_management_handler(bad_replace, PolicyManagementOptions{});
+    ASSERT_TRUE(replace_handler) << replace_handler.error();
+    const auto failed = (*replace_handler)(ManagementRequest{
+        "PUT", "/v1/clients/" + std::string{kSecondClientId},
+        R"({"psk":"another-secret","allowed_ports":["8000"],"max_tunnels":5,)"
+        R"("max_connections":7,"max_idle_workers":9})"});
+    ASSERT_FALSE(failed);
+    EXPECT_EQ(failed.error().code(), ErrorCode::database_error);
+
+    // Upsert body validation failures.
+    const auto upsert = [&](const std::string_view body) {
+        return fixture.call("PUT", "/v1/clients/" + std::string{kSecondClientId}, body);
+    };
+    EXPECT_EQ(upsert("").error().code(), ErrorCode::invalid_argument);
+    EXPECT_EQ(upsert("[]").error().code(), ErrorCode::invalid_argument);
+    EXPECT_EQ(upsert(R"({"psk":"x","psk":"y"})").error().code(), ErrorCode::invalid_argument);
+    EXPECT_EQ(upsert(R"({"enabled":1})").error().code(), ErrorCode::invalid_argument);
+    EXPECT_EQ(upsert(R"({"allowed_ports":[]})").error().code(), ErrorCode::invalid_argument);
+    EXPECT_EQ(upsert(R"({"allowed_ports":[1]})").error().code(), ErrorCode::invalid_argument);
+    EXPECT_EQ(upsert(R"({"max_tunnels":-1})").error().code(), ErrorCode::invalid_argument);
+    EXPECT_EQ(upsert(R"({"max_tunnels":"many"})").error().code(), ErrorCode::invalid_argument);
+    EXPECT_EQ(upsert(R"({"certificate_sha256":7})").error().code(), ErrorCode::invalid_argument);
+    EXPECT_EQ(upsert(R"({"certificate_san":7})").error().code(), ErrorCode::invalid_argument);
+    EXPECT_EQ(upsert(R"({"psk":""})").error().code(), ErrorCode::invalid_argument);
+    EXPECT_EQ(upsert(std::string{R"({"psk":")"} + std::string(70'000U, 'x') + R"("})")
+                  .error()
+                  .code(),
+              ErrorCode::invalid_argument);
+}
+
 TEST(PolicyManagementTest, ReloadsFromDiskAndRejectsInvalidMutations) {
     Fixture fixture;
     const std::string first = std::string{kFirstClientId};
