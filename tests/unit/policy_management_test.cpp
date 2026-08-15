@@ -325,7 +325,7 @@ TEST(PolicyManagementTest, RejectsMalformedPathsAndUnavailableProviders) {
 
     // A replace binding that fails surfaces the persistence failure.
     PolicyManagementBindings bad_replace = fixture.bindings;
-    bad_replace.replace = [](std::string) {
+    bad_replace.replace = [](const std::string&) {
         return common::Result<std::vector<std::string>>::failure(
             common::ErrorCode::database_error, "write denied");
     };
