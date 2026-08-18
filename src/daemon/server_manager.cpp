@@ -69,6 +69,10 @@ struct RuntimeMetrics final {
     std::atomic<std::uint64_t> tls_resumptions{0U};
     std::atomic<std::uint64_t> p2p_direct_total{0U};
     std::atomic<std::uint64_t> p2p_relay_total{0U};
+    std::atomic<std::uint64_t> p2p_udp_datagrams_in{0U};
+    std::atomic<std::uint64_t> p2p_udp_datagrams_out{0U};
+    std::atomic<std::uint64_t> p2p_udp_bytes_in{0U};
+    std::atomic<std::uint64_t> p2p_udp_bytes_out{0U};
 };
 
 [[nodiscard]] common::Result<void> validate_options(const ServerManagerOptions& options) {
@@ -506,6 +510,21 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
                             } else {
                                 metrics->p2p_relay_total.fetch_add(1U, std::memory_order_relaxed);
                             }
+                        },
+                    .p2p_udp_stats_handler =
+                        [metrics = metrics_](const std::string_view /*path*/,
+                                             const std::uint64_t datagrams_in,
+                                             const std::uint64_t datagrams_out,
+                                             const std::uint64_t bytes_in,
+                                             const std::uint64_t bytes_out) {
+                            metrics->p2p_udp_datagrams_in.fetch_add(datagrams_in,
+                                                                    std::memory_order_relaxed);
+                            metrics->p2p_udp_datagrams_out.fetch_add(datagrams_out,
+                                                                     std::memory_order_relaxed);
+                            metrics->p2p_udp_bytes_in.fetch_add(bytes_in,
+                                                               std::memory_order_relaxed);
+                            metrics->p2p_udp_bytes_out.fetch_add(bytes_out,
+                                                                std::memory_order_relaxed);
                         },
                     .proxy_protocol_resolver =
                         [weak = weak_from_this()](const std::string_view tunnel_id) {
@@ -1540,6 +1559,13 @@ class ServerManager::Impl final : public std::enable_shared_from_this<ServerMana
             {"p2p_paths",
              ipc::Json{{"direct", metrics_->p2p_direct_total.load(std::memory_order_relaxed)},
                        {"relay", metrics_->p2p_relay_total.load(std::memory_order_relaxed)}}},
+            {"p2p_udp",
+             ipc::Json{{"datagrams_in",
+                        metrics_->p2p_udp_datagrams_in.load(std::memory_order_relaxed)},
+                       {"datagrams_out",
+                        metrics_->p2p_udp_datagrams_out.load(std::memory_order_relaxed)},
+                       {"bytes_in", metrics_->p2p_udp_bytes_in.load(std::memory_order_relaxed)},
+                       {"bytes_out", metrics_->p2p_udp_bytes_out.load(std::memory_order_relaxed)}}},
             {"tls_resumptions", metrics_->tls_resumptions.load(std::memory_order_relaxed)},
             {"quota_rejections", metrics_->quota_rejections.load(std::memory_order_relaxed)},
             {"errors", persistence_errors + protocol_errors},

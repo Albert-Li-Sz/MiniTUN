@@ -9,6 +9,15 @@ The complete version history is governed by the
 repository root. This page keeps the recent-version summary used by the website, so you can
 quickly learn the latest capabilities from the docs site.
 
+## [1.2.0] - 2026-08-18
+
+- P2P NAT hole punching gains the `worker_observed_endpoint` capability, plus a
+  netns/iptables dual-EIM-NAT e2e test verifying TCP simultaneous open direct
+  punch-through.
+- Daemon metrics add UDP-over-P2P datagram/byte counters (`minitun_p2p_udp_*_total`).
+- Adds an admin HTTP parsing fuzz target with a persistent corpus.
+- The quality gate adds Chinese/English documentation parity enforcement.
+
 ## [1.1.1] - 2026-08-15
 
 - P2P paths add UDP forwarding (`minitun-p2p --udp`) on both the direct and relay paths.

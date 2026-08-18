@@ -409,6 +409,22 @@ if(UNIX)
         RUN_SERIAL TRUE
     )
 
+    add_test(NAME integration.nat-traversal
+        COMMAND
+            "${CMAKE_CURRENT_SOURCE_DIR}/integration/nat_traversal.sh"
+            $<TARGET_FILE:minitun>
+            $<TARGET_FILE:minitund>
+            $<TARGET_FILE:minitun-server>
+            $<TARGET_FILE:minitun-p2p>
+    )
+    set_tests_properties(integration.nat-traversal PROPERTIES
+        LABELS "integration;e2e;tls;p2p;nat-traversal"
+        TIMEOUT 120
+        PASS_REGULAR_EXPRESSION "NAT traversal e2e passed"
+        SKIP_RETURN_CODE 77
+        RUN_SERIAL TRUE
+    )
+
     add_test(NAME integration.stability
         COMMAND
             "${CMAKE_CURRENT_SOURCE_DIR}/integration/stability.sh"

@@ -328,9 +328,18 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
                             asio::ip::tcp::endpoint{peer_address, *relay->source_port};
                     }
                 }
+                std::optional<asio::ip::address> advertised_address;
+                if (relay->worker_observed_host.has_value()) {
+                    asio::error_code observed_address_error;
+                    const auto observed_address = asio::ip::make_address(
+                        *relay->worker_observed_host, observed_address_error);
+                    if (!observed_address_error && !observed_address.is_unspecified()) {
+                        advertised_address = observed_address;
+                    }
+                }
                 auto upgraded = co_await protocol::accept_p2p_upgrade(
-                    stream_, candidate_address, pool->options_.connect_timeout,
-                    std::move(peer_observed_endpoint),
+                    stream_, candidate_address, std::move(advertised_address),
+                    pool->options_.connect_timeout, std::move(peer_observed_endpoint),
                     pool->options_.simultaneous_open_enabled);
                 if (upgraded && pool->options_.p2p_path_handler) {
                     try {
@@ -393,6 +402,15 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
                             } catch (...) {
                             }
                         }
+                        if (relayed && pool->options_.p2p_udp_stats_handler) {
+                            try {
+                                pool->options_.p2p_udp_stats_handler(
+                                    "direct", relayed->tls_to_udp_datagrams,
+                                    relayed->udp_to_tls_datagrams, relayed->tls_to_udp_bytes,
+                                    relayed->udp_to_tls_bytes);
+                            } catch (...) {
+                            }
+                        }
                         if (!relayed &&
                             relayed.error().code() != common::ErrorCode::connection_timeout) {
                             common::log_warn("direct P2P UDP relay ended with a transport error",
@@ -411,6 +429,15 @@ class WorkerPool::Impl final : public std::enable_shared_from_this<WorkerPool::I
                         try {
                             pool->options_.relay_stats_handler(relayed->tls_to_udp_bytes,
                                                                relayed->udp_to_tls_bytes);
+                        } catch (...) {
+                        }
+                    }
+                    if (relayed && pool->options_.p2p_udp_stats_handler) {
+                        try {
+                            pool->options_.p2p_udp_stats_handler(
+                                "relay", relayed->tls_to_udp_datagrams,
+                                relayed->udp_to_tls_datagrams, relayed->tls_to_udp_bytes,
+                                relayed->udp_to_tls_bytes);
                         } catch (...) {
                         }
                     }

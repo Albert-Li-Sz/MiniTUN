@@ -10,10 +10,13 @@
 > A minimal-footprint, self-hosted, multi-transport intranet penetration (reverse tunnel)
 > tool for Linux.
 
-> **Release status:** [`v1.1.1`](https://github.com/Albert-Li-Sz/MiniTUN/releases/tag/v1.1.1)
-> was released on 2026-08-15, adding UDP forwarding over P2P paths on top of v1.1.0's
-> PROXY protocol headers, the `/v1/*` client policy management API with graceful PSK
-> rotation, P2P TCP simultaneous open (NAT hole punching), and English documentation.
+> **Release status:** [`v1.2.0`](https://github.com/Albert-Li-Sz/MiniTUN/releases/tag/v1.2.0)
+> was released on 2026-08-18, completing real-NAT validation of P2P TCP simultaneous open
+> (`worker_observed_endpoint` capability plus a netns/iptables dual-EIM e2e test),
+> UDP-over-P2P metrics, an admin fuzz corpus, and Chinese/English documentation parity.
+> v1.1.x added UDP forwarding over P2P paths, PROXY protocol headers, the `/v1/*` client
+> policy management API with graceful PSK rotation, NAT hole punching, and English
+> documentation.
 > It includes TCP, UDP, SOCKS5 and P2P tunnel modes, two stable SOVERSION 1 SDKs, and
 > focuses on a minimal footprint: no web GUI and no scripting runtime.
 

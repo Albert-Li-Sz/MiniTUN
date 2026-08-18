@@ -62,6 +62,14 @@ struct WorkerPoolOptions final {
     std::function<void()> tls_resumption_handler{};
     std::function<void(std::uint64_t bytes_in, std::uint64_t bytes_out)> relay_stats_handler{};
     std::function<void(std::string_view path)> p2p_path_handler{};
+    /// Reports UDP-over-P2P datagram and byte totals for a completed P2P
+    /// session, keyed by the path that carried the datagrams ("direct" or
+    /// "relay"). Direction matches relay_stats_handler: "in" is traffic arriving
+    /// from the tunnel into the local target, "out" is the reverse.
+    std::function<void(std::string_view path, std::uint64_t datagrams_in,
+                       std::uint64_t datagrams_out, std::uint64_t bytes_in,
+                       std::uint64_t bytes_out)>
+        p2p_udp_stats_handler{};
     /// Returns true when the tunnel enables PROXY protocol headers to the
     /// local service.
     std::function<bool(std::string_view tunnel_id)> proxy_protocol_resolver{};

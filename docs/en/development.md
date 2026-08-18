@@ -238,7 +238,7 @@ Build all fuzz targets with Clang and libFuzzer:
 ```bash
 cmake --preset fuzz
 cmake --build --preset fuzz --parallel 2
-for target in remote_frame ipc_frame ipc_json endpoint port_range; do
+for target in remote_frame ipc_frame ipc_json endpoint port_range admin_http; do
   "build/fuzz/minitun_${target}_fuzz" -runs=2000 -max_total_time=10
 done
 ```

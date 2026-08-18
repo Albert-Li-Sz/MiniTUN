@@ -181,6 +181,12 @@ TEST(ServerManagerTest, EmptyLifecycleAndMetricsAreStableAndIdempotent) {
     EXPECT_EQ(metrics.at("workers").at("idle"), 0U);
     EXPECT_EQ(metrics.at("workers").at("active"), 0U);
     EXPECT_EQ(metrics.at("errors"), 0U);
+    EXPECT_EQ(metrics.at("p2p_paths").at("direct"), 0U);
+    EXPECT_EQ(metrics.at("p2p_paths").at("relay"), 0U);
+    EXPECT_EQ(metrics.at("p2p_udp").at("datagrams_in"), 0U);
+    EXPECT_EQ(metrics.at("p2p_udp").at("datagrams_out"), 0U);
+    EXPECT_EQ(metrics.at("p2p_udp").at("bytes_in"), 0U);
+    EXPECT_EQ(metrics.at("p2p_udp").at("bytes_out"), 0U);
 
     (*manager)->notify_changed();
     (*manager)->reload();

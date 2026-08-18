@@ -753,6 +753,12 @@ common::Result<std::vector<std::uint8_t>> encode_start_relay(const StartRelayMes
         return common::Result<std::vector<std::uint8_t>>::failure(written.error());
     }
     const bool has_source = message.source_host.has_value() || message.source_port.has_value();
+    const bool has_worker_observed = message.worker_observed_host.has_value();
+    if (has_worker_observed && !has_source) {
+        return common::Result<std::vector<std::uint8_t>>::failure(
+            common::ErrorCode::invalid_argument,
+            "START_RELAY worker observed host requires the source endpoint extension");
+    }
     if (has_source) {
         if (!message.source_host.has_value() || !message.source_port.has_value()) {
             return common::Result<std::vector<std::uint8_t>>::failure(
@@ -769,6 +775,11 @@ common::Result<std::vector<std::uint8_t>> encode_start_relay(const StartRelayMes
         }
         if (auto written = writer.write_u16(*message.source_port); !written) {
             return common::Result<std::vector<std::uint8_t>>::failure(written.error());
+        }
+        if (has_worker_observed) {
+            if (auto written = writer.write_string(*message.worker_observed_host); !written) {
+                return common::Result<std::vector<std::uint8_t>>::failure(written.error());
+            }
         }
     } else if (auto written = encode_tunnel_mode(writer, message.mode); !written) {
         return common::Result<std::vector<std::uint8_t>>::failure(written.error());
@@ -820,12 +831,30 @@ common::Result<StartRelayMessage> decode_start_relay(const std::vector<std::uint
         source_host = std::move(*host);
         source_port = *port;
     }
+    std::optional<std::string> worker_observed_host;
+    if (reader.remaining() != 0U) {
+        auto observed = reader.read_string(kMaxTunnelBindHostBytes);
+        if (!observed) {
+            return common::Result<StartRelayMessage>::failure(
+                common::ErrorCode::protocol_error,
+                "START_RELAY worker observed host is invalid");
+        }
+        asio::error_code address_error;
+        static_cast<void>(asio::ip::make_address(*observed, address_error));
+        if (address_error) {
+            return common::Result<StartRelayMessage>::failure(
+                common::ErrorCode::protocol_error,
+                "START_RELAY worker observed host is invalid");
+        }
+        worker_observed_host = std::move(*observed);
+    }
     if (!reader.require_end()) {
         return common::Result<StartRelayMessage>::failure(common::ErrorCode::protocol_error,
                                                           "START_RELAY payload is invalid");
     }
     return StartRelayMessage{std::move(*tunnel_id), std::move(*connection_id), mode,
-                             std::move(source_host), source_port};
+                             std::move(source_host), source_port,
+                             std::move(worker_observed_host)};
 }
 
 common::Result<std::vector<std::uint8_t>>

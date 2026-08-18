@@ -6,6 +6,29 @@ All notable changes to MiniTun are recorded in this file. This document is based
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) structure, and project versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-08-18
+
+### Added
+
+- P2P NAT hole punching gains the `worker_observed_endpoint` capability
+  (`1ULL << 10`): the server reports the Worker's own observed address back in START_RELAY
+  and the daemon advertises that NAT-reachable candidate (not its private local address) in
+  the offer. A new `integration.nat-traversal` e2e test builds a "public network + two
+  independent EIM NATs + two clients" topology with netns/iptables and verifies that TCP
+  simultaneous open selects the direct path through dual EIM NAT.
+- Daemon metrics add `minitun_p2p_udp_datagrams_total` and
+  `minitun_p2p_udp_bytes_total`, counting UDP-over-P2P datagrams and bytes by direction
+  (both direct and relay paths).
+- Adds an admin HTTP parsing fuzz target (`admin_http`) with a persistent corpus covering
+  `/v1/*` management requests.
+- The quality gate adds Chinese/English documentation parity enforcement
+  (`ci/check_docs_sync.sh`): changing only one side of `docs/` fails, preventing drift.
+
+### Fixed
+
+- The vcpkg portfile no longer carries a placeholder SHA512 and instead pins source by
+  release tag.
+
 ## [1.1.1] - 2026-08-15
 
 ### Added

@@ -82,7 +82,7 @@ TEST(P2pTest, RejectsInvalidUpgradeAndRelayInputs) {
         io_context,
         [&]() -> asio::awaitable<void> {
             host = co_await accept_p2p_upgrade(tls_stream, asio::ip::address_v4{},
-                                               std::chrono::seconds{1});
+                                               std::nullopt, std::chrono::seconds{1});
             peer = co_await connect_p2p_upgrade(asio::ip::tcp::socket{io_context},
                                                 std::chrono::seconds{1}, std::chrono::seconds{1});
             relay = co_await relay_tcp_and_tcp(first, second, std::chrono::seconds{1});
@@ -98,6 +98,27 @@ TEST(P2pTest, RejectsInvalidUpgradeAndRelayInputs) {
     EXPECT_EQ(host->error().code(), common::ErrorCode::invalid_argument);
     EXPECT_EQ(peer->error().code(), common::ErrorCode::invalid_argument);
     EXPECT_EQ(relay->error().code(), common::ErrorCode::invalid_argument);
+}
+
+TEST(P2pTest, RejectsAdvertisedAddressFamilyMismatch) {
+    asio::io_context io_context;
+    asio::ssl::context tls_context{asio::ssl::context::tls_client};
+    TlsStream tls_stream{io_context, tls_context};
+    std::optional<common::Result<P2pHostUpgrade>> host;
+    asio::co_spawn(
+        io_context,
+        [&]() -> asio::awaitable<void> {
+            // An advertised address that disagrees in family with the bound
+            // candidate is rejected before any I/O.
+            host = co_await accept_p2p_upgrade(tls_stream, asio::ip::address_v4::loopback(),
+                                               asio::ip::address_v6::loopback(),
+                                               std::chrono::seconds{1});
+        },
+        [](const std::exception_ptr& failure) { EXPECT_FALSE(failure); });
+    io_context.run();
+    ASSERT_TRUE(host.has_value());
+    ASSERT_FALSE(*host);
+    EXPECT_EQ(host->error().code(), common::ErrorCode::invalid_argument);
 }
 
 TEST(P2pTest, RejectsInvalidRelayTimeouts) {

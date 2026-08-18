@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.22)
 
 project(
     MiniTun
-    VERSION 1.1.1
+    VERSION 1.2.0
     DESCRIPTION "A minimal-footprint, self-hosted multi-transport reverse tunnel"
     HOMEPAGE_URL "https://github.com/Albert-Li-Sz/MiniTUN"
     LANGUAGES C CXX
@@ -580,7 +580,7 @@ if(MINITUN_BUILD_FUZZERS)
         message(FATAL_ERROR "MINITUN_BUILD_FUZZERS requires Clang with libFuzzer")
     endif()
 
-    foreach(target minitun_common minitun_protocol minitun_ipc)
+    foreach(target minitun_common minitun_protocol minitun_ipc minitun_admin)
         target_compile_options("${target}" PRIVATE -fsanitize=fuzzer-no-link)
     endforeach()
 
@@ -601,6 +601,7 @@ if(MINITUN_BUILD_FUZZERS)
     minitun_add_fuzzer(minitun_ipc_json_fuzz fuzz/ipc_json_fuzz.cpp MiniTun::ipc)
     minitun_add_fuzzer(minitun_endpoint_fuzz fuzz/endpoint_fuzz.cpp MiniTun::common)
     minitun_add_fuzzer(minitun_port_range_fuzz fuzz/port_range_fuzz.cpp MiniTun::common)
+    minitun_add_fuzzer(minitun_admin_http_fuzz fuzz/admin_http_fuzz.cpp MiniTun::admin)
 
     add_custom_target(minitun_fuzzers
         DEPENDS
@@ -609,6 +610,7 @@ if(MINITUN_BUILD_FUZZERS)
             minitun_ipc_json_fuzz
             minitun_endpoint_fuzz
             minitun_port_range_fuzz
+            minitun_admin_http_fuzz
     )
 endif()
 

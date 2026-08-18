@@ -1,0 +1,3 @@
+# Fuzz corpus seeds are raw byte inputs (HTTP framing, wire images, JSON), not
+# text: disable line-ending normalization so intentional CRLF bytes survive.
+fuzz/corpus/** -text

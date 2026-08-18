@@ -1,8 +1,10 @@
 # P2P NAT 打洞设计与实现
 
-> 状态：v1.1 已实现 TCP simultaneous open（server 辅助，无 STUN/TURN）。验证基于
-> loopback 与单元级 simultaneous open 拓扑；真实 NAT 组合的穿透率仍需按下方验收
-> 标准实测。本文档描述协议设计、触发条件与剩余验收项。
+> 状态：v1.2.0 完成 TCP simultaneous open（server 辅助，无 STUN/TURN）并补齐真实 NAT
+> 验证：新增 `worker_observed_endpoint` capability（`1ULL << 10`），server 在
+> START_RELAY 中把 Worker 自身观测地址回传给 daemon，使 offer 广告 NAT 可达候选；
+> e2e 用 netns/iptables 构造双 EIM 拓扑验证 direct 穿透。本文档描述协议设计、触发
+> 条件与剩余验收项。
 
 ## 现状
 
@@ -64,14 +66,19 @@ connect，双方 connect 交叉后走既有 `MTPD` + token + TLS 1.3 PSK 升级�
 
 单元测试覆盖：loopback 双侧 simultaneous open（无 listener）、SO socket 与 listener
 同端口绑定及降级、peer 协议全流程（direct 失败→`MTPS`→SO 建立→`MTPD` 握手→TLS
-失败→relay 回退确认）。真实 NAT 穿透率尚未实测。
+失败→relay 回退确认）。v1.2.0 补齐 `worker_observed_endpoint` capability
+（`1ULL << 10`）：server 在 START_RELAY 中把 Worker 自身观测地址回传给 daemon，daemon
+在 offer 中广告该观测地址而非私有本地地址，使 NAT 后的 Worker 也能给出可达候选。
+e2e 测试 `integration.nat-traversal` 用 netns + iptables 构造「公开网络 + 两个独立
+EIM NAT + 两个客户端」拓扑，验证 TCP SO 穿过双 EIM NAT 后选择 direct 路径。
 
 ### 5. 验收标准（剩余门槛）
 
-1. 双 EIM NAT 下 direct 建立成功，且数据路径走 TLS-PSK 加密（与现状一致）；
+1. ✅ 双 EIM NAT 下 direct 建立成功，且数据路径走 TLS-PSK 加密（由
+   `integration.nat-traversal` 的 netns/iptables 拓扑验证）；
 2. 对称 NAT、无 NAT、单侧 NAT 的组合下 relay 回退时间不劣于现状；
 3. 复用同一本地端口绑定 SO 的端口在 server 重启、generation 变化后正确释放；
-4. 新增 e2e 测试通过真实 NAT 环境（或可控的 netns/iptables 拓扑）验证；
+4. ✅ 新增 e2e 测试通过可控的 netns/iptables 拓扑验证（`integration.nat-traversal`）；
 5. 审计日志记录选择的路径与失败原因，不记录任何地址之外的敏感信息。
 
 ## 备选路线（记录在案，不采纳）

@@ -6,6 +6,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <string_view>
 
 #include <asio/io_context.hpp>
 
@@ -44,6 +45,20 @@ struct Providers final {
     /// set and a bearer token is configured, /v1/* requires authentication.
     std::function<common::Result<ManagementResponse>(const ManagementRequest&)> management;
 };
+
+/// The parsed shape of a single HTTP/1.1 management request (request line and
+/// headers only). Exposed for the fuzz target and integration tests; the
+/// authorization value itself is intentionally not returned.
+struct ParsedHttpRequest final {
+    std::string method;
+    std::string path;
+    bool has_authorization{false};
+    std::size_t content_length{0U};
+};
+
+/// Parses a raw HTTP/1.1 request text (headers only, terminated by CRLF CRLF).
+/// Returns an error for malformed framing, request line, or headers.
+[[nodiscard]] common::Result<ParsedHttpRequest> parse_http_request(std::string_view text);
 
 /// A deliberately small HTTP/1.1 management listener. Every response closes
 /// the connection; request bodies, transfer encoding, pipelining, and methods

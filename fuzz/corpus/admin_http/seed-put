@@ -1,0 +1,5 @@
+PUT /v1/clients/client_00000000000000000000000000000001 HTTP/1.1
+Host: localhost
+Authorization: Bearer admin-token
+Content-Length: 42
+

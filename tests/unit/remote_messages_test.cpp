@@ -528,6 +528,31 @@ TEST(RemoteMessagesTest, RoundTripsStartRelaySourceEndpointExtension) {
     EXPECT_FALSE(decode_start_relay(reject(255U, "198.51.100.7", 4'321U)));
 }
 
+TEST(RemoteMessagesTest, RoundTripsStartRelayWorkerObservedEndpoint) {
+    const std::string tunnel_id = generated_id(common::IdKind::tunnel);
+    const std::string connection_id = generated_id(common::IdKind::connection);
+    const StartRelayMessage relay{tunnel_id, connection_id, TunnelMode::tcp,
+                                  "198.51.100.7", 4'321U, "203.0.113.9"};
+    const auto payload = encode_start_relay(relay);
+    ASSERT_TRUE(payload) << payload.error();
+    const auto decoded = decode_start_relay(*payload);
+    ASSERT_TRUE(decoded) << decoded.error();
+    EXPECT_EQ(*decoded, relay);
+
+    // The observed host requires the source endpoint extension.
+    EXPECT_FALSE(encode_start_relay({tunnel_id, connection_id, TunnelMode::tcp, std::nullopt,
+                                     std::nullopt, "203.0.113.9"}));
+
+    // A non-address observed host is rejected on decode.
+    const auto bad = wire_payload([&](PayloadWriter& writer) {
+        return writer.write_string(tunnel_id) && writer.write_string(connection_id) &&
+               writer.write_u8(static_cast<std::uint8_t>(TunnelMode::tcp)) &&
+               writer.write_string("198.51.100.7") && writer.write_u16(4'321U) &&
+               writer.write_string("not-an-address");
+    });
+    EXPECT_FALSE(decode_start_relay(bad));
+}
+
 TEST(RemoteMessagesTest, RejectsExplicitTcpAndUnknownTransportModeExtensions) {
     const std::string tunnel_id = generated_id(common::IdKind::tunnel);
     const std::string connection_id = generated_id(common::IdKind::connection);

@@ -60,8 +60,15 @@ struct P2pRelayStats final {
 /// port as the direct listener so two endpoint-independent NAT mappings can
 /// punch through. A successful direct candidate is upgraded to TLS 1.3 with
 /// the one-time token as an external PSK before it is returned.
+///
+/// `candidate_address` is the address the direct listener binds to (the
+/// Worker's local address). `advertised_address`, when set, is the Worker's
+/// public address as observed by the server and is what the offer hands the
+/// peer instead of the local address, so a NAT'd Worker still advertises a
+/// reachable candidate. It must share `candidate_address`'s address family.
 [[nodiscard]] asio::awaitable<common::Result<P2pHostUpgrade>>
 accept_p2p_upgrade(TlsStream& relay_stream, const asio::ip::address& candidate_address,
+                   std::optional<asio::ip::address> advertised_address = std::nullopt,
                    std::chrono::seconds negotiation_timeout = std::chrono::seconds{5},
                    std::optional<asio::ip::tcp::endpoint> peer_observed_endpoint = std::nullopt,
                    bool simultaneous_open_enabled = false);

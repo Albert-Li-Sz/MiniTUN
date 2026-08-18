@@ -5,7 +5,7 @@ from conan.tools.files import apply_conandata_patches, copy, export_conandata_pa
 
 class MiniTunConan(ConanFile):
     name = "minitun"
-    version = "1.0.0"
+    version = "1.2.0"
     license = "MIT"
     url = "https://github.com/Albert-Li-Sz/MiniTUN"
     description = "A minimal-footprint, self-hosted multi-transport reverse tunnel"

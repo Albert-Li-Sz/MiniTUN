@@ -207,7 +207,7 @@ jobs:
           FUZZ_SECONDS: ${{ github.event_name == 'schedule' && '900' || '10' }}
         run: |
           install -d fuzz-artifacts
-          for target in remote_frame ipc_frame ipc_json endpoint port_range; do
+          for target in remote_frame ipc_frame ipc_json endpoint port_range admin_http; do
             install -d "fuzz-artifacts/${target}"
             "build/fuzz/minitun_${target}_fuzz" \
               "fuzz/corpus/${target}" \

@@ -6,6 +6,25 @@ MiniTun 的所有重要变更都会记录在此文件中。本文档以
 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 的结构为基础，项目
 版本遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.2.0] - 2026-08-18
+
+### 新增
+
+- P2P NAT 打洞补齐 `worker_observed_endpoint` capability（`1ULL << 10`）：server 在
+  START_RELAY 中把 Worker 自身观测地址回传给 daemon，daemon 在 offer 中广告 NAT 可达
+  候选而非私有本地地址；新增 e2e 测试 `integration.nat-traversal`，用 netns + iptables
+  构造「公开网络 + 两个独立 EIM NAT + 两个客户端」拓扑，验证 TCP simultaneous open
+  穿透双 EIM NAT 后选择 direct 路径。
+- daemon 指标新增 `minitun_p2p_udp_datagrams_total` 与 `minitun_p2p_udp_bytes_total`，
+  按方向统计 UDP-over-P2P 的 datagram 与字节（direct 与 relay 路径皆计入）。
+- 新增 admin HTTP 解析 fuzz target（`admin_http`）与持久语料，覆盖 `/v1/*` 管理请求。
+- quality 门禁新增中英文文档同步校验（`ci/check_docs_sync.sh`）：单侧修改 `docs/` 会
+  失败，防止双语漂移。
+
+### 修复
+
+- vcpkg portfile 不再携带占位 SHA512，改为按 release tag 固定拉取源码。
+
 ## [1.1.1] - 2026-08-15
 
 ### 新增

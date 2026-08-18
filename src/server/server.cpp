@@ -1186,9 +1186,23 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
                     source_port = source_endpoint.port();
                 }
             }
+            std::optional<std::string> worker_observed_host;
+            const bool supports_worker_observed =
+                supports_source_endpoint &&
+                (selected_capabilities_ & static_cast<protocol::CapabilitySet>(
+                                              protocol::Capability::worker_observed_endpoint)) != 0U;
+            if (supports_worker_observed) {
+                asio::error_code observed_error;
+                const auto observed_endpoint =
+                    stream_.lowest_layer().remote_endpoint(observed_error);
+                if (!observed_error) {
+                    worker_observed_host = observed_endpoint.address().to_string();
+                }
+            }
             auto relay_payload = protocol::encode_start_relay(
                 {worker_assignment_->binding.tunnel_id, connection_id_text,
-                 worker_assignment_->binding.mode, std::move(source_host), source_port});
+                 worker_assignment_->binding.mode, std::move(source_host), source_port,
+                 std::move(worker_observed_host)});
             if (!relay_payload) {
                 co_return;
             }

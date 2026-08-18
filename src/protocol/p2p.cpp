@@ -723,10 +723,14 @@ common::Result<std::shared_ptr<asio::ip::tcp::socket>> create_simultaneous_open_
 
 asio::awaitable<common::Result<P2pHostUpgrade>>
 accept_p2p_upgrade(TlsStream& relay_stream, const asio::ip::address& candidate_address,
+                   const std::optional<asio::ip::address> advertised_address,
                    const std::chrono::seconds negotiation_timeout,
                    std::optional<asio::ip::tcp::endpoint> peer_observed_endpoint,
                    const bool simultaneous_open_enabled) {
-    if (!valid_timeout(negotiation_timeout) || candidate_address.is_unspecified()) {
+    if (!valid_timeout(negotiation_timeout) || candidate_address.is_unspecified() ||
+        (advertised_address.has_value() &&
+         (advertised_address->is_unspecified() ||
+          advertised_address->is_v4() != candidate_address.is_v4()))) {
         co_return common::Result<P2pHostUpgrade>::failure(common::ErrorCode::invalid_argument,
                                                           "P2P host options are invalid");
     }
@@ -751,7 +755,8 @@ accept_p2p_upgrade(TlsStream& relay_stream, const asio::ip::address& candidate_a
     if (!token) {
         co_return common::Result<P2pHostUpgrade>::failure(token.error());
     }
-    auto offer = make_offer(candidate_address, acceptor.local_endpoint().port(), *token);
+    const auto offer_address = advertised_address.value_or(candidate_address);
+    auto offer = make_offer(offer_address, acceptor.local_endpoint().port(), *token);
     if (!offer) {
         co_return common::Result<P2pHostUpgrade>::failure(offer.error());
     }

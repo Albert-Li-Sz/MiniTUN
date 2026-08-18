@@ -8,6 +8,14 @@ title: 变更日志
 [CHANGELOG.md](https://github.com/Albert-Li-Sz/MiniTUN/blob/main/CHANGELOG.md) 为准。
 这里保留官网常用的近期版本摘要，方便从文档站快速了解最新能力。
 
+## [1.2.0] - 2026-08-18
+
+- P2P NAT 打洞补齐 `worker_observed_endpoint` capability，并新增 netns/iptables 双 EIM
+  NAT e2e 测试验证 TCP simultaneous open 的 direct 穿透。
+- daemon 指标新增 UDP-over-P2P 的 datagram/字节计数（`minitun_p2p_udp_*_total`）。
+- 新增 admin HTTP 解析 fuzz target 与持久语料。
+- quality 门禁新增中英文文档同步校验，防止双语漂移。
+
 ## [1.1.1] - 2026-08-15
 
 - P2P 路径新增 UDP 转发（`minitun-p2p --udp`），direct 与 relay 路径均支持。

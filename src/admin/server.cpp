@@ -225,6 +225,19 @@ status_for_error(const common::ErrorCode code) noexcept {
 
 } // namespace
 
+Result<ParsedHttpRequest> parse_http_request(const std::string_view text) {
+    auto parsed = parse_request(text);
+    if (!parsed) {
+        return parsed.error();
+    }
+    ParsedHttpRequest result;
+    result.method = std::move(parsed->method);
+    result.path = std::move(parsed->path);
+    result.has_authorization = parsed->authorization.has_value();
+    result.content_length = parsed->content_length;
+    return result;
+}
+
 class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
   public:
     Impl(asio::io_context& io_context, tcp::endpoint endpoint, ServerOptions options,

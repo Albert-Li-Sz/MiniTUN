@@ -37,6 +37,10 @@ enum class Capability : CapabilitySet {
     p2p_rendezvous = 1ULL << 7U,
     tcp_simultaneous_open = 1ULL << 8U,
     proxy_protocol = 1ULL << 9U,
+    /// The server reports the daemon Worker's own public address (as observed
+    /// on its authenticated TLS connection) so the P2P offer can advertise a
+    /// NAT-reachable candidate instead of the Worker's private address.
+    worker_observed_endpoint = 1ULL << 10U,
 };
 
 [[nodiscard]] constexpr CapabilitySet capability_bit(const Capability capability) noexcept {
@@ -51,7 +55,8 @@ inline constexpr CapabilitySet kSupportedCapabilities =
     capability_bit(Capability::udp_datagrams) | capability_bit(Capability::socks5_proxy) |
     capability_bit(Capability::p2p_rendezvous) |
     capability_bit(Capability::tcp_simultaneous_open) |
-    capability_bit(Capability::proxy_protocol);
+    capability_bit(Capability::proxy_protocol) |
+    capability_bit(Capability::worker_observed_endpoint);
 
 enum class TunnelMode : std::uint8_t {
     tcp = 0U,
@@ -198,6 +203,11 @@ struct StartRelayMessage final {
     /// protocol headers and TCP simultaneous open. Both or neither set.
     std::optional<std::string> source_host{std::nullopt};
     std::optional<std::uint16_t> source_port{std::nullopt};
+    /// The daemon Worker's own public address as observed by the server. Used
+    /// to advertise a NAT-reachable P2P candidate; present only when the
+    /// source endpoint extension is present and the server negotiated the
+    /// worker_observed_endpoint capability.
+    std::optional<std::string> worker_observed_host{std::nullopt};
 
     friend bool operator==(const StartRelayMessage&, const StartRelayMessage&) = default;
 };

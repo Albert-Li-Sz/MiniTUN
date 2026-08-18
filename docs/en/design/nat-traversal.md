@@ -1,10 +1,11 @@
 # P2P NAT Traversal Design and Implementation
 
-> Status: v1.1 implements TCP simultaneous open (server-assisted, no STUN/TURN). The
-> validation so far is loopback-based plus unit-level simultaneous-open topologies; the
-> traversal rate across real NAT combinations still needs the measurements in the
-> acceptance criteria below. This document describes the protocol design, the trigger
-> conditions, and the remaining validation items.
+> Status: v1.2.0 completes TCP simultaneous open (server-assisted, no STUN/TURN) and adds
+> real-NAT validation: a new `worker_observed_endpoint` capability (`1ULL << 10`) makes the
+> server report the Worker's own observed address back in START_RELAY, so the offer
+> advertises a NAT-reachable candidate; an e2e test builds a dual-EIM topology with
+> netns/iptables and verifies direct punch-through. This document describes the protocol
+> design, the trigger conditions, and the remaining validation items.
 
 ## Current state
 
@@ -79,18 +80,23 @@ control frame).
 Unit coverage includes: loopback simultaneous open on both sides (no listener), SO socket
 binding to the listener port with the ephemeral fallback, and the full peer protocol flow
 (direct failure → `MTPS` → SO establishment → `MTPD` handshake → TLS failure → confirmed
-relay fallback). Real-NAT traversal rates are not yet measured.
+relay fallback). v1.2.0 adds the `worker_observed_endpoint` capability (`1ULL << 10`): the
+server reports the Worker's own observed address back in START_RELAY and the daemon
+advertises that observed address (not its private local address) in the offer, so a NAT'd
+Worker still offers a reachable candidate. The `integration.nat-traversal` e2e test builds
+a "public network + two independent EIM NATs + two clients" topology with netns/iptables
+and verifies that TCP SO selects the direct path through dual EIM NAT.
 
 ### 5. Acceptance criteria (remaining bar)
 
-1. under dual EIM NAT, direct establishes and the data path uses TLS-PSK encryption (as
-   today);
+1. ✅ under dual EIM NAT, direct establishes and the data path uses TLS-PSK encryption (as
+   today; validated by the `integration.nat-traversal` netns/iptables topology);
 2. under symmetric NAT, no NAT and single-sided NAT combinations, the relay fallback time
    is no worse than today;
 3. ports bound for SO reusing the same local port are correctly released after server
    restart and generation change;
-4. new e2e tests pass against a real NAT environment (or a controllable netns/iptables
-   topology);
+4. ✅ new e2e tests pass against a controllable netns/iptables topology
+   (`integration.nat-traversal`);
 5. audit logs record the chosen path and failure reason, with no sensitive information
    other than addresses.
 

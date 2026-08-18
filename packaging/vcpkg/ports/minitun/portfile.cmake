@@ -1,8 +1,11 @@
-vcpkg_from_github(
+# Pin the source by release tag instead of downloading an archive with a fixed
+# SHA512. vcpkg_from_github needs a real SHA512 for the release tarball, which
+# only exists after the first tagged release is cut; cloning by tag keeps this
+# overlay usable before then and stays deterministic once tags are immutable.
+vcpkg_from_git(
     OUT_SOURCE_PATH SOURCE_PATH
-    REPO Albert-Li-Sz/MiniTUN
+    URL https://github.com/Albert-Li-Sz/MiniTUN.git
     REF "v${VERSION}"
-    SHA512 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
     HEAD_REF main
 )
 

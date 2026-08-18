@@ -108,6 +108,7 @@ PY
 http_check "$daemon_admin_port" GET /healthz 200 $'ok\n'
 http_check "$daemon_admin_port" HEAD /readyz 200
 http_check "$daemon_admin_port" GET /metrics 200 'minitun_build_info{role="daemon"'
+http_check "$daemon_admin_port" GET /metrics 200 'minitun_p2p_udp_datagrams_total{direction="in"}'
 http_check "$server_admin_port" GET /healthz 200 $'ok\n'
 http_check "$server_admin_port" GET /readyz 200 $'ready\n'
 http_check "$server_admin_port" GET /metrics 200 'minitun_build_info{role="server"'
