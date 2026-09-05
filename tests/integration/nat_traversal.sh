@@ -119,6 +119,9 @@ ip netns exec mt-nata ip link set lo up
 ip netns exec mt-nata sysctl -qw net.ipv4.ip_forward=1
 ip netns exec mt-nata iptables -t nat -A POSTROUTING \
     -s 10.0.1.0/24 -o veth-pub-a -j SNAT --to-source 10.99.0.2
+# RFC 5382 REQ-4: an unsolicited SYN must not immediately receive a RST.
+# Only unmatched packets reach INPUT; reverse-translated punches are forwarded.
+ip netns exec mt-nata iptables -A INPUT -i veth-pub-a -p tcp --syn -j DROP
 
 ip netns exec mt-natb ip addr add 10.99.0.3/24 dev veth-pub-b
 ip netns exec mt-natb ip addr add 10.0.2.1/24 dev veth-b-nat
@@ -128,6 +131,7 @@ ip netns exec mt-natb ip link set lo up
 ip netns exec mt-natb sysctl -qw net.ipv4.ip_forward=1
 ip netns exec mt-natb iptables -t nat -A POSTROUTING \
     -s 10.0.2.0/24 -o veth-pub-b -j SNAT --to-source 10.99.0.3
+ip netns exec mt-natb iptables -A INPUT -i veth-pub-b -p tcp --syn -j DROP
 
 ip netns exec mt-a ip addr add 10.0.1.2/24 dev veth-a
 ip netns exec mt-a ip link set veth-a up
@@ -266,7 +270,7 @@ wait_tunnel
 
 : >"$runtime_dir/p2p.log"
 ip netns exec mt-b "$p2p_bin" "10.99.0.10:$p2p_remote" --listen "127.0.0.1:$p2p_local" \
-    --negotiation-timeout 8 --direct-timeout 5 \
+    --negotiation-timeout 8 --direct-timeout 2 \
     >>"$runtime_dir/p2p.log" 2>&1 &
 p2p_pid=$!
 for _ in $(seq 1 100); do
@@ -312,7 +316,7 @@ grep -q "selected direct path" "$runtime_dir/p2p.log" || {
 }
 
 # Refuse every direct SYN immediately to exercise the failed-punch path.
-# Count SYNs in the connector namespace: the five-second window must produce
+# Count SYNs in the connector namespace: the two-second window must produce
 # at most one ordinary attempt plus paced retries, not a busy retry loop.
 ip netns exec mt-natb iptables -I FORWARD -s 10.0.2.0/24 -d 10.99.0.2 \
     -p tcp -j REJECT --reject-with tcp-reset
@@ -324,7 +328,7 @@ grep -q 'selected relay path' "$runtime_dir/p2p.log" || {
 }
 punch_syns=$(ip netns exec mt-b iptables -nvx -L OUTPUT |
     awk '$3 == "ACCEPT" { print $1; exit }')
-if [[ ! "$punch_syns" =~ ^[0-9]+$ ]] || ((punch_syns < 2 || punch_syns > 30)); then
+if [[ ! "$punch_syns" =~ ^[0-9]+$ ]] || ((punch_syns < 2 || punch_syns > 13)); then
     echo "Refused NAT punch sent an unexpected SYN count: $punch_syns" >&2
     exit 1
 fi
