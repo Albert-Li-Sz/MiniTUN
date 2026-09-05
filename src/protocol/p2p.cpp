@@ -300,6 +300,15 @@ class HostRace final : public std::enable_shared_from_this<HostRace> {
             return;
         }
         so_started_ = true;
+        asio::error_code listener_error;
+        so_local_endpoint_ = acceptor_.local_endpoint(listener_error);
+        if (listener_error) {
+            return;
+        }
+        // A listening socket prevents a same-port outbound bind on Linux.
+        // The peer has abandoned passive direct connect, so release the
+        // listener before creating the outbound half of the punch.
+        acceptor_.close(listener_error);
         attempt_so_connect();
     }
 
@@ -307,16 +316,11 @@ class HostRace final : public std::enable_shared_from_this<HostRace> {
     /// after a short pause until the negotiation window closes, so a SYN that
     /// arrives before the peer's mapping forms does not abandon the punch.
     void attempt_so_connect() {
-        if (done_) {
-            return;
-        }
-        asio::error_code listener_error;
-        const auto local_endpoint = acceptor_.local_endpoint(listener_error);
-        if (listener_error) {
+        if (done_ || !so_local_endpoint_.has_value()) {
             return;
         }
         auto created = create_simultaneous_open_socket(relay_stream_.get_executor(),
-                                                       local_endpoint,
+                                                       *so_local_endpoint_,
                                                        *peer_observed_endpoint_);
         if (!created) {
             // Mismatched families or an unbindable port: the relay fallback
@@ -356,7 +360,7 @@ class HostRace final : public std::enable_shared_from_this<HostRace> {
     }
 
     void accept_direct() {
-        if (done_) {
+        if (done_ || !acceptor_.is_open()) {
             return;
         }
         auto self = shared_from_this();
@@ -488,6 +492,7 @@ class HostRace final : public std::enable_shared_from_this<HostRace> {
     std::unique_ptr<TlsStream> direct_stream_;
     std::shared_ptr<asio::ip::tcp::socket> pending_direct_;
     std::shared_ptr<asio::ip::tcp::socket> so_socket_;
+    std::optional<asio::ip::tcp::endpoint> so_local_endpoint_;
     std::optional<asio::ip::tcp::endpoint> peer_observed_endpoint_;
     bool simultaneous_open_enabled_{false};
     bool so_started_{false};
@@ -703,17 +708,6 @@ common::Result<std::shared_ptr<asio::ip::tcp::socket>> create_simultaneous_open_
             asio::ip::tcp::endpoint{listener_endpoint.address(), listener_endpoint.port()}, error);
     }
     if (error) {
-        // Stacks that refuse sharing the listener port degrade to an ephemeral
-        // source port; the punch still works when the peer reuses its own
-        // mapping port.
-        error.clear();
-        socket->close(error);
-        socket->open(peer_endpoint.protocol(), error);
-        if (!error) {
-            socket->bind(asio::ip::tcp::endpoint{listener_endpoint.address(), 0U}, error);
-        }
-    }
-    if (error) {
         close_socket(*socket);
         return common::Result<std::shared_ptr<asio::ip::tcp::socket>>::failure(
             common::ErrorCode::connection_failed, "simultaneous open socket could not be bound");
@@ -723,6 +717,8 @@ common::Result<std::shared_ptr<asio::ip::tcp::socket>> create_simultaneous_open_
 
 asio::awaitable<common::Result<P2pHostUpgrade>>
 accept_p2p_upgrade(TlsStream& relay_stream, const asio::ip::address& candidate_address,
+                   // The coroutine must own this optional across suspension.
+                   // NOLINTNEXTLINE(performance-unnecessary-value-param)
                    const std::optional<asio::ip::address> advertised_address,
                    const std::chrono::seconds negotiation_timeout,
                    std::optional<asio::ip::tcp::endpoint> peer_observed_endpoint,
@@ -798,7 +794,20 @@ connect_p2p_upgrade(asio::ip::tcp::socket bootstrap_socket,
         static_cast<void>(negotiation_timer.cancel());
         co_return common::Result<P2pPeerUpgrade>::failure(offer.error());
     }
-    std::optional<asio::ip::tcp::endpoint> direct_local_endpoint;
+    std::optional<asio::ip::tcp::endpoint> mapping_local_endpoint;
+    if (direct_enabled && simultaneous_open_enabled) {
+        // START_RELAY reports the bootstrap connection's observed endpoint.
+        // Reuse that mapping, not the unrelated ordinary direct-attempt port.
+        // Capture it before the attempt's timer can close the direct socket.
+        asio::error_code mapping_error;
+        bootstrap->set_option(asio::socket_base::reuse_address{true}, mapping_error);
+        if (!mapping_error) {
+            const auto endpoint = bootstrap->local_endpoint(mapping_error);
+            if (!mapping_error && endpoint.protocol() == offer->candidate.protocol()) {
+                mapping_local_endpoint = endpoint;
+            }
+        }
+    }
     if (direct_enabled) {
         asio::steady_timer direct_timer{bootstrap->get_executor()};
         direct_timer.expires_after(direct_connect_timeout);
@@ -811,15 +820,6 @@ connect_p2p_upgrade(asio::ip::tcp::socket bootstrap_socket,
         co_await direct->async_connect(offer->candidate,
                                        asio::redirect_error(asio::use_awaitable, connect_error));
         static_cast<void>(direct_timer.cancel());
-        // Remember the mapping port before the socket is consumed by the TLS
-        // stream (or closed), so the simultaneous-open attempt can reuse it.
-        {
-            asio::error_code local_error;
-            const auto endpoint = direct->local_endpoint(local_error);
-            if (!local_error) {
-                direct_local_endpoint = endpoint;
-            }
-        }
         if (!connect_error) {
             std::array<std::uint8_t, kDirectHandshakeSize> handshake{};
             std::copy(direct_magic.begin(), direct_magic.end(), handshake.begin());
@@ -852,7 +852,7 @@ connect_p2p_upgrade(asio::ip::tcp::socket bootstrap_socket,
         }
     }
     close_socket(*direct);
-    if (simultaneous_open_enabled && direct_local_endpoint.has_value() &&
+    if (simultaneous_open_enabled && mapping_local_endpoint.has_value() &&
         bootstrap->is_open()) {
         auto so = std::make_shared<asio::ip::tcp::socket>(bootstrap->get_executor());
         asio::error_code so_error;
@@ -861,14 +861,9 @@ connect_p2p_upgrade(asio::ip::tcp::socket bootstrap_socket,
             so->set_option(asio::socket_base::reuse_address{true}, so_error);
         }
         if (!so_error) {
-            so->bind(*direct_local_endpoint, so_error);
-        }
-        if (so_error) {
-            // A stack that refuses the shared-port bind degrades to an
-            // ephemeral source port instead of aborting the punch.
-            so_error.clear();
-            so->close(so_error);
-            so->open(offer->candidate.protocol(), so_error);
+            // Without the observed port the host cannot target this socket;
+            // a stack refusing shared-port binds must use the relay instead.
+            so->bind(*mapping_local_endpoint, so_error);
         }
         if (!so_error) {
             // Request the host's outbound half; an unknown host ignores the
@@ -882,8 +877,11 @@ connect_p2p_upgrade(asio::ip::tcp::socket bootstrap_socket,
                 const auto deadline = std::chrono::steady_clock::now() + direct_connect_timeout;
                 asio::error_code connect_error;
                 for (;;) {
+                    const auto retry_at = std::min(
+                        deadline, std::chrono::steady_clock::now() +
+                                      std::chrono::milliseconds{200});
                     asio::steady_timer so_timer{bootstrap->get_executor()};
-                    so_timer.expires_after(std::chrono::milliseconds{200});
+                    so_timer.expires_at(retry_at);
                     const std::weak_ptr<asio::ip::tcp::socket> weak_so = so;
                     so_timer.async_wait([weak_so](const asio::error_code& error) {
                         if (!error) {
@@ -899,6 +897,15 @@ connect_p2p_upgrade(asio::ip::tcp::socket bootstrap_socket,
                     if (!connect_error || std::chrono::steady_clock::now() >= deadline) {
                         break;
                     }
+                    // Immediate RSTs must not turn retries into a CPU/SYN flood.
+                    so_timer.expires_at(retry_at);
+                    asio::error_code retry_error;
+                    co_await so_timer.async_wait(
+                        asio::redirect_error(asio::use_awaitable, retry_error));
+                    if (retry_error || !bootstrap->is_open() ||
+                        std::chrono::steady_clock::now() >= deadline) {
+                        break;
+                    }
                     // Recreate the socket on the same local port for the next SYN.
                     connect_error.clear();
                     so->close(connect_error);
@@ -908,7 +915,7 @@ connect_p2p_upgrade(asio::ip::tcp::socket bootstrap_socket,
                         so->set_option(asio::socket_base::reuse_address{true}, connect_error);
                     }
                     if (!connect_error) {
-                        so->bind(*direct_local_endpoint, connect_error);
+                        so->bind(*mapping_local_endpoint, connect_error);
                     }
                     if (connect_error) {
                         break;

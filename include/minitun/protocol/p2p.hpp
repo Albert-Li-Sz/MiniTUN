@@ -76,8 +76,8 @@ accept_p2p_upgrade(TlsStream& relay_stream, const asio::ip::address& candidate_a
 /// Consumes a MiniTun P2P offer from `bootstrap_socket`, tries the advertised
 /// direct candidate, and otherwise keeps the bootstrap socket as the relay.
 /// With simultaneous open enabled, a failed direct attempt requests MTPS and
-/// then reconnects to the candidate from the same local port so both sides
-/// punch their NAT mappings; relay fallback follows when that also fails.
+/// then reconnects to the candidate from the bootstrap connection's local
+/// port, which the server observed. Relay fallback follows if punching fails.
 [[nodiscard]] asio::awaitable<common::Result<P2pPeerUpgrade>>
 connect_p2p_upgrade(asio::ip::tcp::socket bootstrap_socket,
                     std::chrono::seconds negotiation_timeout = std::chrono::seconds{5},
@@ -86,9 +86,9 @@ connect_p2p_upgrade(asio::ip::tcp::socket bootstrap_socket,
                     P2pTransport transport = P2pTransport::tcp);
 
 /// Creates the outbound half of a TCP simultaneous open: a connecting socket
-/// bound to the same local port as the direct listener so both NAT mappings
-/// share the punch port. Platforms that refuse the shared port degrade to an
-/// ephemeral source port; mismatched address families are rejected.
+/// bound to the direct listener's advertised port. Close the listener first
+/// so the outbound bind can reuse it. Unavailable ports and mismatched address
+/// families are rejected; callers can retain the relay fallback.
 [[nodiscard]] common::Result<std::shared_ptr<asio::ip::tcp::socket>>
 create_simultaneous_open_socket(const asio::any_io_executor& executor,
                                 const asio::ip::tcp::endpoint& listener_endpoint,

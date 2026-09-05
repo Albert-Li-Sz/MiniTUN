@@ -21,6 +21,7 @@ quickly learn the latest capabilities from the docs site.
   heartbeats, and shutdown.
 - Fixes the public bridge topology in the Linux NAT integration test and prints network
   and process diagnostics on failure.
+- Fixes P2P punch port reuse and paces immediate failures to prevent CPU/SYN floods.
 
 ## [1.2.0] - 2026-08-18
 

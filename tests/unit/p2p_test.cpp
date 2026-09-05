@@ -263,15 +263,16 @@ TEST(P2pTest, CreatesSimultaneousOpenSocketsFromTheListenerPort) {
     asio::ip::tcp::acceptor listener{
         io_context, asio::ip::tcp::endpoint{asio::ip::address_v4::loopback(), port}};
     const auto listener_endpoint = listener.local_endpoint();
+    // The passive phase must relinquish its listener before the outbound
+    // simultaneous-open socket can bind the advertised port.
+    listener.close();
 
     auto shared = create_simultaneous_open_socket(
         io_context.get_executor(), listener_endpoint,
         asio::ip::tcp::endpoint{asio::ip::address_v4::loopback(), 43'210U});
     ASSERT_TRUE(shared) << shared.error();
     const auto local = (*shared)->local_endpoint();
-    // Reusing the listener port is the preferred outcome; platforms that
-    // refuse it degrade to an ephemeral port.
-    EXPECT_TRUE(local.port() == listener_endpoint.port() || local.port() != 0U);
+    EXPECT_EQ(local.port(), listener_endpoint.port());
     EXPECT_EQ(local.address(), asio::ip::address_v4::loopback());
     asio::error_code ignored;
     (*shared)->close(ignored);
@@ -348,9 +349,11 @@ TEST(P2pTest, PeerRequestsSimultaneousOpenAndReusesTheMappingPort) {
     auto pair = connected_pair(io_context);
     asio::ip::tcp::socket& host_relay = pair.second;
     asio::ip::tcp::socket peer_relay = std::move(pair.first);
+    // The real host only knows the source port observed on the bootstrap
+    // connection; it cannot discover a separate direct-attempt mapping.
+    const auto peer_port = host_relay.remote_endpoint().port();
 
-    // The mock host binds its direct candidate and later reuses that port for
-    // the outbound half of the simultaneous open.
+    // The mock accepts each phase at the advertised candidate endpoint.
     const auto candidate_port = available_loopback_port(io_context);
     asio::ip::tcp::acceptor direct_acceptor{
         io_context, {asio::ip::address_v4::loopback(), candidate_port}};
@@ -359,9 +362,8 @@ TEST(P2pTest, PeerRequestsSimultaneousOpenAndReusesTheMappingPort) {
 
     std::optional<common::Result<P2pPeerUpgrade>> peer_result;
     std::string mock_report;
-    std::optional<bool> outbound_connected;
-    std::optional<bool> outbound_token_valid;
-    std::optional<std::thread> outbound_thread;
+    std::optional<std::uint16_t> punch_source_port;
+    bool punch_token_valid = false;
     asio::co_spawn(
         io_context,
         [&]() -> asio::awaitable<void> {
@@ -371,8 +373,7 @@ TEST(P2pTest, PeerRequestsSimultaneousOpenAndReusesTheMappingPort) {
                 mock_report = "offer";
                 co_return;
             }
-            // Accept the peer's ordinary direct attempt, learn its mapping
-            // port, and drop the connection so the direct path fails.
+            // Drop the ordinary direct attempt so the peer requests a punch.
             asio::error_code error;
             asio::ip::tcp::socket direct{io_context};
             direct = co_await direct_acceptor.async_accept(
@@ -381,9 +382,7 @@ TEST(P2pTest, PeerRequestsSimultaneousOpenAndReusesTheMappingPort) {
                 mock_report = "accept";
                 co_return;
             }
-            const auto peer_port = direct.remote_endpoint().port();
             direct.close();
-            direct_acceptor.close();
 
             // The peer must request the simultaneous open next.
             std::array<std::uint8_t, 4U> control{};
@@ -396,48 +395,26 @@ TEST(P2pTest, PeerRequestsSimultaneousOpenAndReusesTheMappingPort) {
                               std::string{reinterpret_cast<const char*>(control.data()), 4U};
                 co_return;
             }
-            // Outbound half on a dedicated OS thread: a socket bound to the
-            // candidate port blocks inside connect(), keeping SYN-SENT open
-            // while the peer's SYN arrives, which makes the crossing
-            // deterministic even though loopback answers idle ports with RSTs.
-            outbound_thread.emplace([&] {
-                asio::io_context local_io;
-                asio::error_code outbound_error;
-                const auto deadline =
-                    std::chrono::steady_clock::now() + std::chrono::seconds{4};
-                while (std::chrono::steady_clock::now() < deadline) {
-                    asio::ip::tcp::socket outbound{local_io};
-                    outbound.open(asio::ip::tcp::v4(), outbound_error);
-                    outbound.set_option(asio::socket_base::reuse_address{true}, outbound_error);
-                    outbound.bind({asio::ip::address_v4::loopback(), candidate_port}, outbound_error);
-                    if (outbound_error) {
-                        outbound_connected = false;
-                        return;
-                    }
-                    outbound.connect({asio::ip::address_v4::loopback(), peer_port}, outbound_error);
-                    if (!outbound_error) {
-                        outbound_connected = true;
-                        constexpr std::size_t kHandshakeSize = 4U + 32U;
-                        std::array<std::uint8_t, kHandshakeSize> handshake{};
-                        asio::read(outbound, asio::buffer(handshake), outbound_error);
-                        constexpr std::array<std::uint8_t, 4U> kMockDirectMagic{'M', 'T', 'P',
-                                                                               'D'};
-                        const bool magic_ok =
-                            std::equal(kMockDirectMagic.begin(), kMockDirectMagic.end(),
-                                       handshake.begin());
-                        outbound_token_valid =
-                            magic_ok &&
-                            std::equal(token.begin(), token.end(), handshake.begin() + 4);
-                        outbound.shutdown(asio::ip::tcp::socket::shutdown_both, outbound_error);
-                        outbound.close();
-                        return;
-                    }
-                    std::this_thread::sleep_for(std::chrono::milliseconds{50});
-                }
-                outbound_connected = false;
-            });
-            // The mock spoke no TLS and closed the SO socket on its thread, so
-            // the peer must fall back to the relay, which the mock confirms.
+            // Accept the punch deterministically. The real NAT integration
+            // test covers crossing SYNs; this mock checks that the peer uses
+            // the endpoint the server can actually report to the host.
+            auto punch = co_await direct_acceptor.async_accept(
+                asio::redirect_error(asio::use_awaitable, error));
+            if (error) {
+                mock_report = "punch-accept";
+                co_return;
+            }
+            punch_source_port = punch.remote_endpoint().port();
+            std::array<std::uint8_t, 4U + 32U> handshake{};
+            if (co_await raw_read_exact(punch, handshake.data(), handshake.size())) {
+                constexpr std::array<std::uint8_t, 4U> magic{'M', 'T', 'P', 'D'};
+                punch_token_valid =
+                    std::equal(magic.begin(), magic.end(), handshake.begin()) &&
+                    std::equal(token.begin(), token.end(), handshake.begin() + 4);
+            }
+            // Drop the socket before TLS to exercise confirmed relay fallback.
+            punch.close();
+            direct_acceptor.close();
             std::array<std::uint8_t, 4U> fallback{};
             if (!co_await raw_read_exact(host_relay, fallback.data(), fallback.size())) {
                 mock_report = "fallback";
@@ -460,15 +437,10 @@ TEST(P2pTest, PeerRequestsSimultaneousOpenAndReusesTheMappingPort) {
         },
         [](const std::exception_ptr& failure) { EXPECT_FALSE(failure); });
     io_context.run();
-    if (outbound_thread.has_value()) {
-        outbound_thread->join();
-    }
-
     EXPECT_EQ(mock_report, "ok");
-    ASSERT_TRUE(outbound_connected.has_value());
-    ASSERT_TRUE(outbound_token_valid.has_value());
-    EXPECT_TRUE(*outbound_connected) << "the simultaneous-open connect never crossed";
-    EXPECT_TRUE(*outbound_token_valid) << "the SO socket did not carry the MTPD token";
+    ASSERT_TRUE(punch_source_port.has_value());
+    EXPECT_EQ(*punch_source_port, peer_port);
+    EXPECT_TRUE(punch_token_valid) << "the SO socket did not carry the MTPD token";
     ASSERT_TRUE(peer_result.has_value());
     // The mock dropped the SO socket before TLS, so the peer ends on the
     // confirmed relay fallback with the bootstrap socket intact.

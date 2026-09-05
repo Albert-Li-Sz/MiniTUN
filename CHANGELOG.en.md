@@ -20,6 +20,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Fixes the Linux NAT integration topology by bridging both NAT uplinks onto one public
   segment, avoiding ambiguous routes and unreachable ARP on isolated same-subnet interfaces.
   Failures now include process logs, routes, and neighbor tables.
+- Fixes mismatched P2P punch ports: the peer reuses its observed bootstrap port and the
+  host releases its direct listener before binding the outbound punch. Immediate failures
+  now wait between retries instead of producing a CPU/SYN flood on RST responses.
 
 ## [1.2.0] - 2026-08-18
 

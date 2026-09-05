@@ -24,7 +24,7 @@ if [[ "$(uname -s)" != "Linux" ]]; then
     echo 'NAT traversal test skipped (requires Linux netns/iptables)'
     exit 77
 fi
-for tool in ip iptables sysctl python3 openssl; do
+for tool in ip iptables ss sysctl python3 openssl; do
     if ! command -v "$tool" >/dev/null 2>&1; then
         echo "NAT traversal test skipped (missing ${tool})"
         exit 77
@@ -270,20 +270,17 @@ ip netns exec mt-b "$p2p_bin" "10.99.0.10:$p2p_remote" --listen "127.0.0.1:$p2p_
     >>"$runtime_dir/p2p.log" 2>&1 &
 p2p_pid=$!
 for _ in $(seq 1 100); do
-    if ip netns exec mt-b python3 - "$p2p_local" <<'PY' 2>/dev/null
-import socket
-import sys
-probe = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=0.1)
-probe.close()
-PY
-    then
+    # A connect probe would create a second P2P session whose path could mask
+    # a relay fallback on the payload session below.
+    if ip netns exec mt-b ss -H -ltn "sport = :$p2p_local" | grep -q .; then
         break
     fi
     kill -0 "$p2p_pid" 2>/dev/null
     sleep 0.05
 done
 
-ip netns exec mt-b python3 - "$p2p_local" <<'PY'
+roundtrip() {
+    ip netns exec mt-b python3 - "$p2p_local" <<'PY'
 import socket
 import sys
 
@@ -301,6 +298,8 @@ if bytes(received) != payload:
     raise SystemExit("P2P payload did not round-trip through the NAT")
 connection.close()
 PY
+}
+roundtrip
 
 for _ in $(seq 1 60); do
     grep -q "selected direct path" "$runtime_dir/p2p.log" && break
@@ -312,4 +311,23 @@ grep -q "selected direct path" "$runtime_dir/p2p.log" || {
     exit 1
 }
 
-printf 'NAT traversal e2e passed (direct path through dual EIM NAT)\n'
+# Refuse every direct SYN immediately to exercise the failed-punch path.
+# Count SYNs in the connector namespace: the five-second window must produce
+# at most one ordinary attempt plus paced retries, not a busy retry loop.
+ip netns exec mt-natb iptables -I FORWARD -s 10.0.2.0/24 -d 10.99.0.2 \
+    -p tcp -j REJECT --reject-with tcp-reset
+ip netns exec mt-b iptables -I OUTPUT -d 10.99.0.2 -p tcp --syn -j ACCEPT
+roundtrip
+grep -q 'selected relay path' "$runtime_dir/p2p.log" || {
+    echo 'Refused NAT punch did not fall back to the relay' >&2
+    exit 1
+}
+punch_syns=$(ip netns exec mt-b iptables -nvx -L OUTPUT |
+    awk '$3 == "ACCEPT" { print $1; exit }')
+if [[ ! "$punch_syns" =~ ^[0-9]+$ ]] || ((punch_syns < 2 || punch_syns > 30)); then
+    echo "Refused NAT punch sent an unexpected SYN count: $punch_syns" >&2
+    exit 1
+fi
+
+printf 'NAT traversal e2e passed (dual NAT direct; refused punch used %s SYNs and relay)\n' \
+    "$punch_syns"
