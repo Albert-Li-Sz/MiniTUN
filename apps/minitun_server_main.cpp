@@ -72,6 +72,14 @@ class LoggingLifetime final {
            << metrics.connections_total << "\n"
            << "# TYPE minitun_tls_resumptions_total counter\nminitun_tls_resumptions_total "
            << metrics.tls_resumptions_total << "\n"
+           << "# TYPE minitun_pending_handshakes gauge\nminitun_pending_handshakes "
+           << metrics.pending_handshakes << "\n"
+           << "# TYPE minitun_tls_handshake_failures_total counter\n"
+           << "minitun_tls_handshake_failures_total "
+           << metrics.tls_handshake_failures_total << "\n"
+           << "# TYPE minitun_tls_admission_rejections_total counter\n"
+           << "minitun_tls_admission_rejections_total "
+           << metrics.tls_admission_rejections_total << "\n"
            << "# TYPE minitun_authentication_total counter\n"
            << "minitun_authentication_total{result=\"success\"} "
            << metrics.authentication_success_total << "\n"
@@ -334,6 +342,18 @@ int main(int argc, char** argv) {
         ->capture_default_str();
     app.add_option("--max-total-connections", options.max_total_connections,
                    "Maximum concurrent public relays across all clients")
+        ->check(CLI::Range(1U, 100'000U))
+        ->capture_default_str();
+    app.add_option("--max-pending-handshakes", options.max_pending_handshakes,
+                   "Maximum connections awaiting TLS and application authentication")
+        ->check(CLI::Range(1U, 4'096U))
+        ->capture_default_str();
+    app.add_option("--max-pending-handshakes-per-ip", options.max_pending_handshakes_per_ip,
+                   "Maximum unauthenticated connections per source IP")
+        ->check(CLI::Range(1U, 4'096U))
+        ->capture_default_str();
+    app.add_option("--max-handshakes-per-second", options.max_handshakes_per_second,
+                   "TLS listener accept rate, with one second of burst capacity")
         ->check(CLI::Range(1U, 100'000U))
         ->capture_default_str();
     app.add_option("--min-idle-workers", options.min_idle_workers,

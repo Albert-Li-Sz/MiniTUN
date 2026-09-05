@@ -38,6 +38,7 @@ add_executable(minitun_unit_tests
     unit/storage_repository_test.cpp
     unit/time_test.cpp
     unit/tls_test.cpp
+    unit/tls_admission_test.cpp
     unit/tunnel_registry_test.cpp
     unit/tunnel_reconciler_test.cpp
     unit/worker_pool_test.cpp
@@ -258,6 +259,20 @@ if(UNIX)
             $<TARGET_FILE:minitun-server>
             $<TARGET_FILE:minitun_tls_auth_client>
     )
+
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME integration.tls-admission
+            COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/integration/tls_admission.py"
+                $<TARGET_FILE:minitun-server>
+                $<TARGET_FILE:minitun_tls_auth_client>
+        )
+        set_tests_properties(integration.tls-admission PROPERTIES
+            LABELS "integration;tls;security"
+            TIMEOUT 45
+            PASS_REGULAR_EXPRESSION "TLS admission integration passed"
+        )
+    endif()
 
     add_test(NAME integration.admin-endpoints
         COMMAND

@@ -9,6 +9,19 @@ The complete version history is governed by the
 repository root. This page keeps the recent-version summary used by the website, so you can
 quickly learn the latest capabilities from the docs site.
 
+## [1.2.1] - 2026-09-05
+
+- The TLS listener limits accept rate and global/per-IP unauthenticated connections before
+  allocating TLS objects, with timer backoff and temporary blocks for repeated source failures.
+- TLS and application authentication share an absolute deadline; authentication and cleanup
+  release the pending quota.
+- Repeated TLS warnings are limited to one every five seconds, with pending-handshake,
+  TLS-failure, and admission-rejection metrics.
+- Regression tests cover real TLS/plaintext floods, slow connections, quota release,
+  heartbeats, and shutdown.
+- Fixes the public bridge topology in the Linux NAT integration test and prints network
+  and process diagnostics on failure.
+
 ## [1.2.0] - 2026-08-18
 
 - P2P NAT hole punching gains the `worker_observed_endpoint` capability, plus a

@@ -40,6 +40,17 @@ ACL/配额拒绝、错误、重连、字节、TLS 会话恢复、策略重载、
 所有计数器都在进程重启后归零。持久化业务状态应从本地 IPC/SDK 查询，不能用指标
 计数器代替。
 
+TLS 接入保护有三个无来源标签的指标：
+
+- `minitun_pending_handshakes`：正在进行 TLS 或等待应用认证的连接数；
+- `minitun_tls_handshake_failures_total`：TLS 握手失败总数，包含握手超时，不含服务端主动关闭；
+- `minitun_tls_admission_rejections_total`：因来源并发配额或临时封禁，在创建 TLS 对象前拒绝的连接数。
+
+速率或全局未认证配额耗尽时会暂停 accept，排队连接尚未计入接入/拒绝计数。
+大量 `tls_error` 时，可通过[配置中的 TLS 接入保护](configuration.md#tls-接入保护)
+降低握手速率和未认证连接上限。错误日志每 5 秒最多输出一条，并包含此前抑制的同类
+日志数量；不要用日志行数代替失败指标。
+
 ## 审计日志
 
 以下事件使用 `server.audit` 或 `daemon.audit` 组件记录：
@@ -82,4 +93,3 @@ minitun doctor --json \
 ```
 
 备份是成对的；恢复时也应使用同一时间点生成的两个文件。
-

@@ -63,6 +63,27 @@ sudo systemctl kill -s HUP minitun-server.service
 解析或校验失败时保留旧快照。被禁用、删除或凭据发生变化的客户端停止接收新流量，
 活动 relay 在优雅期限内排空，然后控制连接和空闲 Worker 断开。未变化客户端不会抖动。
 
+## TLS 接入保护
+
+公网 TLS listener 默认在创建 TLS 对象之前执行接入保护，控制连接和 Worker 共用预算：
+
+| 服务端选项 | 默认值 | 作用 |
+| --- | --- | --- |
+| `--max-pending-handshakes` | 128 | 全局未认证连接上限，范围 1–4096。 |
+| `--max-pending-handshakes-per-ip` | 32 | 每个来源 IP 的未认证连接上限，不得超过全局值。 |
+| `--max-handshakes-per-second` | 100 | listener 每秒接入速率，范围 1–100000；令牌桶可积累一秒突发量，被拒绝的 TCP 连接也消耗预算。 |
+| `--handshake-timeout` | 10 秒 | 从接入到 TLS 与应用认证完成的总期限，范围 1–300 秒。完成 TLS 不会重置期限或释放未认证配额。 |
+
+达到全局连接或速率预算时，listener 使用定时器等待，避免持续 accept/close 消耗 CPU。
+认证成功的控制连接与 Worker 释放未认证配额，继续按原来的 session/relay 配额运行。
+同一 IP 一分钟内 TLS 握手失败 5 次后，临时拒绝该 IP 一分钟；IPv4 与其 IPv6 映射地址
+共用来源配额。失败来源缓存最多保留 4096 项。TLS 错误日志全局每 5 秒最多一条，完整
+失败数量可从指标读取。
+
+上述选项是启动参数，修改后需重启服务端。多客户端共用 NAT 出口或批量建立 Worker 时，
+应按实际峰值调整每 IP 配额和接入速率。客户端策略中的 `connections_per_minute` 只约束
+隧道公开端口，TLS listener 的预算独立生效。
+
 ## 声明式资源配置
 
 本地配置使用 `format_version: 1`，包含 `servers` 和 `tunnels`：

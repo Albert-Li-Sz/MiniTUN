@@ -61,6 +61,7 @@
 #include <minitun/server/client_policy.hpp>
 #include <minitun/server/connection_quota.hpp>
 #include <minitun/server/session_registry.hpp>
+#include <minitun/server/tls_admission.hpp>
 #include <minitun/server/tunnel_registry.hpp>
 #include <minitun/server/worker_pool.hpp>
 
@@ -114,6 +115,14 @@ inline constexpr std::chrono::hours kMaximumRelayTimeout{24};
         options.graceful_shutdown_timeout > kMaxConfiguredTimeout) {
         return common::Result<void>::failure(common::ErrorCode::invalid_argument,
                                              "server timeout configuration is invalid");
+    }
+    if (options.max_pending_handshakes == 0U || options.max_pending_handshakes > 4'096U ||
+        options.max_pending_handshakes_per_ip == 0U ||
+        options.max_pending_handshakes_per_ip > options.max_pending_handshakes ||
+        options.max_handshakes_per_second == 0U ||
+        options.max_handshakes_per_second > 100'000U) {
+        return common::Result<void>::failure(common::ErrorCode::invalid_argument,
+                                             "TLS admission limits are invalid");
     }
     if (options.min_idle_workers > options.max_idle_workers || options.max_idle_workers > 128U) {
         return common::Result<void>::failure(common::ErrorCode::invalid_argument,
@@ -493,6 +502,11 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
             .pending_connections = pending_connection_count_.load(std::memory_order_relaxed),
             .connections_total = connections_total_.load(std::memory_order_relaxed),
             .tls_resumptions_total = tls_resumptions_total_.load(std::memory_order_relaxed),
+            .pending_handshakes = pending_handshakes_.load(std::memory_order_relaxed),
+            .tls_handshake_failures_total =
+                tls_handshake_failures_total_.load(std::memory_order_relaxed),
+            .tls_admission_rejections_total =
+                tls_admission_rejections_total_.load(std::memory_order_relaxed),
             .authentication_success_total =
                 authentication_success_total_.load(std::memory_order_relaxed),
             .authentication_failure_total =
@@ -680,14 +694,15 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
 
     class ControlSession final : public std::enable_shared_from_this<ControlSession> {
       public:
-        ControlSession(asio::ip::tcp::socket socket, std::shared_ptr<Impl> server)
+        ControlSession(asio::ip::tcp::socket socket, std::shared_ptr<Impl> server,
+                       std::string remote_endpoint)
             : server_(std::move(server)), tls_context_owner_(server_->tls_context_),
               stream_(std::move(socket), *tls_context_owner_),
               operation_timer_(stream_.get_executor()), heartbeat_timer_(stream_.get_executor()),
-              reload_drain_timer_(stream_.get_executor()) {
-            asio::error_code endpoint_error;
-            const auto endpoint = stream_.lowest_layer().remote_endpoint(endpoint_error);
-            remote_endpoint_ = endpoint_error ? std::string{} : endpoint.address().to_string();
+              reload_drain_timer_(stream_.get_executor()),
+              remote_endpoint_(std::move(remote_endpoint)),
+              authentication_deadline_(std::chrono::steady_clock::now() +
+                                       server_->options_.handshake_timeout) {
             auto connection_id = common::Id::generate(common::IdKind::connection);
             if (connection_id) {
                 connection_id_ = connection_id->str();
@@ -819,6 +834,7 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
                 return;
             }
             cleanup_complete_ = true;
+            release_admission_on_control_strand();
             if (worker_registered_) {
                 server_->worker_pool_.remove(worker_id_);
                 worker_registered_ = false;
@@ -835,6 +851,21 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
         }
 
       private:
+        void release_admission_on_control_strand() {
+            if (admission_pending_) {
+                admission_pending_ = false;
+                server_->tls_admission_.release(remote_endpoint_);
+                server_->pending_handshakes_.store(server_->tls_admission_.pending(),
+                                                   std::memory_order_relaxed);
+            }
+        }
+
+        void authentication_completed() {
+            authenticated_ = true;
+            auto self = shared_from_this();
+            asio::post(server_->strand_, [self] { self->release_admission_on_control_strand(); });
+        }
+
         void request_stop_on_executor(const bool graceful) {
             if (stop_requested_) {
                 return;
@@ -892,6 +923,7 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
                 co_return;
             }
             server_->authentication_success_total_.fetch_add(1U, std::memory_order_relaxed);
+            authentication_completed();
             common::log_info("remote client authenticated", audit_context());
             co_await heartbeat_loop();
         }
@@ -903,8 +935,9 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
                                              asio::redirect_error(asio::use_awaitable, error));
             cancel_operation_timeout();
             if (error) {
-                server_->errors_total_.fetch_add(1U, std::memory_order_relaxed);
-                common::log_warn("TLS handshake failed", log_context(common::ErrorCode::tls_error));
+                if (!stop_requested_ && server_->running_.load()) {
+                    server_->tls_handshake_failed(remote_endpoint_, connection_id_);
+                }
                 co_return false;
             }
             if (protocol::tls_session_reused(stream_)) {
@@ -1083,6 +1116,7 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
             if (!verified || !*verified) {
                 co_return;
             }
+            authentication_completed();
             client_id_ = hello->client_id;
             generation_ = hello->session_generation;
             worker_id_ = hello->worker_id;
@@ -1611,7 +1645,11 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
         }
 
         void arm_operation_timeout(const std::chrono::seconds timeout) {
-            operation_timer_.expires_after(timeout);
+            auto deadline = std::chrono::steady_clock::now() + timeout;
+            if (!authenticated_) {
+                deadline = std::min(deadline, authentication_deadline_);
+            }
+            operation_timer_.expires_at(deadline);
             auto weak = weak_from_this();
             operation_timer_.async_wait([weak](const asio::error_code& error) {
                 if (!error) {
@@ -1672,6 +1710,7 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
         std::string connection_id_;
         std::string client_id_;
         std::string worker_id_;
+        std::chrono::steady_clock::time_point authentication_deadline_;
         protocol::AuthenticationNonce challenge_nonce_{};
         std::uint64_t generation_{0U};
         protocol::CapabilitySet selected_capabilities_{0U};
@@ -1685,6 +1724,10 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
         bool run_finished_{false};
         bool finished_notified_{false};
         bool cleanup_complete_{false};
+        // admission_pending_ is only touched on the server control strand;
+        // authenticated_ belongs to the session strand and controls deadlines.
+        bool admission_pending_{true};
+        bool authenticated_{false};
         std::size_t pending_worker_request_count_{0U};
         bool worker_request_wakeup_{false};
     };
@@ -1886,6 +1929,9 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
           worker_request_retry_timer_(strand_), shutdown_timer_(strand_),
           listen_endpoint_(listen_endpoint), tls_context_(std::move(tls_context)),
           client_policies_(std::move(client_policies)), server_id_(std::move(server_id)),
+          tls_admission_(options_.max_pending_handshakes,
+                         options_.max_pending_handshakes_per_ip,
+                         options_.max_handshakes_per_second),
           session_registry_(options_.max_clients),
           worker_pool_(options_.max_idle_workers, options_.max_total_idle_workers),
           connection_quota_(options_.max_connections_per_client, options_.max_total_connections),
@@ -2186,6 +2232,7 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
             add_saturating(options_.max_total_idle_workers);
             add_saturating(options_.max_total_connections);
             add_saturating(options_.max_total_tunnels);
+            add_saturating(options_.max_pending_handshakes);
             if (required <= static_cast<std::uintmax_t>(limits.rlim_cur)) {
                 return;
             }
@@ -2205,28 +2252,69 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
             return;
         }
         auto self = shared_from_this();
+        const auto delay = tls_admission_.accept_delay(TlsAdmission::Clock::now());
+        if (delay > TlsAdmission::Clock::duration::zero()) {
+            accept_retry_timer_.expires_after(delay);
+            accept_retry_timer_.async_wait([self](const asio::error_code& error) {
+                if (!error) {
+                    self->accept_next();
+                }
+            });
+            return;
+        }
         acceptor_.async_accept(
             asio::make_strand(io_context_),
             asio::bind_executor(strand_, [self](const asio::error_code& error,
                                                 asio::ip::tcp::socket socket) mutable {
                 if (!error && self->running_.load()) {
-                    protocol::configure_tcp_transport(socket);
+                    const auto now = TlsAdmission::Clock::now();
+                    self->tls_admission_.record_accept(now);
                     self->accept_retry_policy_.reset();
-                    const std::size_t previous = self->active_connections_.fetch_add(1U);
                     self->connections_total_.fetch_add(1U, std::memory_order_relaxed);
                     const std::size_t connection_limit =
                         std::min(kMaxServerConnections, self->options_.max_clients +
                                                             self->options_.max_total_idle_workers +
                                                             self->options_.max_total_connections);
-                    if (previous < connection_limit) {
-                        auto session = std::make_shared<ControlSession>(std::move(socket), self);
-                        self->sessions_.emplace(session.get(), session);
-                        session->start();
-                    } else {
-                        self->active_connections_.fetch_sub(1U);
+                    asio::error_code endpoint_error;
+                    const auto endpoint = socket.remote_endpoint(endpoint_error);
+                    auto address = endpoint.address();
+                    if (address.is_v6() && address.to_v6().is_v4_mapped()) {
+                        const auto bytes = address.to_v6().to_bytes();
+                        address = asio::ip::address_v4{
+                            {bytes[12], bytes[13], bytes[14], bytes[15]}};
+                    }
+                    const std::string source = endpoint_error ? std::string{} : address.to_string();
+                    if (self->active_connections_.load() >= connection_limit) {
                         self->quota_rejections_total_.fetch_add(1U, std::memory_order_relaxed);
                         asio::error_code ignored;
                         socket.close(ignored);
+                    } else if (!self->tls_admission_.try_acquire(source, now)) {
+                        self->tls_admission_rejections_total_.fetch_add(1U,
+                                                                       std::memory_order_relaxed);
+                        asio::error_code ignored;
+                        socket.close(ignored);
+                    } else {
+                        std::shared_ptr<ControlSession> session;
+                        try {
+                            protocol::configure_tcp_transport(socket);
+                            session = std::make_shared<ControlSession>(std::move(socket), self,
+                                                                      source);
+                            self->sessions_.emplace(session.get(), session);
+                            self->active_connections_.fetch_add(1U);
+                            self->pending_handshakes_.store(self->tls_admission_.pending(),
+                                                           std::memory_order_relaxed);
+                            session->start();
+                        } catch (...) {
+                            if (session && self->sessions_.erase(session.get()) != 0U) {
+                                session->cleanup_on_control_strand();
+                            } else {
+                                self->tls_admission_.release(source);
+                                self->pending_handshakes_.store(self->tls_admission_.pending(),
+                                                               std::memory_order_relaxed);
+                            }
+                            self->handle_accept_failure(asio::error::no_memory);
+                            return;
+                        }
                     }
                 } else if (AcceptRetryPolicy::retryable(error) && self->running_.load()) {
                     self->handle_accept_failure(error);
@@ -2236,6 +2324,27 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
                     self->accept_next();
                 }
             }));
+    }
+
+    void tls_handshake_failed(std::string source, std::string connection_id) {
+        errors_total_.fetch_add(1U, std::memory_order_relaxed);
+        tls_handshake_failures_total_.fetch_add(1U, std::memory_order_relaxed);
+        auto self = shared_from_this();
+        asio::post(strand_, [self, source = std::move(source),
+                             connection_id = std::move(connection_id)] {
+            const auto suppressed =
+                self->tls_admission_.record_failure(source, TlsAdmission::Clock::now());
+            if (suppressed.has_value()) {
+                common::log_warn(
+                    "TLS handshake failed (suppressed " + std::to_string(*suppressed) +
+                        " similar errors; log interval 5s)",
+                    {.component = "server.control",
+                     .server_id = self->server_id_,
+                     .connection_id = connection_id,
+                     .remote_endpoint = source,
+                     .error_code = common::ErrorCode::tls_error});
+            }
+        });
     }
 
     void handle_accept_failure(const asio::error_code& error) {
@@ -2276,6 +2385,7 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
     std::string server_id_;
     protocol::NonceReplayCache nonce_cache_;
     protocol::AuthRateLimiter auth_rate_limiter_;
+    TlsAdmission tls_admission_;
     SessionRegistry session_registry_;
     WorkerPool worker_pool_;
     ConnectionQuota connection_quota_;
@@ -2295,6 +2405,9 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
     std::atomic<std::uint64_t> pending_connection_count_{0U};
     std::atomic<std::uint64_t> connections_total_{0U};
     std::atomic<std::uint64_t> tls_resumptions_total_{0U};
+    std::atomic<std::uint64_t> pending_handshakes_{0U};
+    std::atomic<std::uint64_t> tls_handshake_failures_total_{0U};
+    std::atomic<std::uint64_t> tls_admission_rejections_total_{0U};
     std::atomic<std::uint64_t> authentication_success_total_{0U};
     std::atomic<std::uint64_t> authentication_failure_total_{0U};
     std::atomic<std::uint64_t> registration_success_total_{0U};

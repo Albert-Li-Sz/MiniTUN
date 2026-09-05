@@ -73,6 +73,29 @@ or whose credentials changed stop receiving new traffic; active relays drain wit
 period, then the control connection and idle Workers disconnect. Unchanged clients do not
 churn.
 
+## TLS admission protection
+
+The public TLS listener applies admission protection before allocating TLS objects. Control
+connections and Workers share these budgets:
+
+| Server option | Default | Behavior |
+| --- | --- | --- |
+| `--max-pending-handshakes` | 128 | Global unauthenticated connection limit, range 1–4096. |
+| `--max-pending-handshakes-per-ip` | 32 | Unauthenticated connections per source IP; cannot exceed the global limit. |
+| `--max-handshakes-per-second` | 100 | Listener accepts per second, range 1–100000; the token bucket holds one second of burst capacity, and rejected TCP connections also consume tokens. |
+| `--handshake-timeout` | 10 seconds | Total time from admission through TLS and application authentication, range 1–300 seconds. Completing TLS does not reset this deadline or release the pending quota. |
+
+When the global pending or rate budget is exhausted, the listener waits on a timer to avoid
+an accept/close CPU loop. Authenticated control connections and Workers release their pending
+reservations and continue under the existing session/relay quotas. Five TLS handshake failures
+from one IP in a minute block that IP for a minute. IPv4 and its IPv6 mapped representation
+share the same source quota. The failure cache holds at most 4096 sources. TLS warnings are
+limited to one record every five seconds across all sources; metrics retain all failures.
+
+These are startup options and require a server restart. Adjust the per-IP limit and rate for
+clients sharing a NAT address or creating Workers in batches. Client policy
+`connections_per_minute` applies to public tunnel ports; the TLS listener budget is independent.
+
 ## Declarative resource configuration
 
 The local configuration uses `format_version: 1` and contains `servers` and `tunnels`:

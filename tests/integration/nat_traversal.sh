@@ -7,7 +7,7 @@
 # tests cannot observe this crossing, which is why this gate exists.
 #
 # Topology:
-#   mt-pub (server)  10.99.0.10/11
+#   mt-pub (server + Ethernet bridge)  10.99.0.10
 #   mt-nata (SNAT -> 10.99.0.2)  |  mt-natb (SNAT -> 10.99.0.3)
 #   mt-a (daemon) 10.0.1.2/24     |  mt-b (connector) 10.0.2.2/24
 #
@@ -49,6 +49,19 @@ echo_pid=
 p2p_pid=
 
 cleanup() {
+    local result=$?
+    if ((result != 0)); then
+        for log in server minitund p2p; do
+            if [[ -f "$runtime_dir/$log.log" ]]; then
+                printf '\n--- %s.log ---\n' "$log" >&2
+                tail -n 160 "$runtime_dir/$log.log" >&2
+            fi
+        done
+        for ns in "${ns_list[@]}"; do
+            ip -n "mt-$ns" route show >&2 2>/dev/null || true
+            ip -n "mt-$ns" neigh show >&2 2>/dev/null || true
+        done
+    fi
     for process_id in "$p2p_pid" "$daemon_pid" "$server_pid" "$echo_pid"; do
         if [[ -n "$process_id" ]] && kill -0 "$process_id" 2>/dev/null; then
             kill -TERM "$process_id" 2>/dev/null || true
@@ -86,10 +99,17 @@ ip link set veth-a netns mt-a
 ip link set veth-b-nat netns mt-natb
 ip link set veth-b netns mt-b
 
-ip netns exec mt-pub ip addr add 10.99.0.10/24 dev veth-puba
-ip netns exec mt-pub ip addr add 10.99.0.11/24 dev veth-pubb
+# Both NAT uplinks must share an Ethernet segment. Assigning the same /24 to
+# two isolated veth interfaces creates ambiguous routes and no ARP path between
+# the NATs, so neither connector traffic nor simultaneous open can cross them.
+ip netns exec mt-pub ip link add br-public type bridge
+ip netns exec mt-pub ip link set veth-puba master br-public
+ip netns exec mt-pub ip link set veth-pubb master br-public
+ip netns exec mt-pub ip addr add 10.99.0.10/24 dev br-public
 ip netns exec mt-pub ip link set veth-puba up
 ip netns exec mt-pub ip link set veth-pubb up
+ip netns exec mt-pub ip link set br-public up
+ip netns exec mt-pub ip link set lo up
 
 ip netns exec mt-nata ip addr add 10.99.0.2/24 dev veth-pub-a
 ip netns exec mt-nata ip addr add 10.0.1.1/24 dev veth-a-nat

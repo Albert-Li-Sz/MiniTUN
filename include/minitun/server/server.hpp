@@ -26,6 +26,9 @@ struct ServerOptions final {
     std::size_t max_total_tunnels{10'000U};
     std::size_t max_connections_per_client{10'000U};
     std::size_t max_total_connections{50'000U};
+    std::size_t max_pending_handshakes{128U};
+    std::size_t max_pending_handshakes_per_ip{32U};
+    std::size_t max_handshakes_per_second{100U};
     std::chrono::seconds handshake_timeout{10};
     std::chrono::seconds heartbeat_interval{5};
     std::chrono::seconds heartbeat_timeout{15};
@@ -53,6 +56,9 @@ struct ServerMetrics final {
     std::uint64_t pending_connections{0U};
     std::uint64_t connections_total{0U};
     std::uint64_t tls_resumptions_total{0U};
+    std::uint64_t pending_handshakes{0U};
+    std::uint64_t tls_handshake_failures_total{0U};
+    std::uint64_t tls_admission_rejections_total{0U};
     std::uint64_t authentication_success_total{0U};
     std::uint64_t authentication_failure_total{0U};
     std::uint64_t registration_success_total{0U};

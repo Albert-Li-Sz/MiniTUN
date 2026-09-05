@@ -6,6 +6,21 @@ All notable changes to MiniTun are recorded in this file. This document is based
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) structure, and project versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] - 2026-09-05
+
+### Fixed
+
+- The TLS listener limits accept rate and global/per-IP unauthenticated connections before
+  allocating TLS objects. Timer backoff and temporary blocks for repeated source failures
+  protect the server from scanning and connection floods.
+- TLS and application authentication share one absolute deadline; successful authentication
+  and connection cleanup release the pending quota.
+- Repeated TLS warnings are aggregated with dedicated admission metrics. Regression coverage
+  exercises real TLS/plaintext floods, slow connections, quota release, and shutdown.
+- Fixes the Linux NAT integration topology by bridging both NAT uplinks onto one public
+  segment, avoiding ambiguous routes and unreachable ARP on isolated same-subnet interfaces.
+  Failures now include process logs, routes, and neighbor tables.
+
 ## [1.2.0] - 2026-08-18
 
 ### Added

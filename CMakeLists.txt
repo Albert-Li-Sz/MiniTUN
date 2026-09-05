@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.22)
 
 project(
     MiniTun
-    VERSION 1.2.0
+    VERSION 1.2.1
     DESCRIPTION "A minimal-footprint, self-hosted multi-transport reverse tunnel"
     HOMEPAGE_URL "https://github.com/Albert-Li-Sz/MiniTUN"
     LANGUAGES C CXX
@@ -325,6 +325,7 @@ minitun_apply_lto(minitun_daemon)
 
 add_library(minitun_server_core STATIC
     src/server/accept_recovery.cpp
+    src/server/tls_admission.cpp
     src/server/client_policy.cpp
     src/server/connection_quota.cpp
     src/server/policy_management.cpp

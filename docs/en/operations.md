@@ -47,6 +47,18 @@ used.
 All counters reset to zero after a process restart. Persistent business state should be
 queried via local IPC/SDK, never reconstructed from metric counters.
 
+TLS admission protection exposes three metrics without source labels:
+
+- `minitun_pending_handshakes`: connections performing TLS or waiting for application authentication;
+- `minitun_tls_handshake_failures_total`: all TLS handshake failures, including timeouts and excluding server-initiated shutdown;
+- `minitun_tls_admission_rejections_total`: connections rejected before TLS allocation by the per-source concurrency quota or temporary block.
+
+Exhausting the rate or global pending budget pauses accept; queued connections have not yet
+entered the accept/rejection counters. During a `tls_error` flood, reduce the handshake rate
+and pending limits using [TLS admission configuration](configuration.md#tls-admission-protection).
+TLS warnings emit at most once every five seconds and include the number of preceding similar
+records suppressed. Use the failure metric rather than counting log lines.
+
 ## Audit logging
 
 The following events are recorded under the `server.audit` or `daemon.audit` component:

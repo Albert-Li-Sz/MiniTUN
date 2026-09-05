@@ -110,6 +110,23 @@ TEST(ServerOptionsTest, RejectsEveryIndependentResourceAndTimeoutLimit) {
         options.*member = value;
         expect_invalid(std::move(options));
     };
+    for (const auto member : {&ServerOptions::max_pending_handshakes,
+                              &ServerOptions::max_pending_handshakes_per_ip,
+                              &ServerOptions::max_handshakes_per_second}) {
+        ServerOptions options;
+        options.*member = 0U;
+        expect_invalid(options);
+        options.*member = 100'001U;
+        expect_invalid(options);
+    }
+    {
+        ServerOptions options;
+        options.max_pending_handshakes = 4'097U;
+        expect_invalid(options);
+        options.max_pending_handshakes = 16U;
+        options.max_pending_handshakes_per_ip = 17U;
+        expect_invalid(options);
+    }
     expect_bad_timeout(&ServerOptions::handshake_timeout, std::chrono::seconds::zero());
     expect_bad_timeout(&ServerOptions::handshake_timeout, std::chrono::seconds{301});
     expect_bad_timeout(&ServerOptions::heartbeat_interval, std::chrono::seconds::zero());

@@ -8,6 +8,15 @@ title: 变更日志
 [CHANGELOG.md](https://github.com/Albert-Li-Sz/MiniTUN/blob/main/CHANGELOG.md) 为准。
 这里保留官网常用的近期版本摘要，方便从文档站快速了解最新能力。
 
+## [1.2.1] - 2026-09-05
+
+- TLS listener 在分配 TLS 对象前限制接入速率、全局及每 IP 未认证连接数；耗尽预算时
+  定时等待，同一来源反复握手失败后临时拒绝。
+- TLS 与应用认证共用总超时期限，认证或清理完成后释放未认证配额。
+- 重复 TLS 错误日志每 5 秒最多一条，新增待认证连接、TLS 失败与接入拒绝指标。
+- 增加真实 TLS/明文洪泛、慢连接、配额释放、心跳和关闭回归测试。
+- 修复 Linux NAT 穿透测试的公网网桥拓扑，并在失败时输出网络与进程诊断。
+
 ## [1.2.0] - 2026-08-18
 
 - P2P NAT 打洞补齐 `worker_observed_endpoint` capability，并新增 netns/iptables 双 EIM

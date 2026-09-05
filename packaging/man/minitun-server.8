@@ -66,8 +66,19 @@ certificate_sha256 时必需。
 全局空闲 Worker 上限；默认 128。
 .TP
 .BI --handshake-timeout " seconds"
-TLS 与认证期限；
+从接入到 TLS 与应用认证完成的总期限；完成 TLS 不会重置期限。
 默认 10 秒。
+.TP
+.BI --max-pending-handshakes " count"
+全局未认证连接上限，创建 TLS 对象前执行；范围 1 到 4096，默认 128。
+.TP
+.BI --max-pending-handshakes-per-ip " count"
+每个来源 IP 的未认证连接上限，不能超过全局值；默认 32。
+.TP
+.BI --max-handshakes-per-second " count"
+TLS listener 每秒接入速率，令牌桶最多积累一秒突发量；范围 1 到 100000，默认 100。
+被拒绝的 TCP 连接也消耗速率预算。预算耗尽时等待，避免 accept/close 空转。
+同一 IP 一分钟内 TLS 失败 5 次后临时拒绝一分钟；TLS 错误日志每 5 秒最多一条。
 .TP
 .BI --heartbeat-interval " seconds"
 心跳间隔；默认 5 秒。
