@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <list>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -59,11 +60,18 @@ class NonceReplayCache final {
     [[nodiscard]] std::size_t size() const;
 
   private:
-    void remove_expired(std::chrono::steady_clock::time_point now);
+    /// Retained in insertion order. With a fixed retention window this is also
+    /// expiry order, so expired entries are popped from the front in O(1)
+    /// instead of scanning the whole cache on every authentication.
+    struct Entry final {
+        std::string key;
+        std::chrono::steady_clock::time_point expires_at;
+    };
 
     NonceReplayCacheOptions options_;
     mutable std::mutex mutex_;
-    std::unordered_map<std::string, std::chrono::steady_clock::time_point> entries_;
+    std::list<Entry> order_;
+    std::unordered_map<std::string, std::list<Entry>::iterator> entries_;
 };
 
 [[nodiscard]] common::Result<bool> verify_and_consume_authentication_data(

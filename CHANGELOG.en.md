@@ -6,6 +6,43 @@ All notable changes to MiniTun are recorded in this file. This document is based
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) structure, and project versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.2] - 2026-09-09
+
+### Added
+
+- The server validates its memory budget at startup: it compares
+  `--max-total-connections` against the visible memory ceiling (cgroup v2/v1,
+  `RLIMIT_AS`, then `RLIMIT_DATA`) and logs a `resource_exhausted` warning when the estimate
+  exceeds it, so a default connection limit that cannot fit systemd `MemoryMax` is reported
+  instead of surfacing as an OOM kill.
+- New `integration.memory-budget` test tightens the memory ceiling with `setrlimit` and
+  asserts that warning.
+
+### Security
+
+- The TLS policy is pinned explicitly instead of following the linked OpenSSL defaults:
+  TLS 1.2 keeps only ECDHE with AEAD ciphers (no CBC, no static RSA key exchange) and
+  TLS 1.3 keeps only its three AEAD suites.
+- Authenticated admin endpoints validate `Host`: only the listener address, `localhost`,
+  `127.0.0.1`, or `[::1]` are accepted; anything else returns `421 Misdirected Request`,
+  closing the DNS-rebinding path.
+
+### Fixed
+
+- The authentication replay cache now expires entries in insertion order in O(1) instead of
+  scanning up to 16384 records on every authentication.
+
+### Changed
+
+- `libminitun-remote-protocol.so.1` gains a symbol baseline
+  (`abi/minitun-remote-protocol-1.symbols`); the ABI gate now compares symbol prefixes
+  instead of asserting "15 symbols", so an added, removed, or re-signed method fails.
+- Static musl builds move OpenSSL from end-of-life 3.0.16 to the 3.5 LTS branch (3.5.8).
+- `dev`/`release` builds fetch Asio from the GitHub archive (same headers, one host for every
+  dependency).
+- `minitun-remote-protocol.pc` uses the `${pcfiledir}`-relative prefix like the client file.
+- Removed the truncated, unreferenced `sqlite.zip` and the stray local `daemon.pid`.
+
 ## [1.2.1] - 2026-09-05
 
 ### Fixed

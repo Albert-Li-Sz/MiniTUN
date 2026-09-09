@@ -6,6 +6,36 @@ MiniTun 的所有重要变更都会记录在此文件中。本文档以
 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 的结构为基础，项目
 版本遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.2.2] - 2026-09-09
+
+### 新增
+
+- 服务端启动时校验内存预算：比较 `--max-total-connections` 与可见内存天花板
+  （cgroup v2/v1、`RLIMIT_AS`、`RLIMIT_DATA`），估算值超出时输出 `resource_exhausted`
+  警告，避免默认连接上限与 systemd `MemoryMax` 冲突后表现为 OOM kill。
+- 新增 `integration.memory-budget` 测试，用 `setrlimit` 收紧内存上限并断言该警告。
+
+### 安全
+
+- TLS 策略显式固定，不再跟随所链接 OpenSSL 的默认值：TLS 1.2 只保留 ECDHE 与 AEAD
+  套件（排除 CBC 与静态 RSA 密钥交换），TLS 1.3 只保留三种 AEAD 套件。
+- 需要认证的管理端点校验 `Host`：只接受监听地址、`localhost`、`127.0.0.1` 或 `[::1]`，
+  其余返回 `421 Misdirected Request`，阻断 DNS rebinding。
+
+### 修复
+
+- 认证重放缓存改为按插入顺序 O(1) 过期，不再在每次认证时全量扫描最多 16384 条记录。
+
+### 变更
+
+- `libminitun-remote-protocol.so.1` 增加符号基线
+  （`abi/minitun-remote-protocol-1.symbols`），ABI 门禁由"符号数量等于 15"改为按符号
+  前缀比对，新增/删除/改签名方法都会失败。
+- 静态 musl 构建的 OpenSSL 从已停止维护的 3.0.16 升级到 3.5 LTS（3.5.8）。
+- `dev`/`release` 构建的 Asio 依赖改用 GitHub 归档（同一份头文件，与其余依赖统一来源）。
+- 统一 `minitun-remote-protocol.pc` 的 prefix 写法为 `${pcfiledir}` 相对路径。
+- 移除仓库中损坏且无引用的 `sqlite.zip` 与本地残留 `daemon.pid`。
+
 ## [1.2.1] - 2026-09-05
 
 ### 修复

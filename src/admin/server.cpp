@@ -101,6 +101,7 @@ constexpr std::size_t kMaximumTokenBytes = 4U * 1024U;
 struct Request final {
     std::string method;
     std::string path;
+    std::optional<std::string> host;
     std::optional<std::string> authorization;
     std::size_t content_length{0U};
 
@@ -110,6 +111,43 @@ struct Request final {
         }
     }
 };
+
+/// Reduces a Host header to its authority without the optional port so it can
+/// be compared against the address the client actually connected to. Bracketed
+/// IPv6 literals keep their brackets.
+[[nodiscard]] std::string normalized_host_authority(const std::string_view value) {
+    std::string authority{value};
+    if (authority.empty()) {
+        return authority;
+    }
+    if (authority.front() == '[') {
+        const auto closing = authority.find(']');
+        return closing == std::string::npos ? authority : authority.substr(0U, closing + 1U);
+    }
+    const auto colon = authority.rfind(':');
+    if (colon != std::string::npos && authority.find(':') == colon) {
+        authority.resize(colon);
+    }
+    return authority;
+}
+
+/// Accepts the listener's own address plus the loopback names. A request that
+/// names a different host cannot have been addressed to this listener, which is
+/// the DNS-rebinding case a browser would otherwise reach with a stored token.
+[[nodiscard]] bool host_header_matches(const std::string_view host,
+                                       const std::string_view listener_address) {
+    if (host.empty()) {
+        return false;
+    }
+    const std::string authority = lower_ascii(normalized_host_authority(host));
+    if (authority.empty()) {
+        return false;
+    }
+    if (authority == "localhost" || authority == "127.0.0.1" || authority == "[::1]") {
+        return true;
+    }
+    return authority == lower_ascii(std::string{listener_address});
+}
 
 [[nodiscard]] Result<Request> parse_request(const std::string_view text) {
     const auto header_end = text.find("\r\n\r\n");
@@ -132,7 +170,7 @@ struct Request final {
     }
     Request request{std::string{first.substr(0U, first_space)},
                     std::string{first.substr(first_space + 1U, second_space - first_space - 1U)},
-                    std::nullopt, 0U};
+                    std::nullopt, std::nullopt, 0U};
     if (request.path.empty() || request.path.front() != '/' || request.path.find('?') != std::string::npos) {
         return Error{ErrorCode::invalid_argument, "admin HTTP request target is invalid"};
     }
@@ -175,6 +213,14 @@ struct Request final {
             request.content_length = parsed;
         } else if (name == "transfer-encoding") {
             return Error{ErrorCode::invalid_argument, "admin HTTP transfer encoding is forbidden"};
+        } else if (name == "host") {
+            if (request.host.has_value()) {
+                return Error{ErrorCode::invalid_argument, "duplicate admin host header"};
+            }
+            if (value.empty()) {
+                return Error{ErrorCode::invalid_argument, "admin HTTP host header is invalid"};
+            }
+            request.host = std::string{value};
         } else if (name == "authorization") {
             if (request.authorization.has_value()) {
                 return Error{ErrorCode::invalid_argument,
@@ -233,6 +279,7 @@ Result<ParsedHttpRequest> parse_http_request(const std::string_view text) {
     ParsedHttpRequest result;
     result.method = std::move(parsed->method);
     result.path = std::move(parsed->path);
+    result.host = std::move(parsed->host);
     result.has_authorization = parsed->authorization.has_value();
     result.content_length = parsed->content_length;
     return result;
@@ -246,7 +293,9 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
         : strand_(asio::make_strand(io_context)), acceptor_(strand_),
           endpoint_(std::move(endpoint)),
           options_(std::move(options)), providers_(std::move(providers)), token_(std::move(token)),
-          authentication_required_(authentication_required) {}
+          authentication_required_(authentication_required) {
+        listener_address_ = endpoint_.address().to_string();
+    }
 
     [[nodiscard]] Result<void> start() {
         if (running_.exchange(true)) {
@@ -330,6 +379,12 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
                 request->content_length != 0U) {
                 write_response(response(400U, "Bad Request", "text/plain",
                                         "GET requests cannot carry a body\n", false));
+                return;
+            }
+            if (owner_->authentication_required_ && request->host.has_value() &&
+                !host_header_matches(*request->host, owner_->listener_address_)) {
+                write_response(response(421U, "Misdirected Request", "text/plain",
+                                        "request host is not this listener\n", false));
                 return;
             }
             if (request->content_length > owner_->options_.max_body_bytes) {
@@ -547,6 +602,7 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
     asio::strand<asio::io_context::executor_type> strand_;
     tcp::acceptor acceptor_;
     tcp::endpoint endpoint_;
+    std::string listener_address_;
     ServerOptions options_;
     Providers providers_;
     std::shared_ptr<const common::SecureString> token_;

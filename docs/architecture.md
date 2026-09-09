@@ -146,6 +146,11 @@ server 在完整校验后原子替换 `clients.json` 快照。每个 `client_id`
 有界。策略变更会立即移除该 client 的 listener 和空闲容量，已分配 relay 最多排空
 `--shutdown-timeout`。
 
+TLS 策略在启动时显式固定，不依赖所链接 OpenSSL 的默认值：最低版本 TLS 1.2，TLS 1.2
+只保留 ECDHE 与 AEAD 套件（排除 CBC 与静态 RSA 密钥交换），TLS 1.3 只保留
+`TLS_AES_256_GCM_SHA384`、`TLS_CHACHA20_POLY1305_SHA256`、`TLS_AES_128_GCM_SHA256`。
+压缩与重协商关闭，服务端会话缓存 300 秒并下发 2 个会话票据以降低 Worker 重连成本。
+
 ## Worker、transport mode 与 backpressure
 
 daemon 按 server 和 generation 隔离 Worker Pool，在 server 通告的最小/最大范围内自适应

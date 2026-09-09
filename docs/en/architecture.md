@@ -169,6 +169,13 @@ uniform external error; the replay cache and failure rate limiting are bounded. 
 changes immediately remove that client's listener and idle capacity; allocated relays drain
 for at most `--shutdown-timeout`.
 
+The TLS policy is pinned at startup instead of following the linked OpenSSL defaults:
+minimum TLS 1.2; TLS 1.2 keeps only ECDHE with AEAD ciphers (no CBC, no static RSA key
+exchange); TLS 1.3 keeps only `TLS_AES_256_GCM_SHA384`,
+`TLS_CHACHA20_POLY1305_SHA256`, and `TLS_AES_128_GCM_SHA256`. Compression and
+renegotiation are disabled, and the server session cache holds sessions for 300 seconds and
+issues two session tickets to cut Worker reconnection cost.
+
 ## Workers, transport mode and backpressure
 
 The daemon isolates Worker Pools by server and generation, replenishing them adaptively

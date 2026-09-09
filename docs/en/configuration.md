@@ -96,6 +96,27 @@ These are startup options and require a server restart. Adjust the per-IP limit 
 clients sharing a NAT address or creating Workers in batches. Client policy
 `connections_per_minute` applies to public tunnel ports; the TLS listener budget is independent.
 
+## Memory budget and connection limits
+
+Every relay reserves two fixed 16 KiB data-plane buffers, so `--max-total-connections`
+directly sets the relay memory floor: the default 50000 implies roughly 1.6 GiB, well above
+the `MemoryMax=512M` in `packaging/systemd/minitun-server.service`. At startup the server
+compares its configured ceiling against the visible memory ceiling (cgroup v2/v1 limit
+first, then `RLIMIT_AS`, then `RLIMIT_DATA`) and logs one `resource_exhausted` warning when
+the estimate exceeds it, naming the estimate, the connection limit, and the memory limit.
+
+The warning never blocks startup. Pick one of the two options for the deployment:
+
+```bash
+# Tighten the connection limit to fit a ~512 MiB budget
+minitun-server --max-total-connections 12000 ...
+
+# Or raise the service memory ceiling with a drop-in
+sudo systemctl edit minitun-server.service   # add [Service] MemoryMax=2G
+```
+
+With no visible memory ceiling (bare process, no rlimit) the warning is not emitted.
+
 ## Declarative resource configuration
 
 The local configuration uses `format_version: 1` and contains `servers` and `tunnels`:

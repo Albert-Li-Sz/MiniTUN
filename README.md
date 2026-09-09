@@ -9,7 +9,7 @@
 
 > 面向 Linux 的资源占用最小、自托管多传输内网穿透工具。
 
-> **当前版本：** [`v1.2.1`](https://github.com/Albert-Li-Sz/MiniTUN/releases/tag/v1.2.1)
+> **当前版本：** [`v1.2.2`](https://github.com/Albert-Li-Sz/MiniTUN/releases/tag/v1.2.2)
 > 增加 TLS 握手前接入限速、全局和每 IP 未认证配额、失败来源临时封禁、认证总超时及
 > TLS 错误日志聚合，降低扫描与连接洪泛造成的资源消耗。默认接入速率为每秒 100 个、
 > 未认证连接全局 128 个及单 IP 32 个，可通过[服务端配置](docs/configuration.md#tls-接入保护)

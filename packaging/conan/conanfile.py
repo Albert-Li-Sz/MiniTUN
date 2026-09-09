@@ -5,7 +5,7 @@ from conan.tools.files import apply_conandata_patches, copy, export_conandata_pa
 
 class MiniTunConan(ConanFile):
     name = "minitun"
-    version = "1.2.1"
+    version = "1.2.2"
     license = "MIT"
     url = "https://github.com/Albert-Li-Sz/MiniTUN"
     description = "A minimal-footprint, self-hosted multi-transport reverse tunnel"
@@ -15,7 +15,7 @@ class MiniTunConan(ConanFile):
     exports_sources = "CMakeLists.txt", "cmake/*", "include/*", "src/*", "apps/*", "abi/*"
 
     def requirements(self):
-        self.requires("openssl/3.0.16")
+        self.requires("openssl/3.5.8")
         self.requires("sqlite3/3.50.3")
 
     def layout(self):

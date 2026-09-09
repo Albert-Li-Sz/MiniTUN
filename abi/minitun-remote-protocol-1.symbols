@@ -1,0 +1,25 @@
+# Stable export baseline for libminitun-remote-protocol.so.1.
+#
+# One entry per public API symbol, written as a mangled-name prefix. The prefix
+# pins the namespace, class, method name, and everything up to the first
+# parameter, while deliberately leaving the trailing standard-library type
+# mangling (libstdc++ vs libc++ spellings of std::string_view, std::variant,
+# std::span, std::array) out of the comparison. Adding, removing, or re-signing
+# a public method changes this list and fails sdk.remote-protocol-abi.
+#
+# The library is a C++20 ABI surface: consumers must build with a compatible
+# standard library. See docs/sdk.md.
+
+_ZN7minitun6remote5Codec10make_frame
+_ZN7minitun6remote5Codec12encode_frame
+_ZN7minitun6remote5Codec14decode_message
+_ZN7minitun6remote5Codec26worker_authentication_data
+_ZN7minitun6remote5Codec27control_authentication_data
+_ZN7minitun6remote7Decoder4feed
+_ZN7minitun6remote7Decoder5reset
+_ZN7minitun6remote7DecoderC1E
+_ZN7minitun6remote7DecoderC2E
+_ZN7minitun6remote7DecoderD1E
+_ZN7minitun6remote7DecoderD2E
+_ZN7minitun6remote7DecoderaSE
+_ZNK7minitun6remote7Decoder6finish

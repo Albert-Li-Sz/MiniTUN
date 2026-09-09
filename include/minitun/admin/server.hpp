@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -52,6 +53,9 @@ struct Providers final {
 struct ParsedHttpRequest final {
     std::string method;
     std::string path;
+    /// Raw Host header value when present. Authenticated listeners reject a
+    /// value that does not name the address the client connected to.
+    std::optional<std::string> host;
     bool has_authorization{false};
     std::size_t content_length{0U};
 };

@@ -25,6 +25,12 @@ use `Authorization: Bearer <token>`. The admin endpoint itself does not provide 
 non-loopback mode is only for trusted management networks, or behind a reverse proxy with
 TLS and access control enabled.
 
+An authenticated listener also requires `Host` to name the listener address itself,
+`localhost`, or `127.0.0.1`/`[::1]`; any other `Host` returns `421 Misdirected Request`.
+That closes the DNS-rebinding case where a browser resolves an attacker domain to the admin
+port and sends a mismatched `Host`. Loopback listeners without authentication skip the check
+so raw TCP probes keep working.
+
 The HTTP implementation only accepts the listed methods and paths, and limits header/body
 sizes, concurrent connections and timeouts. `HEAD` returns the same status and headers as
 the corresponding `GET`, but no body.

@@ -4,6 +4,7 @@
 #include <array>
 #include <bit>
 #include <cstring>
+#include <iterator>
 #include <limits>
 #include <span>
 #include <utility>
@@ -240,7 +241,12 @@ NonceReplayCache::consume(const std::string_view client_id, const Authentication
             "authentication replay client ID is invalid");
     }
     std::scoped_lock lock{mutex_};
-    remove_expired(now);
+    // Entries are appended in insertion order with a fixed retention window, so
+    // the front of the list always holds the earliest expiry.
+    while (!order_.empty() && order_.front().expires_at <= now) {
+        entries_.erase(order_.front().key);
+        order_.pop_front();
+    }
     const std::string key = replay_key(client_id, nonce);
     if (entries_.contains(key)) {
         return false;
@@ -250,23 +256,14 @@ NonceReplayCache::consume(const std::string_view client_id, const Authentication
             common::ErrorCode::resource_exhausted,
             "authentication replay cache reached its configured limit");
     }
-    entries_.emplace(key, now + options_.retention);
+    order_.push_back(Entry{key, now + options_.retention});
+    entries_.emplace(key, std::prev(order_.end()));
     return true;
 }
 
 std::size_t NonceReplayCache::size() const {
     std::scoped_lock lock{mutex_};
     return entries_.size();
-}
-
-void NonceReplayCache::remove_expired(const std::chrono::steady_clock::time_point now) {
-    for (auto iterator = entries_.begin(); iterator != entries_.end();) {
-        if (iterator->second <= now) {
-            iterator = entries_.erase(iterator);
-        } else {
-            ++iterator;
-        }
-    }
 }
 
 common::Result<bool> verify_and_consume_authentication_data(

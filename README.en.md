@@ -10,7 +10,7 @@
 > A minimal-footprint, self-hosted, multi-transport intranet penetration (reverse tunnel)
 > tool for Linux.
 
-> **Current version:** [`v1.2.1`](https://github.com/Albert-Li-Sz/MiniTUN/releases/tag/v1.2.1)
+> **Current version:** [`v1.2.2`](https://github.com/Albert-Li-Sz/MiniTUN/releases/tag/v1.2.2)
 > Adds admission pacing before TLS, global/per-IP unauthenticated quotas, temporary blocks
 > for repeated TLS failures, an authentication deadline, and aggregated TLS warnings to
 > reduce resource consumption from scans and connection floods. Defaults allow 100 accepts/s,

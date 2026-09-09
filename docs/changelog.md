@@ -8,6 +8,17 @@ title: 变更日志
 [CHANGELOG.md](https://github.com/Albert-Li-Sz/MiniTUN/blob/main/CHANGELOG.md) 为准。
 这里保留官网常用的近期版本摘要，方便从文档站快速了解最新能力。
 
+## [1.2.2] - 2026-09-09
+
+- 服务端启动时比较 `--max-total-connections` 与可见内存天花板，默认值放不下时输出警告，
+  不再让 OOM kill 来暴露这个冲突。
+- TLS 套件策略显式固定：TLS 1.2 仅 ECDHE+AEAD，TLS 1.3 仅 AEAD 套件。
+- 需要认证的管理端点拒绝不指向监听地址的 `Host`（`421 Misdirected Request`），阻断
+  DNS rebinding。
+- 认证重放缓存改为 O(1) 过期，不再在每次认证时全量扫描。
+- Remote Protocol SDK 的 ABI 门禁由符号数量改为符号基线比对。
+- 静态 musl 构建升级到 OpenSSL 3.5 LTS；仓库移除损坏的 `sqlite.zip`。
+
 ## [1.2.1] - 2026-09-05
 
 - TLS listener 在分配 TLS 对象前限制接入速率、全局及每 IP 未认证连接数；耗尽预算时

@@ -135,6 +135,7 @@ add_test(NAME sdk.remote-protocol-abi
     COMMAND "${CMAKE_COMMAND}"
         "-DMINITUN_LIBRARY=$<TARGET_FILE:minitun_remote_protocol>"
         "-DMINITUN_NM=${CMAKE_NM}"
+        "-DMINITUN_BASELINE=${CMAKE_SOURCE_DIR}/abi/minitun-remote-protocol-1.symbols"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/integration/remote_protocol_abi.cmake"
 )
 set_tests_properties(sdk.remote-protocol-abi PROPERTIES LABELS "sdk;remote;abi")
@@ -422,6 +423,18 @@ if(UNIX)
         TIMEOUT 90
         PASS_REGULAR_EXPRESSION "extended transport integration passed"
         RUN_SERIAL TRUE
+    )
+
+    add_test(NAME integration.memory-budget
+        COMMAND
+            "${CMAKE_CURRENT_SOURCE_DIR}/integration/memory_budget.sh"
+            $<TARGET_FILE:minitun-server>
+    )
+    set_tests_properties(integration.memory-budget PROPERTIES
+        LABELS "integration;e2e;tls;resource"
+        TIMEOUT 30
+        PASS_REGULAR_EXPRESSION "memory budget integration passed"
+        SKIP_RETURN_CODE 77
     )
 
     add_test(NAME integration.nat-traversal

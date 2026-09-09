@@ -28,9 +28,14 @@ function(minitun_setup_asio)
             )
         endif()
     else()
+        # The GitHub archive is used instead of the SourceForge release tarball:
+        # same headers, but one host for every dependency and a stable,
+        # checksum-pinned URL. Asio tags replace dots with dashes (1.38.2 ->
+        # asio-1-38-2) and the archive root carries that tag name.
+        string(REPLACE "." "-" minitun_asio_tag_suffix "${MINITUN_ASIO_VERSION}")
         FetchContent_Declare(asio
-            URL "https://downloads.sourceforge.net/project/asio/asio/${MINITUN_ASIO_VERSION}%20%28Stable%29/asio-${MINITUN_ASIO_VERSION}.tar.bz2"
-            URL_HASH "SHA256=c04e0e66ac29741faad763a56f3c50196421d4b968009fc237c53314769bf8ad"
+            URL "https://github.com/chriskohlhoff/asio/archive/refs/tags/asio-${minitun_asio_tag_suffix}.tar.gz"
+            URL_HASH "SHA256=9f2648fa483e58a6bf848d970ee0ea650ca19ed7769dfa520ed4f7b8d27af1db"
         )
         FetchContent_MakeAvailable(asio)
         set(MINITUN_ASIO_INCLUDE_DIR "${asio_SOURCE_DIR}/include")

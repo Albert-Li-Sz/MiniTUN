@@ -49,11 +49,14 @@ jobs:
               apk add --no-cache build-base cmake ninja linux-headers git binutils \
                 curl perl make
               # Alpine ships no static OpenSSL/SQLite libraries, so both are
-              # built from pinned, checksum-verified sources.
-              curl -fsSL "https://www.openssl.org/source/openssl-3.0.16.tar.gz" -o openssl.tar.gz
-              echo "57e03c50feab5d31b152af2b764f10379aecd8ee92f16c985983ce4a99f7ef86  openssl.tar.gz" | sha256sum -c -
+              # built from pinned, checksum-verified sources. OpenSSL is pinned
+              # to the current 3.5 LTS branch: static binaries are the one
+              # distribution shape that never picks up a distribution security
+              # update, so they must not trail an end-of-life branch.
+              curl -fsSL "https://github.com/openssl/openssl/releases/download/openssl-3.5.8/openssl-3.5.8.tar.gz" -o openssl.tar.gz
+              echo "a8f84a39918ec6415ce765d9b429d313ba97b8143169c172e734b9514464f5b2  openssl.tar.gz" | sha256sum -c -
               tar -xzf openssl.tar.gz
-              cd openssl-3.0.16
+              cd openssl-3.5.8
               ./Configure "${{ matrix.openssl_target }}" \
                 no-shared no-tests --prefix=/usr/local --libdir=lib
               make -j4 build_sw

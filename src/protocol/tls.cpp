@@ -53,11 +53,23 @@ inline constexpr std::array<unsigned char, 10U> kSessionIdContext{
             return common::Result<void>::failure(common::ErrorCode::tls_error,
                                                  "failed to enforce the minimum TLS version");
         }
-        if (SSL_CTX_set_cipher_list(context.native_handle(), "HIGH:!aNULL:!MD5:!RC4:!3DES") !=
-            1) {
+        // Both cipher lists are pinned explicitly. Relying on the OpenSSL
+        // defaults would let the effective policy drift with the linked library
+        // version: TLS 1.2 keeps only ECDHE with AEAD ciphers and TLS 1.3 only
+        // its AEAD suites, so CBC and static-RSA key exchange are never used.
+        if (SSL_CTX_set_cipher_list(context.native_handle(),
+                                    "ECDHE+AESGCM:ECDHE+CHACHA20:!aNULL:!MD5:!RC4:!3DES") != 1) {
             return common::Result<void>::failure(common::ErrorCode::tls_error,
                                                  "failed to configure TLS cipher policy");
         }
+#if defined(TLS1_3_VERSION)
+        if (SSL_CTX_set_ciphersuites(context.native_handle(),
+                                     "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:"
+                                     "TLS_AES_128_GCM_SHA256") != 1) {
+            return common::Result<void>::failure(common::ErrorCode::tls_error,
+                                                 "failed to configure TLS 1.3 cipher policy");
+        }
+#endif
         return common::Result<void>::success();
     } catch (const std::exception&) {
         return common::Result<void>::failure(common::ErrorCode::tls_error,

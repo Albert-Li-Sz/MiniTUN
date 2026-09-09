@@ -3,12 +3,14 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <charconv>
 #include <chrono>
 #include <filesystem>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <exception>
+#include <fstream>
 #include <functional>
 #include <iterator>
 #include <limits>
@@ -367,6 +369,7 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
                                                  "failed to inspect the TLS server listener");
         }
         warn_file_descriptor_budget();
+        warn_memory_budget();
         accept_next();
         return common::Result<void>::success();
     }
@@ -2245,6 +2248,104 @@ class Server::Impl final : public std::enable_shared_from_this<Server::Impl> {
                  .error_code = common::ErrorCode::resource_exhausted});
         } catch (...) {
         }
+    }
+
+    /// Reports when the configured connection ceiling cannot fit the memory
+    /// budget the service manager enforces. The relay data plane reserves a
+    /// fixed buffer per direction per connection, so a limit that is fine on a
+    /// large host can still trip an OOM kill inside a small cgroup; surfacing
+    /// the arithmetic at startup is cheaper than debugging the kill later.
+    void warn_memory_budget() const noexcept {
+        try {
+            constexpr std::uintmax_t kBytesPerConnection = 2U * 32U * 1024U;
+            constexpr std::uintmax_t kBytesPerIdleWorker = 64U * 1024U;
+            constexpr std::uintmax_t kBaselineBytes = 32U * 1024U * 1024U;
+            const std::uintmax_t memory_limit = read_process_memory_limit_bytes();
+            if (memory_limit == 0U) {
+                return;
+            }
+            const auto scaled = [](const std::size_t count, const std::uintmax_t unit) {
+                const auto converted = static_cast<std::uintmax_t>(count);
+                if (unit != 0U && converted > std::numeric_limits<std::uintmax_t>::max() / unit) {
+                    return std::numeric_limits<std::uintmax_t>::max();
+                }
+                return converted * unit;
+            };
+            const auto add_saturating = [](const std::uintmax_t left, const std::uintmax_t right) {
+                return right > std::numeric_limits<std::uintmax_t>::max() - left
+                           ? std::numeric_limits<std::uintmax_t>::max()
+                           : left + right;
+            };
+            std::uintmax_t estimated = kBaselineBytes;
+            estimated = add_saturating(estimated, scaled(options_.max_total_connections,
+                                                         kBytesPerConnection));
+            estimated = add_saturating(estimated, scaled(options_.max_total_idle_workers,
+                                                         kBytesPerIdleWorker));
+            estimated = add_saturating(estimated, scaled(options_.max_clients,
+                                                         kBytesPerIdleWorker));
+            if (estimated <= memory_limit) {
+                return;
+            }
+            common::log_warn(
+                "configured connection limits may exceed the process memory limit (estimated " +
+                    std::to_string(estimated / (1024U * 1024U)) + " MiB for max-total-connections " +
+                    std::to_string(options_.max_total_connections) + ", memory limit " +
+                    std::to_string(memory_limit / (1024U * 1024U)) +
+                    " MiB); lower the connection limits or raise the service memory ceiling",
+                {.component = "server.listener",
+                 .server_id = server_id_,
+                 .error_code = common::ErrorCode::resource_exhausted});
+        } catch (...) {
+        }
+    }
+
+    /// Returns the tightest memory ceiling the process can observe: a cgroup
+    /// limit when the service manager set one, otherwise RLIMIT_AS or
+    /// RLIMIT_DATA. Reported in bytes; zero means no ceiling is visible.
+    [[nodiscard]] static std::uintmax_t read_process_memory_limit_bytes() noexcept {
+        // cgroup v1 reports "unlimited" as a huge sentinel rather than a word,
+        // so anything at or above this threshold is treated as no limit.
+        constexpr std::uintmax_t kSentinelThreshold = std::uintmax_t{1} << 50U;
+        try {
+            // cgroup v2, then v1. An absent file, an unreadable file, or the
+            // "max" sentinel all mean "no cgroup limit to compare against".
+            constexpr std::array<std::string_view, 2U> paths{
+                "/sys/fs/cgroup/memory.max",
+                "/sys/fs/cgroup/memory/memory.limit_in_bytes",
+            };
+            for (const auto path : paths) {
+                std::ifstream input{std::string{path}};
+                if (!input) {
+                    continue;
+                }
+                std::string value;
+                input >> value;
+                if (value.empty() || value == "max") {
+                    continue;
+                }
+                std::uintmax_t limit = 0U;
+                const auto parsed = std::from_chars(value.data(), value.data() + value.size(),
+                                                    limit);
+                if (parsed.ec == std::errc{} && parsed.ptr == value.data() + value.size() &&
+                    limit != 0U && limit < kSentinelThreshold) {
+                    return limit;
+                }
+            }
+            struct rlimit address_space {};
+            if (::getrlimit(RLIMIT_AS, &address_space) == 0 &&
+                address_space.rlim_cur != RLIM_INFINITY) {
+                return static_cast<std::uintmax_t>(address_space.rlim_cur);
+            }
+            // macOS does not enforce RLIMIT_AS but does enforce RLIMIT_DATA,
+            // which bounds the same heap allocations this budget is about.
+            struct rlimit data_segment {};
+            if (::getrlimit(RLIMIT_DATA, &data_segment) == 0 &&
+                data_segment.rlim_cur != RLIM_INFINITY) {
+                return static_cast<std::uintmax_t>(data_segment.rlim_cur);
+            }
+        } catch (...) {
+        }
+        return 0U;
     }
 
     void accept_next() {

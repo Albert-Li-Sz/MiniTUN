@@ -199,6 +199,33 @@ TEST(AdminServerTest, RejectsMissingAndWrongBearerTokensOnWildcardListener) {
     EXPECT_TRUE(accepted.starts_with("HTTP/1.1 200 OK\r\n"));
 }
 
+TEST(AdminServerTest, AuthenticatedListenerRejectsMismatchedHostHeader) {
+    PrivateTokenFile token;
+    ASSERT_FALSE(token.path().empty());
+    RunningAdminServer server{{.listen_endpoint = "0.0.0.0:" + std::to_string(available_port()),
+                               .token_file = token.path()},
+                              {.healthy = [] { return true; },
+                               .ready = [] { return true; },
+                               .metrics = [] { return std::string{}; },
+                               .management = {}}};
+    ASSERT_NE(server.port(), 0U);
+
+    constexpr std::string_view token_header{"Authorization: Bearer correct-test-token\r\n\r\n"};
+    const auto loopback = request(server.port(), "GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\n" +
+                                                     std::string{token_header});
+    EXPECT_TRUE(loopback.starts_with("HTTP/1.1 200 OK\r\n"));
+
+    const auto with_port =
+        request(server.port(), "GET /healthz HTTP/1.1\r\nHost: localhost:9090\r\n" +
+                                   std::string{token_header});
+    EXPECT_TRUE(with_port.starts_with("HTTP/1.1 200 OK\r\n"));
+
+    const auto rebound = request(server.port(), "GET /healthz HTTP/1.1\r\nHost: attacker.example\r\n" +
+                                                    std::string{token_header});
+    EXPECT_TRUE(rebound.starts_with("HTTP/1.1 421 Misdirected Request\r\n"));
+    EXPECT_EQ(rebound.find("ok\n"), std::string::npos);
+}
+
 TEST(AdminServerTest, NonLoopbackListenerWithoutTokenIsRejected) {
     asio::io_context io_context;
     auto created = Server::create(

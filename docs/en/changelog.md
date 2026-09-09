@@ -9,6 +9,18 @@ The complete version history is governed by the
 repository root. This page keeps the recent-version summary used by the website, so you can
 quickly learn the latest capabilities from the docs site.
 
+## [1.2.2] - 2026-09-09
+
+- Server startup compares `--max-total-connections` with the visible memory ceiling and warns
+  when the default cannot fit it, instead of letting an OOM kill report the mismatch.
+- TLS cipher policy is pinned explicitly: TLS 1.2 ECDHE+AEAD only, TLS 1.3 AEAD suites only.
+- Authenticated admin endpoints reject a `Host` that does not name the listener
+  (`421 Misdirected Request`), closing the DNS-rebinding path.
+- The authentication replay cache expires entries in O(1) instead of scanning on every
+  authentication.
+- The Remote Protocol SDK ABI gate now compares a symbol baseline instead of a symbol count.
+- Static musl builds move to OpenSSL 3.5 LTS; the repository drops a truncated `sqlite.zip`.
+
 ## [1.2.1] - 2026-09-05
 
 - The TLS listener limits accept rate and global/per-IP unauthenticated connections before

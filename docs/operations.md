@@ -23,6 +23,11 @@ minitun-server --admin-listen 127.0.0.1:9090 ...
 `Authorization: Bearer <token>`。管理端点本身不提供 TLS；非回环模式只能用于可信管理
 网络，或放在启用 TLS 和访问控制的反向代理之后。
 
+需要认证的监听还要求 `Host` 指向该监听地址本身、`localhost` 或 `127.0.0.1`／`[::1]`；
+其他 `Host` 返回 `421 Misdirected Request`。这阻断了 DNS rebinding 场景：浏览器把
+攻击者域名解析到管理端口时，携带的 `Host` 与监听地址不一致。回环免认证监听不校验
+`Host`，便于直接用裸 TCP 探测。
+
 HTTP 实现只接受已列出的方法和路径，并限制 header/body 大小、并发连接数和超时。
 `HEAD` 返回与对应 `GET` 相同的状态和 header，但不返回 body。
 

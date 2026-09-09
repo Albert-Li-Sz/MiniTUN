@@ -84,6 +84,26 @@ sudo systemctl kill -s HUP minitun-server.service
 应按实际峰值调整每 IP 配额和接入速率。客户端策略中的 `connections_per_minute` 只约束
 隧道公开端口，TLS listener 的预算独立生效。
 
+## 内存预算与连接上限
+
+每条 relay 在数据面固定预留两个方向各 16 KiB 的缓冲，因此 `--max-total-connections`
+直接决定 relay 内存下限：默认 50000 对应约 1.6 GiB，明显高于
+`packaging/systemd/minitun-server.service` 的 `MemoryMax=512M`。服务端启动时会比较配置
+上限与可见内存天花板（cgroup v2/v1 限制，其次 `RLIMIT_AS`，再次 `RLIMIT_DATA`），
+估算值超出时记录一条 `resource_exhausted` 警告，说明估算值、连接上限和内存上限。
+
+警告只是提示，不会拒绝启动。请按部署容量二选一：
+
+```bash
+# 要么收紧连接上限（约等于 512 MiB 内存预算）
+minitun-server --max-total-connections 12000 ...
+
+# 要么用 drop-in 放宽服务内存上限
+sudo systemctl edit minitun-server.service   # 写入 [Service] MemoryMax=2G
+```
+
+没有可见内存天花板（裸机直接运行且未设置 rlimit）时不输出该警告。
+
 ## 声明式资源配置
 
 本地配置使用 `format_version: 1`，包含 `servers` 和 `tunnels`：
