@@ -36,6 +36,19 @@ for tool in openssl python3; do
     fi
 done
 
+# Sanitizer runtimes reserve huge shadow mappings and refuse to start under a
+# tight RLIMIT_AS (ThreadSanitizer aborts with "setrlimit() failed"). The
+# budget logic under test is independent of instrumentation, so skip there.
+if [[ -n "${ASAN_OPTIONS:-}${TSAN_OPTIONS:-}${UBSAN_OPTIONS:-}" ]]; then
+    printf 'sanitizer runtime options are set; skipping the address-space limit test\n' >&2
+    exit 77
+fi
+if command -v nm >/dev/null 2>&1 &&
+    nm "$server_bin" 2>/dev/null | grep -qiE "__(asan|tsan|ubsan|sanitizer)"; then
+    printf 'server binary is sanitizer-instrumented; skipping\n' >&2
+    exit 77
+fi
+
 openssl req -x509 -newkey rsa:2048 -sha256 -days 1 -nodes \
     -subj /CN=localhost \
     -addext subjectAltName=DNS:localhost \
