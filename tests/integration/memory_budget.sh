@@ -43,10 +43,22 @@ openssl req -x509 -newkey rsa:2048 -sha256 -days 1 -nodes \
     -out "$runtime_dir/server.crt" >/dev/null 2>&1
 chmod 0600 "$runtime_dir/server.key"
 
-cat >"$runtime_dir/clients.json" <<'JSON'
+umask 077
+head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$runtime_dir/client.psk"
+cat >"$runtime_dir/clients.json" <<JSON
 {
   "format_version": 1,
-  "clients": []
+  "clients": [
+    {
+      "client_id": "client_00000000000000000000000000000001",
+      "enabled": true,
+      "psk_file": "$runtime_dir/client.psk",
+      "allowed_ports": ["10000-10999"],
+      "max_tunnels": 128,
+      "max_connections": 10000,
+      "max_idle_workers": 32
+    }
+  ]
 }
 JSON
 
@@ -72,8 +84,19 @@ os.execv(sys.argv[1], sys.argv[1:])
 PY
 
 # An intentionally tight 128 MiB ceiling cannot hold the default
-# max-total-connections budget, so the warning must fire.
-python3 "$runtime_dir/launch.py" "$server_bin" --foreground --listen 127.0.0.1:0 \
+# max-total-connections budget, so the warning must fire. The listener still
+# needs a real port: Endpoint::parse rejects port 0, so probe for a free one.
+free_port=$(python3 - <<'PY'
+import socket
+
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+    probe.bind(("127.0.0.1", 0))
+    print(probe.getsockname()[1])
+PY
+)
+
+python3 "$runtime_dir/launch.py" "$server_bin" --foreground \
+    --listen "127.0.0.1:${free_port}" \
     --tls-cert "$runtime_dir/server.crt" --tls-key "$runtime_dir/server.key" \
     --clients-config "$runtime_dir/clients.json" >"$server_log" 2>&1 &
 server_pid=$!
