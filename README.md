@@ -9,11 +9,11 @@
 
 > 面向 Linux 的资源占用最小、自托管多传输内网穿透工具。
 
-> **当前版本：** [`v1.2.2`](https://github.com/Albert-Li-Sz/MiniTUN/releases/tag/v1.2.2)
-> 增加 TLS 握手前接入限速、全局和每 IP 未认证配额、失败来源临时封禁、认证总超时及
-> TLS 错误日志聚合，降低扫描与连接洪泛造成的资源消耗。默认接入速率为每秒 100 个、
-> 未认证连接全局 128 个及单 IP 32 个，可通过[服务端配置](docs/configuration.md#tls-接入保护)
-> 调整。包含 TCP、UDP、SOCKS5、P2P 四种 tunnel mode 和两个稳定 SOVERSION 1 SDK。
+> **当前版本：** [`v1.2.3`](https://github.com/Albert-Li-Sz/MiniTUN/releases/tag/v1.2.3)
+> 修复服务端 SOCKS5 数值 loopback 绑定校验与 P2P direct TLS 策略，读取 UDP payload
+> 前拒绝超长 record。同步 schema v6、P2P 加密与能力协商文档；完整说明见
+> [变更日志](CHANGELOG.md#123---2026-09-11)。包含 TCP、UDP、SOCKS5、P2P 四种 tunnel
+> mode 和两个稳定 SOVERSION 1 SDK。
 
 MiniTun 将公网服务器上的 TCP 或 UDP 端口转发到内网服务，也可以提供 SOCKS5 CONNECT
 代理，或为可路由主机协商 P2P 直连并自动回退到 relay。当前源码由公网服务端

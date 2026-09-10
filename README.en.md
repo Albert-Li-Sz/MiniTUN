@@ -10,13 +10,12 @@
 > A minimal-footprint, self-hosted, multi-transport intranet penetration (reverse tunnel)
 > tool for Linux.
 
-> **Current version:** [`v1.2.2`](https://github.com/Albert-Li-Sz/MiniTUN/releases/tag/v1.2.2)
-> Adds admission pacing before TLS, global/per-IP unauthenticated quotas, temporary blocks
-> for repeated TLS failures, an authentication deadline, and aggregated TLS warnings to
-> reduce resource consumption from scans and connection floods. Defaults allow 100 accepts/s,
-> 128 pending connections globally and 32 per IP; see
-> [server configuration](docs/en/configuration.md#tls-admission-protection) to adjust them.
-> Includes TCP, UDP, SOCKS5 and P2P tunnel modes and two stable SOVERSION 1 SDKs.
+> **Current version:** [`v1.2.3`](https://github.com/Albert-Li-Sz/MiniTUN/releases/tag/v1.2.3)
+> Fixes server-side SOCKS5 numeric loopback enforcement and the P2P direct TLS policy,
+> and rejects oversized UDP records before reading their payloads. Updates schema v6, P2P
+> encryption and capability negotiation documentation; see the
+> [changelog](CHANGELOG.en.md#123---2026-09-11). Includes TCP, UDP, SOCKS5 and P2P tunnel
+> modes and two stable SOVERSION 1 SDKs.
 
 MiniTun forwards a TCP or UDP port on a public server to an intranet service, can also
 provide a SOCKS5 CONNECT proxy, or negotiate a P2P direct connection for routable hosts and

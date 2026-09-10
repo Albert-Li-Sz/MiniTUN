@@ -8,7 +8,7 @@ title: 变更日志
 [CHANGELOG.md](https://github.com/Albert-Li-Sz/MiniTUN/blob/main/CHANGELOG.md) 为准。
 这里保留官网常用的近期版本摘要，方便从文档站快速了解最新能力。
 
-## [Unreleased]
+## [1.2.3] - 2026-09-11
 
 - 服务端强制 SOCKS5 注册使用数值 loopback，直接发送注册的客户端也不能绕过校验。
 - P2P direct context 复用统一显式 TLS 策略，继续仅使用 TLS 1.3 和一次性 token external PSK。

@@ -9,7 +9,7 @@ The complete version history is governed by the
 repository root. This page keeps the recent-version summary used by the website, so you can
 quickly learn the latest capabilities from the docs site.
 
-## [Unreleased]
+## [1.2.3] - 2026-09-11
 
 - The server enforces numeric loopback SOCKS5 registration, including clients bypassing the daemon.
 - P2P direct contexts reuse the shared explicit TLS policy, retaining TLS 1.3 and one-time token external PSK.
