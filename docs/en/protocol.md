@@ -41,16 +41,19 @@ server  -> AUTH_OK(session_generation, heartbeat_interval, worker_limits)
 
 v2 defines the following capability bits:
 
-| Capability | Status |
-| --- | --- |
-| `pipelined_control` | required |
-| `per_client_policy` | required |
-| `tunnel_revisions` | required |
-| `client_certificate_binding` | supported by both, used per policy |
-| `udp_datagrams` | supported by both, required for UDP mode |
-| `socks5_proxy` | supported by both, required for SOCKS5 mode |
-| `p2p_rendezvous` | supported by both, required for P2P mode |
-| `multiplexed_streams` | reserved, but not supported or advertised by default |
+| Capability | Bit value | Status and purpose |
+| --- | --- | --- |
+| `pipelined_control` | `1ULL << 0` | required |
+| `per_client_policy` | `1ULL << 1` | required |
+| `tunnel_revisions` | `1ULL << 2` | required |
+| `client_certificate_binding` | `1ULL << 3` | supported by both, used per policy |
+| `multiplexed_streams` | `1ULL << 4` | reserved, but not supported or advertised by default |
+| `udp_datagrams` | `1ULL << 5` | supported by both, required for UDP mode |
+| `socks5_proxy` | `1ULL << 6` | supported by both, required for SOCKS5 mode |
+| `p2p_rendezvous` | `1ULL << 7` | supported by both, required for P2P mode |
+| `tcp_simultaneous_open` | `1ULL << 8` | supports server-assisted P2P TCP hole punching; allows the public peer source endpoint in `START_RELAY` |
+| `proxy_protocol` | `1ULL << 9` | allows the public source endpoint in `START_RELAY` for PROXY protocol v1 headers on TCP tunnels with `proxy_protocol` enabled |
+| `worker_observed_endpoint` | `1ULL << 10` | appends the Worker's own server-observed IP after the source endpoint extension, letting the daemon advertise a NAT-reachable P2P candidate |
 
 The server may only select the set the client offered and itself supports, and must include
 the three required capabilities. The control authentication digest is HMAC-SHA256 keyed by
@@ -88,9 +91,10 @@ server -> UNREGISTER_TUNNEL_OK(tunnel_id, desired_revision)
 public binding and the transport mode. TCP keeps the original payload with no appended mode
 byte; UDP, SOCKS5 and P2P each append an explicit mode byte and require the corresponding
 capability to be negotiated for the current session. Before registering, the numeric bind
-address, client ACL, per-client/global tunnel quota and OS bind result are checked. The
-SOCKS5 bind address must also be a numeric loopback, so an unauthenticated public open
-proxy can never appear.
+address, client ACL, per-client/global tunnel quota and OS bind result are checked. Both
+the daemon and server require a numeric loopback for SOCKS5 binds. Before creating a
+listener, the server rejects wildcard addresses, non-loopback IPs and hostnames, including
+registrations sent directly by clients that bypass the daemon.
 
 The daemon commits a response only when session generation, frame request ID, tunnel ID and
 the current `config_revision` all match. Duplicate and stale responses are ignored. A
@@ -125,7 +129,20 @@ Worker. Idle Worker counts are constrained by the client policy, the server cap 
 daemon cap simultaneously, and are replenished adaptively between minimum and maximum on
 demand.
 
-TCP `START_RELAY` keeps the existing wire image; non-TCP modes append the same enum byte.
+Without endpoint extensions, TCP `START_RELAY` keeps the existing wire image; non-TCP
+modes append the same enum byte. Workers inherit their control session's capability set.
+After negotiating `proxy_protocol` or `tcp_simultaneous_open`, the server may append the
+public connection's `source_host` and `source_port`. This extension always starts with an
+explicit mode byte, including for TCP. Both fields must be present together: the host is
+a numeric IP and the port is a non-zero `uint16`. Only when the source endpoint extension
+is present and `worker_observed_endpoint` is also negotiated does the server append
+`worker_observed_host` (the Worker's TLS connection IP as observed by the server, with no
+port). Older peers that did not negotiate extensions still receive the original encoding.
+
+A source endpoint alone does not enable PROXY headers. The daemon only prepends a PROXY
+protocol v1 header to the target connection when the TCP tunnel's local `proxy_protocol`
+configuration is `true`.
+
 After receiving `LOCAL_CONNECT_OK`, that Worker permanently leaves Remote Protocol frame
 mode and carries a single data plane:
 
@@ -134,7 +151,7 @@ mode and carries a single data plane:
 | `tcp` | raw TLS application bytes; the daemon connects a fixed local TCP target. |
 | `udp` | `uint16` big-endian payload length + 0..65,507 bytes of payload; each record preserves one UDP datagram boundary. |
 | `socks5` | SOCKS5 no-auth CONNECT handshake inside TLS, supporting IPv4/IPv6/domain; raw TCP bytes after success. |
-| `p2p` | one-time token and direct candidate negotiation; on success switches to direct TCP, otherwise confirms and continues the TLS relay. |
+| `p2p` | one-time token and direct candidate negotiation; on success switches to TLS 1.3-encrypted direct TCP, otherwise confirms and continues the TLS relay. |
 
 TCP relay uses a fixed 16 KiB buffer per direction and only reads after finishing writing
 the current block, forming bounded backpressure. EOF propagates as a half-close, and data in
@@ -142,10 +159,14 @@ the reverse direction may continue; an idle timeout or reset closes the relay an
 the quota exactly once. UDP public peer sessions, queued datagram counts and total bytes are
 also bounded and released automatically when idle.
 
-P2P candidates authenticate with a random one-time token bound to a single negotiation. The
-current implementation does no ICE, STUN, TURN or NAT hole punching and adds no TLS to the
-direct path; when a connection or confirmation fails, it automatically falls back to the
-original authenticated TLS Worker.
+P2P candidates authenticate with a random one-time token bound to a single negotiation.
+After candidate authentication, both ends upgrade the direct socket to TLS 1.3, using the
+token as an external PSK to encrypt application data. Direct contexts apply the shared
+explicit cipher policy and compression/renegotiation restrictions, allowing only TLS 1.3.
+When `tcp_simultaneous_open` is negotiated and enabled by the connector, a failed ordinary
+direct connection can trigger server-assisted TCP hole punching, supporting dual EIM NAT.
+ICE, STUN, TURN and UDP hole punching are not implemented. Failed connections or
+confirmations automatically fall back to the original authenticated TLS Worker.
 
 ## Reload and shutdown
 
@@ -168,9 +189,10 @@ peer must tolerate the transport closing directly.
 
 - All 1.x versions only accept protocol number 2; there is no downgrade or lenient parsing
   of v1.
-- 1.1's TCP REGISTER/START payload is identical to 1.0; new modes only use the appended
-  extension after both sides negotiate the corresponding capability, so a 1.0 peer never
-  receives an unparseable non-TCP tunnel.
+- TCP REGISTER retains its original encoding; without negotiated endpoint extensions,
+  TCP START payloads are identical to 1.0. New modes and endpoint metadata are appended
+  only after both sides negotiate the corresponding capabilities, so a 1.0 peer never
+  receives an unparseable non-TCP tunnel or endpoint extension.
 - It still keeps "one relay per one TLS Worker" and does not implement
   `multiplexed_streams`.
 - `libminitun-remote-protocol.so.1` exposes the strongly-typed message variant shared with

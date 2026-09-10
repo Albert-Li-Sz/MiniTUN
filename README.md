@@ -32,7 +32,8 @@ MiniTun 将公网服务器上的 TCP 或 UDP 端口转发到内网服务，也�
   `config export/plan/apply`。默认 apply 不删除；`--prune` 也只删除 apply 管理的资源。
 - `tcp`、`udp`、`socks5`、`p2p` 四种 tunnel mode；非 TCP mode 通过 capability 协商，
   旧 TCP v2 wire image 保持不变。
-- schema v5 自动迁移 v4 数据，保留稳定 ID、名称、端点、隧道与原凭据引用。
+- schema v6 自动迁移 v4/v5 数据，新增默认关闭的 `proxy_protocol`，保留稳定 ID、
+  名称、端点、隧道与原凭据引用。
 - client/server 均可启用 `/healthz`、`/readyz`、`/metrics`；指标标签有界，审计日志不
   记录 PSK、证书内容、认证摘要或用户流量。
 - 本地控制 C11 ABI/C++20 RAII SDK，以及 Remote Protocol v2 C++20 codec/decoder SDK；
@@ -58,7 +59,8 @@ flowchart LR
 保持“一条 relay 对应一条 TLS Worker”。UDP 在认证后的 Worker 上使用有界 datagram
 framing；SOCKS5 只接受无认证 CONNECT；P2P direct path 以一次性 token 认证，失败时自动
 回退到 TLS relay。direct path 在一次性 token 认证后升级为 TLS 1.3（token 作为外部
-PSK），应用数据全程加密。当前 P2P 不包含 ICE/STUN/TURN/NAT 打洞。
+PSK），应用数据全程加密。P2P 支持 server 辅助的 TCP simultaneous open，支持双
+EIM NAT 穿透；不包含 ICE/STUN/TURN 或 UDP 打洞。
 
 ## 快速部署
 
@@ -229,7 +231,7 @@ curl --fail http://127.0.0.1:9090/metrics
 | 路径 | 用途 |
 | --- | --- |
 | `/run/minitun/minitun.sock` | CLI/SDK 与 daemon 的 Unix IPC |
-| `/var/lib/minitun/state.db` | schema v5 资源状态与稳定身份 |
+| `/var/lib/minitun/state.db` | schema v6 资源状态与稳定身份 |
 | `/var/lib/minitun/credentials.db` | daemon 私有凭据库 |
 | `/etc/minitun-server/server.crt` | server TLS 证书链 |
 | `/etc/minitun-server/server.key` | server TLS 私钥 |

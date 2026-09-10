@@ -14,9 +14,13 @@
 #include <asio/read.hpp>
 #include <asio/redirect_error.hpp>
 #include <asio/ssl/context.hpp>
+#include <asio/steady_timer.hpp>
 #include <asio/use_awaitable.hpp>
 #include <asio/write.hpp>
 #include <gtest/gtest.h>
+#include <openssl/evp.h>
+#include <openssl/ssl.h>
+#include <openssl/x509.h>
 
 #include <minitun/common/error.hpp>
 #include <minitun/protocol/auth.hpp>
@@ -62,6 +66,134 @@ connected_pair(asio::io_context& io_context) {
     client.connect(acceptor.local_endpoint());
     acceptor.accept(server);
     return {std::move(client), std::move(server)};
+}
+
+[[nodiscard]] bool install_relay_certificate(asio::ssl::context& context) {
+    const std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)> key{
+        EVP_PKEY_Q_keygen(nullptr, nullptr, "EC", "prime256v1"), &EVP_PKEY_free};
+    const std::unique_ptr<X509, decltype(&X509_free)> certificate{X509_new(), &X509_free};
+    if (!key || !certificate || X509_set_version(certificate.get(), 2L) != 1 ||
+        ASN1_INTEGER_set(X509_get_serialNumber(certificate.get()), 1L) != 1 ||
+        X509_gmtime_adj(X509_getm_notBefore(certificate.get()), -60L) == nullptr ||
+        X509_gmtime_adj(X509_getm_notAfter(certificate.get()), 3'600L) == nullptr ||
+        X509_set_pubkey(certificate.get(), key.get()) != 1) {
+        return false;
+    }
+    auto* subject = X509_get_subject_name(certificate.get());
+    constexpr unsigned char kCommonName[]{"localhost"};
+    return X509_NAME_add_entry_by_txt(subject, "CN", MBSTRING_ASC, kCommonName, -1, -1, 0) == 1 &&
+           X509_set_issuer_name(certificate.get(), subject) == 1 &&
+           X509_sign(certificate.get(), key.get(), EVP_sha256()) > 0 &&
+           SSL_CTX_use_certificate(context.native_handle(), certificate.get()) == 1 &&
+           SSL_CTX_use_PrivateKey(context.native_handle(), key.get()) == 1;
+}
+
+void expect_direct_tls_policy(TlsStream& stream) {
+    auto* native = stream.native_handle();
+    EXPECT_EQ(SSL_version(native), TLS1_3_VERSION);
+    EXPECT_EQ(SSL_get_min_proto_version(native), TLS1_3_VERSION);
+    EXPECT_EQ(SSL_get_max_proto_version(native), TLS1_3_VERSION);
+    const auto options = SSL_get_options(native);
+    EXPECT_NE(options & SSL_OP_NO_COMPRESSION, 0U);
+    EXPECT_NE(options & SSL_OP_NO_RENEGOTIATION, 0U);
+    EXPECT_STREQ(SSL_get_cipher_name(native), "TLS_AES_256_GCM_SHA384");
+    std::vector<std::string> tls13_ciphers;
+    auto* ciphers = SSL_get_ciphers(native);
+    for (int index = 0; index < sk_SSL_CIPHER_num(ciphers); ++index) {
+        const auto* cipher = sk_SSL_CIPHER_value(ciphers, index);
+        if (std::string_view{SSL_CIPHER_get_version(cipher)} == "TLSv1.3") {
+            tls13_ciphers.emplace_back(SSL_CIPHER_get_name(cipher));
+        }
+    }
+    EXPECT_EQ(tls13_ciphers,
+              (std::vector<std::string>{"TLS_AES_256_GCM_SHA384",
+                                         "TLS_CHACHA20_POLY1305_SHA256",
+                                         "TLS_AES_128_GCM_SHA256"}));
+}
+
+TEST(P2pTest, DirectUpgradeAppliesSharedTlsPolicyOnBothPeersAndCarriesData) {
+    asio::io_context io_context;
+    auto worker_pair = connected_pair(io_context);
+    auto bootstrap_pair = connected_pair(io_context);
+    asio::ssl::context host_context{asio::ssl::context::tls_server};
+    asio::ssl::context bridge_context{asio::ssl::context::tls_client};
+    ASSERT_TRUE(install_relay_certificate(host_context));
+    TlsStream host_relay{std::move(worker_pair.second), host_context};
+    TlsStream bridge_relay{std::move(worker_pair.first), bridge_context};
+    std::optional<common::Result<P2pHostUpgrade>> host_result;
+    std::optional<common::Result<P2pPeerUpgrade>> peer_result;
+    bool watchdog_expired = false;
+    asio::steady_timer watchdog{io_context, std::chrono::seconds{5}};
+    watchdog.async_wait([&](const asio::error_code& error) {
+        if (!error) {
+            watchdog_expired = true;
+            io_context.stop();
+        }
+    });
+    asio::co_spawn(
+        io_context,
+        [&]() -> asio::awaitable<void> {
+            co_await host_relay.async_handshake(asio::ssl::stream_base::server,
+                                                 asio::use_awaitable);
+            host_result = co_await accept_p2p_upgrade(
+                host_relay, asio::ip::address_v4::loopback(), std::nullopt,
+                std::chrono::seconds{3});
+            if (!*host_result || (*host_result)->direct_stream == nullptr) {
+                co_return;
+            }
+            auto& stream = *(*host_result)->direct_stream;
+            expect_direct_tls_policy(stream);
+            const auto confirmed = co_await confirm_p2p_direct(stream);
+            EXPECT_TRUE(confirmed);
+            std::array<char, 4U> message{};
+            EXPECT_TRUE(co_await raw_read_exact(stream, message.data(), message.size()));
+            EXPECT_EQ((std::string_view{message.data(), message.size()}), "ping");
+            constexpr std::string_view reply{"pong"};
+            EXPECT_TRUE(co_await raw_write_exact(stream, reply.data(), reply.size()));
+        },
+        [](const std::exception_ptr& failure) { EXPECT_FALSE(failure); });
+    asio::co_spawn(
+        io_context,
+        [&]() -> asio::awaitable<void> {
+            co_await bridge_relay.async_handshake(asio::ssl::stream_base::client,
+                                                   asio::use_awaitable);
+            // Emulate the server forwarding the TLS Worker's IPv4 offer to
+            // the raw bootstrap channel consumed by the peer API.
+            std::array<std::uint8_t, 8U + 4U + kAuthenticationNonceSize> offer{};
+            EXPECT_TRUE(co_await raw_read_exact(bridge_relay, offer.data(), offer.size()));
+            EXPECT_TRUE(co_await raw_write_exact(bootstrap_pair.second, offer.data(),
+                                                  offer.size()));
+        },
+        [](const std::exception_ptr& failure) { EXPECT_FALSE(failure); });
+    asio::co_spawn(
+        io_context,
+        [&]() -> asio::awaitable<void> {
+            peer_result = co_await connect_p2p_upgrade(std::move(bootstrap_pair.first),
+                                                       std::chrono::seconds{3},
+                                                       std::chrono::seconds{1}, true, false);
+            if (!*peer_result || (*peer_result)->direct_stream == nullptr) {
+                co_return;
+            }
+            auto& stream = *(*peer_result)->direct_stream;
+            expect_direct_tls_policy(stream);
+            constexpr std::string_view message{"ping"};
+            EXPECT_TRUE(co_await raw_write_exact(stream, message.data(), message.size()));
+            std::array<char, 4U> reply{};
+            EXPECT_TRUE(co_await raw_read_exact(stream, reply.data(), reply.size()));
+            EXPECT_EQ((std::string_view{reply.data(), reply.size()}), "pong");
+            static_cast<void>(watchdog.cancel());
+        },
+        [](const std::exception_ptr& failure) { EXPECT_FALSE(failure); });
+    io_context.run();
+    EXPECT_FALSE(watchdog_expired);
+    ASSERT_TRUE(host_result.has_value());
+    ASSERT_TRUE(*host_result) << host_result->error();
+    EXPECT_EQ((*host_result)->path, P2pPath::direct);
+    ASSERT_NE((*host_result)->direct_stream, nullptr);
+    ASSERT_TRUE(peer_result.has_value());
+    ASSERT_TRUE(*peer_result) << peer_result->error();
+    EXPECT_EQ((*peer_result)->path, P2pPath::direct);
+    ASSERT_NE((*peer_result)->direct_stream, nullptr);
 }
 
 TEST(P2pTest, DefinesStablePathAndZeroStatistics) {

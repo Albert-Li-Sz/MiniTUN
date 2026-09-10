@@ -41,7 +41,32 @@ inline constexpr std::array<unsigned char, 10U> kSessionIdContext{
     return common::Result<void>::success();
 }
 
-[[nodiscard]] common::Result<void> configure_context(asio::ssl::context& context) {
+[[nodiscard]] common::Error transport_error(const asio::error_code& error,
+                                            const std::string_view operation) {
+    if (error == asio::error::operation_aborted) {
+        return common::Error{common::ErrorCode::connection_timeout,
+                             std::string{operation} + " was cancelled or timed out"};
+    }
+    if (error == asio::error::eof || error == asio::error::connection_reset ||
+        error == asio::ssl::error::stream_truncated) {
+        return common::Error{common::ErrorCode::connection_failed,
+                             std::string{operation} + " ended because the peer closed"};
+    }
+    return common::Error{common::ErrorCode::connection_failed,
+                         std::string{operation} + " failed"};
+}
+
+[[nodiscard]] std::uint32_t payload_length_from_header(
+    const std::array<std::uint8_t, kFrameHeaderSize>& header) noexcept {
+    return (static_cast<std::uint32_t>(header[12]) << 24U) |
+           (static_cast<std::uint32_t>(header[13]) << 16U) |
+           (static_cast<std::uint32_t>(header[14]) << 8U) |
+           static_cast<std::uint32_t>(header[15]);
+}
+
+} // namespace
+
+common::Result<void> configure_tls_context(asio::ssl::context& context) {
     try {
         context.set_options(asio::ssl::context::default_workarounds |
                             asio::ssl::context::no_sslv2 | asio::ssl::context::no_sslv3 |
@@ -49,7 +74,10 @@ inline constexpr std::array<unsigned char, 10U> kSessionIdContext{
                             asio::ssl::context::single_dh_use);
         SSL_CTX_set_options(context.native_handle(),
                             SSL_OP_NO_COMPRESSION | SSL_OP_NO_RENEGOTIATION);
-        if (SSL_CTX_set_min_proto_version(context.native_handle(), TLS1_2_VERSION) != 1) {
+        const auto configured_minimum = SSL_CTX_get_min_proto_version(context.native_handle());
+        const auto minimum_version =
+            configured_minimum > TLS1_2_VERSION ? configured_minimum : TLS1_2_VERSION;
+        if (SSL_CTX_set_min_proto_version(context.native_handle(), minimum_version) != 1) {
             return common::Result<void>::failure(common::ErrorCode::tls_error,
                                                  "failed to enforce the minimum TLS version");
         }
@@ -76,31 +104,6 @@ inline constexpr std::array<unsigned char, 10U> kSessionIdContext{
                                              "failed to configure the TLS context");
     }
 }
-
-[[nodiscard]] common::Error transport_error(const asio::error_code& error,
-                                            const std::string_view operation) {
-    if (error == asio::error::operation_aborted) {
-        return common::Error{common::ErrorCode::connection_timeout,
-                             std::string{operation} + " was cancelled or timed out"};
-    }
-    if (error == asio::error::eof || error == asio::error::connection_reset ||
-        error == asio::ssl::error::stream_truncated) {
-        return common::Error{common::ErrorCode::connection_failed,
-                             std::string{operation} + " ended because the peer closed"};
-    }
-    return common::Error{common::ErrorCode::connection_failed,
-                         std::string{operation} + " failed"};
-}
-
-[[nodiscard]] std::uint32_t payload_length_from_header(
-    const std::array<std::uint8_t, kFrameHeaderSize>& header) noexcept {
-    return (static_cast<std::uint32_t>(header[12]) << 24U) |
-           (static_cast<std::uint32_t>(header[13]) << 16U) |
-           (static_cast<std::uint32_t>(header[14]) << 8U) |
-           static_cast<std::uint32_t>(header[15]);
-}
-
-} // namespace
 
 class TlsSessionCache::Impl final {
   public:
@@ -164,7 +167,7 @@ make_server_tls_context(const ServerTlsContextOptions& options) {
 
     try {
         auto context = std::make_shared<asio::ssl::context>(asio::ssl::context::tls_server);
-        auto configured = configure_context(*context);
+        auto configured = configure_tls_context(*context);
         if (!configured) {
             return common::Result<std::shared_ptr<asio::ssl::context>>::failure(
                 configured.error());
@@ -224,7 +227,7 @@ make_client_tls_context(const ClientTlsContextOptions& options) {
 
     try {
         auto context = std::make_shared<asio::ssl::context>(asio::ssl::context::tls_client);
-        auto configured = configure_context(*context);
+        auto configured = configure_tls_context(*context);
         if (!configured) {
             return common::Result<std::shared_ptr<asio::ssl::context>>::failure(
                 configured.error());

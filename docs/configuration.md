@@ -173,10 +173,12 @@ Tunnel 字段规则：
 | `local_port` | TCP、UDP、P2P 必需；SOCKS5 可省略。 |
 | `remote_host` | 可选；TCP/UDP/P2P 默认 `0.0.0.0`，SOCKS5 默认且只允许数值 loopback。 |
 | `remote_port` | 必需，范围 1..65535，并受服务端 `allowed_ports` 约束。 |
+| `proxy_protocol` | 可选布尔值，默认 `false`；仅 `tcp` 可开启，在本地目标连接上添加 PROXY protocol v1 头。 |
 
-SOCKS5 只实现 no-auth CONNECT；把它限制在 server loopback 是强制安全边界。P2P 适合
-LAN 或已有可路由路径，不包含 ICE/STUN/TURN/NAT 打洞，direct path 也不附加传输加密；
-协商失败会自动回退到 TLS relay。
+SOCKS5 只实现 no-auth CONNECT；daemon 和 server 均强制数值 loopback 绑定。P2P 先尝试
+LAN 或已有可路由路径，再按协商结果尝试 server 辅助的 TCP simultaneous open，支持双
+EIM NAT 穿透；不包含 ICE/STUN/TURN 或 UDP 打洞。direct path 在一次性 token 认证后
+升级为 TLS 1.3，以该 token 作为外部 PSK 加密应用数据；直连失败会自动回退到 TLS relay。
 
 相对凭据路径以配置文件所在目录为基准。`plan` 完全只读，动作按资源类型与稳定键排序：
 

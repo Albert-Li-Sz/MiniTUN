@@ -9,6 +9,7 @@
 #include <asio/co_spawn.hpp>
 #include <asio/io_context.hpp>
 #include <asio/ssl/context.hpp>
+#include <openssl/ssl.h>
 #include <gtest/gtest.h>
 
 #include <minitun/common/error.hpp>
@@ -45,6 +46,51 @@ template <typename Awaitable> void run(asio::io_context& io_context, Awaitable a
     frame.type = MessageType::ping;
     frame.flags = flags;
     return frame;
+}
+
+TEST(TlsTest, SharedPolicyPinsCiphersAndPreservesTls13OnlyContexts) {
+    for (const auto method : {asio::ssl::context::tls_client, asio::ssl::context::tls_server,
+                              asio::ssl::context::tlsv13_client,
+                              asio::ssl::context::tlsv13_server}) {
+        SCOPED_TRACE(static_cast<int>(method));
+        asio::ssl::context context{method};
+        auto* native = context.native_handle();
+        const bool direct = method == asio::ssl::context::tlsv13_client ||
+                            method == asio::ssl::context::tlsv13_server;
+        // Start from a policy that includes ciphers explicitly excluded by
+        // MiniTUN, so this detects reliance on linked OpenSSL defaults.
+        ASSERT_EQ(SSL_CTX_set_cipher_list(native, "AES128-SHA"), 1);
+        ASSERT_EQ(SSL_CTX_set_ciphersuites(native, "TLS_AES_128_CCM_SHA256"), 1);
+        SSL_CTX_clear_options(native, SSL_OP_NO_COMPRESSION | SSL_OP_NO_RENEGOTIATION);
+        const auto configured = configure_tls_context(context);
+        ASSERT_TRUE(configured) << configured.error();
+        EXPECT_EQ(SSL_CTX_get_min_proto_version(native),
+                  direct ? TLS1_3_VERSION : TLS1_2_VERSION);
+        EXPECT_EQ(SSL_CTX_get_max_proto_version(native), direct ? TLS1_3_VERSION : 0);
+        const auto options = SSL_CTX_get_options(native);
+        EXPECT_NE(options & SSL_OP_NO_COMPRESSION, 0U);
+        EXPECT_NE(options & SSL_OP_NO_RENEGOTIATION, 0U);
+
+        std::vector<std::string> tls13_ciphers;
+        auto* ciphers = SSL_CTX_get_ciphers(native);
+        ASSERT_NE(ciphers, nullptr);
+        bool has_tls12_cipher = false;
+        for (int index = 0; index < sk_SSL_CIPHER_num(ciphers); ++index) {
+            const auto* cipher = sk_SSL_CIPHER_value(ciphers, index);
+            if (std::string_view{SSL_CIPHER_get_version(cipher)} == "TLSv1.3") {
+                tls13_ciphers.emplace_back(SSL_CIPHER_get_name(cipher));
+            } else {
+                has_tls12_cipher = true;
+                EXPECT_EQ(SSL_CIPHER_get_kx_nid(cipher), NID_kx_ecdhe);
+                EXPECT_EQ(SSL_CIPHER_is_aead(cipher), 1);
+            }
+        }
+        EXPECT_TRUE(has_tls12_cipher);
+        EXPECT_EQ(tls13_ciphers,
+                  (std::vector<std::string>{"TLS_AES_256_GCM_SHA384",
+                                             "TLS_CHACHA20_POLY1305_SHA256",
+                                             "TLS_AES_128_GCM_SHA256"}));
+    }
 }
 
 TEST(TlsTest, RejectsEveryMalformedServerContextPath) {

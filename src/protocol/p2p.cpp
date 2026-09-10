@@ -58,7 +58,7 @@ void close_socket(asio::ip::tcp::socket& socket) noexcept {
 
 // The direct path upgrades to TLS 1.3 with the one-time rendezvous token as an
 // external PSK, so the raw candidate socket never carries application data in
-// the clear. The identity string is the only information sent in plaintext.
+// the clear. The candidate token preface still precedes the TLS handshake.
 inline constexpr std::string_view kDirectPskIdentity{"minitun-p2p-direct-v1"};
 [[nodiscard]] int direct_psk_ex_index() noexcept {
     // asio::ssl stores its own verify callback in SSL app-data, so the token
@@ -239,6 +239,10 @@ class HostRace final : public std::enable_shared_from_this<HostRace> {
           simultaneous_open_enabled_(simultaneous_open_enabled) {}
 
     [[nodiscard]] asio::awaitable<common::Result<P2pHostUpgrade>> run() {
+        if (auto configured = configure_tls_context(direct_tls_context_); !configured) {
+            close_tls_stream(relay_stream_);
+            co_return common::Result<P2pHostUpgrade>::failure(configured.error());
+        }
         completion_.expires_at(std::chrono::steady_clock::time_point::max());
         timer_.expires_after(timeout_);
         auto self = shared_from_this();
@@ -777,6 +781,13 @@ connect_p2p_upgrade(asio::ip::tcp::socket bootstrap_socket,
         co_return common::Result<P2pPeerUpgrade>::failure(common::ErrorCode::invalid_argument,
                                                           "P2P peer options are invalid");
     }
+    std::optional<asio::ssl::context> direct_tls_context;
+    if (direct_enabled) {
+        direct_tls_context.emplace(asio::ssl::context::tlsv13_client);
+        if (auto configured = configure_tls_context(*direct_tls_context); !configured) {
+            co_return common::Result<P2pPeerUpgrade>::failure(configured.error());
+        }
+    }
     auto bootstrap = std::make_shared<asio::ip::tcp::socket>(std::move(bootstrap_socket));
     auto direct = std::make_shared<asio::ip::tcp::socket>(bootstrap->get_executor());
     asio::steady_timer negotiation_timer{bootstrap->get_executor()};
@@ -826,9 +837,8 @@ connect_p2p_upgrade(asio::ip::tcp::socket bootstrap_socket,
             std::copy(offer->token.begin(), offer->token.end(),
                       handshake.begin() + static_cast<std::ptrdiff_t>(kDirectMagic.size()));
             if (co_await write_exact(*direct, handshake.data(), handshake.size())) {
-                asio::ssl::context direct_tls_context{asio::ssl::context::tlsv13_client};
                 auto direct_stream =
-                    std::make_shared<TlsStream>(std::move(*direct), direct_tls_context);
+                    std::make_shared<TlsStream>(std::move(*direct), *direct_tls_context);
                 configure_direct_tls(*direct_stream, offer->token, false);
                 asio::error_code handshake_error;
                 co_await direct_stream->async_handshake(
@@ -928,9 +938,8 @@ connect_p2p_upgrade(asio::ip::tcp::socket bootstrap_socket,
                               handshake.begin() +
                                   static_cast<std::ptrdiff_t>(kDirectMagic.size()));
                     if (co_await write_exact(*so, handshake.data(), handshake.size())) {
-                        asio::ssl::context direct_tls_context{asio::ssl::context::tlsv13_client};
                         auto direct_stream =
-                            std::make_shared<TlsStream>(std::move(*so), direct_tls_context);
+                            std::make_shared<TlsStream>(std::move(*so), *direct_tls_context);
                         configure_direct_tls(*direct_stream, offer->token, false);
                         asio::error_code handshake_error;
                         co_await direct_stream->async_handshake(

@@ -11,6 +11,7 @@
 
 #include <asio/buffer.hpp>
 #include <asio/co_spawn.hpp>
+#include <asio/error.hpp>
 #include <asio/io_context.hpp>
 #include <asio/ip/tcp.hpp>
 #include <asio/ip/udp.hpp>
@@ -118,6 +119,46 @@ TEST(DatagramTest, RejectsInvalidRelayInputsBeforeDoingIo) {
     ASSERT_TRUE(result.has_value());
     ASSERT_FALSE(*result);
     EXPECT_EQ(result->error().code(), common::ErrorCode::invalid_argument);
+}
+
+TEST(DatagramTest, RejectsOversizedWireLengthsBeforeReadingPayload) {
+    // Bypass the encoder: an untrusted peer can send any uint16 length,
+    // including the 28 values above the UDP payload limit.
+    for (const std::size_t length :
+         {kMaximumUdpPayloadSize + 1U, kMaximumDatagramRecordPayload}) {
+        SCOPED_TRACE(length);
+        asio::io_context io_context;
+        auto tcp_pair = connected_pair(io_context);
+        auto udp_pair = connected_udp_pair(io_context);
+        const std::array<std::uint8_t, kDatagramRecordHeaderSize> header{
+            static_cast<std::uint8_t>((length >> 8U) & 0xffU),
+            static_cast<std::uint8_t>(length & 0xffU)};
+        asio::write(tcp_pair.first, asio::buffer(header));
+        std::optional<common::Result<DatagramRelayStats>> result;
+
+        asio::co_spawn(
+            io_context,
+            [&]() -> asio::awaitable<void> {
+                result = co_await relay_tcp_and_udp(
+                    tcp_pair.second, udp_pair.second,
+                    {.inactivity_timeout = std::chrono::seconds{1}});
+            },
+            [](const std::exception_ptr& failure) { EXPECT_FALSE(failure); });
+        io_context.run();
+
+        ASSERT_TRUE(result.has_value());
+        ASSERT_FALSE(*result);
+        // A reader that waits for the omitted payload would time out instead.
+        EXPECT_EQ(result->error().code(), common::ErrorCode::connection_failed);
+        EXPECT_FALSE(tcp_pair.second.is_open());
+        EXPECT_FALSE(udp_pair.second.is_open());
+
+        udp_pair.first.non_blocking(true);
+        std::array<std::uint8_t, 1U> payload{};
+        asio::error_code error;
+        static_cast<void>(udp_pair.first.receive(asio::buffer(payload), 0, error));
+        EXPECT_EQ(error, asio::error::would_block);
+    }
 }
 
 TEST(DatagramTest, RejectsInvalidTcpRelayInputs) {

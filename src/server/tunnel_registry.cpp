@@ -64,10 +64,14 @@ inline constexpr std::size_t kMaximumTotalTunnels = 100'000U;
                                              "remote tunnel port is outside the allowlist");
     }
     asio::error_code error;
-    static_cast<void>(asio::ip::make_address(binding.bind_host, error));
+    const auto address = asio::ip::make_address(binding.bind_host, error);
     if (error) {
         return common::Result<void>::failure(common::ErrorCode::invalid_argument,
                                              "remote tunnel bind host must be numeric");
+    }
+    if (binding.mode == protocol::TunnelMode::socks5 && !address.is_loopback()) {
+        return common::Result<void>::failure(common::ErrorCode::permission_denied,
+                                             "SOCKS5 tunnels must bind a numeric loopback address");
     }
     return common::Result<void>::success();
 }

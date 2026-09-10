@@ -6,6 +6,24 @@ MiniTun 的所有重要变更都会记录在此文件中。本文档以
 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 的结构为基础，项目
 版本遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### 安全
+
+- 服务端在注册阶段强制 SOCKS5 仅绑定数值 loopback，拒绝绕过 daemon 的通配地址、
+  非 loopback IP 与主机名注册，防止暴露公网 no-auth 代理。
+- P2P direct context 复用统一 TLS 策略，显式固定套件并禁用压缩与重协商，且保持仅
+  TLS 1.3；一次性 token external PSK 认证与 relay 回退行为不变。
+- UDP record 解析在读取 payload 前拒绝大于 65,507 字节的长度声明，防止超长输入进入
+  固定大小缓冲区；回归覆盖 65,508 与 65,535 的 wire 长度。
+
+### 文档
+
+- 当前状态库说明同步至 schema v6，并补记 v1.1.0 的 `proxy_protocol` 迁移；保留
+  v1.0.0 的历史 schema v5 记录。
+- 统一 P2P direct 的 TLS 1.3 external PSK 与 TCP simultaneous open 说明，补齐三个
+  capability bits 及 `START_RELAY` 端点扩展的协商条件。
+
 ## [1.2.2] - 2026-09-09
 
 ### 新增
@@ -78,6 +96,13 @@ MiniTun 的所有重要变更都会记录在此文件中。本文档以
   v1.1.1+；旧 TCP wire image 不变）。
 
 ## [1.1.0] - 2026-08-15
+
+### 数据
+
+- 状态库升级至 schema v6，新增 `tunnels.proxy_protocol`。v5 自动迁移至 v6，v4 顺序
+  经 v5 迁移至 v6；迁移在同一事务中保留现有资源、配置与凭据引用，迁入 tunnel 的
+  PROXY protocol 默认关闭（`0`）。只支持 v4/v5 的旧程序不能打开 v6，回滚需恢复升级前
+  的 `state.db` / `credentials.db` 成对备份。
 
 ### 新增
 
@@ -160,8 +185,9 @@ MiniTun 的所有重要变更都会记录在此文件中。本文档以
 
 ### 安全边界
 
-- 当前 P2P 不实现 ICE、STUN、TURN 或 NAT 打洞；direct path 在一次性 token 认证后
-  升级为 TLS 1.3（token 作为外部 PSK），应用数据全程加密。
+- v1.0.0 的 P2P 不实现 ICE、STUN、TURN 或 NAT 打洞；direct path 仅使用一次性 token
+  验证候选连接，尚无传输加密。TLS 1.3 external PSK 加密与 TCP simultaneous open
+  自 v1.1.0 引入，详见对应版本条目。
 
 ### 移除
 

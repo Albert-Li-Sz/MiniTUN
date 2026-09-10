@@ -6,6 +6,26 @@ All notable changes to MiniTun are recorded in this file. This document is based
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) structure, and project versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+
+- The server enforces numeric loopback binds when registering SOCKS5 tunnels, rejecting
+  wildcard addresses, non-loopback IPs and hostnames even from clients bypassing the daemon,
+  preventing public no-auth proxy exposure.
+- P2P direct contexts reuse the shared TLS policy, explicitly pinning cipher suites and
+  disabling compression and renegotiation while remaining TLS 1.3-only. One-time token
+  external PSK authentication and relay fallback behavior are unchanged.
+- UDP record parsing rejects declared lengths above 65,507 bytes before reading the payload
+  into its fixed-size buffer; regression coverage includes wire lengths 65,508 and 65,535.
+
+### Documentation
+
+- Current state database descriptions now reflect schema v6, with the missing v1.1.0
+  `proxy_protocol` migration recorded while preserving the historical v1.0.0 schema v5 entry.
+- Aligns P2P direct TLS 1.3 external PSK and TCP simultaneous open descriptions, and documents
+  three missing capability bits and negotiation conditions for `START_RELAY` endpoint extensions.
+
 ## [1.2.2] - 2026-09-09
 
 ### Added
@@ -94,6 +114,14 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   wire images are unchanged).
 
 ## [1.1.0] - 2026-08-15
+
+### Data
+
+- The state database upgrades to schema v6, adding `tunnels.proxy_protocol`. v5 migrates
+  automatically to v6; v4 migrates through v5 to v6. One transaction preserves existing
+  resources, configuration and credential references, with PROXY protocol disabled (`0`)
+  for migrated tunnels. Older programs supporting only v4/v5 cannot open v6; rollback
+  requires restoring paired `state.db` / `credentials.db` backups from before the upgrade.
 
 ### Added
 
@@ -193,9 +221,10 @@ release records were deleted, and the public history restarts from this version.
 
 ### Security boundary
 
-- The current P2P does not implement ICE, STUN, TURN or NAT hole punching; the direct path
-  upgrades to TLS 1.3 after one-time token authentication (token as external PSK), so
-  application data is encrypted end to end.
+- P2P in v1.0.0 does not implement ICE, STUN, TURN or NAT hole punching; the direct path
+  only authenticates the candidate with a one-time token and has no transport encryption.
+  TLS 1.3 external PSK encryption and TCP simultaneous open were introduced in v1.1.0;
+  see that release's entry.
 
 ### Removed
 

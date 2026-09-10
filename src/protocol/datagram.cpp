@@ -112,6 +112,14 @@ class DatagramRelayOperation final
             }
             const std::size_t length =
                 (static_cast<std::size_t>(header[0]) << 8U) | static_cast<std::size_t>(header[1]);
+            // The field is 16 bits wide, so length can reach 65535 while the
+            // payload buffer below only holds kMaximumUdpPayloadSize bytes.
+            // Reading past that would overflow the array, so bound it here.
+            if (length > kMaximumUdpPayloadSize) {
+                finish_transport(asio::error::invalid_argument,
+                                 "UDP relay record length exceeds the protocol limit");
+                co_return;
+            }
             std::array<std::uint8_t, kMaximumUdpPayloadSize> payload{};
             if (length != 0U) {
                 const std::size_t payload_read =

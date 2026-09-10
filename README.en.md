@@ -39,8 +39,8 @@ Linux/systemd remains the officially supported runtime target.
   deletes apply-managed resources.
 - `tcp`, `udp`, `socks5`, `p2p` tunnel modes; non-TCP modes are negotiated via capability,
   keeping the old TCP v2 wire image unchanged.
-- schema v5 automatically migrates v4 data, preserving stable IDs, names, endpoints,
-  tunnels and the original credential references.
+- schema v6 automatically migrates v4/v5 data, adding `proxy_protocol` disabled by default
+  while preserving stable IDs, names, endpoints, tunnels and original credential references.
 - Both client and server can enable `/healthz`, `/readyz`, `/metrics`; metric labels are
   bounded and audit logs never record PSKs, certificate contents, authentication digests or
   user traffic.
@@ -71,7 +71,8 @@ bounded datagram framing over the authenticated Worker; SOCKS5 only accepts unau
 CONNECT; the P2P direct path authenticates with a one-time token and automatically falls
 back to the TLS relay on failure. The direct path upgrades to TLS 1.3 after one-time token
 authentication (token as external PSK), so application data is encrypted end to end. The
-current P2P does not include ICE/STUN/TURN/NAT hole punching.
+P2P implementation uses server-assisted TCP simultaneous open for dual-EIM-NAT
+traversal; it does not include ICE/STUN/TURN or UDP hole punching.
 
 ## Quick deployment
 
@@ -251,7 +252,7 @@ trusted network or behind a TLS reverse proxy. See the
 | Path | Purpose |
 | --- | --- |
 | `/run/minitun/minitun.sock` | Unix IPC between the CLI/SDK and the daemon |
-| `/var/lib/minitun/state.db` | schema v5 resource state and stable identity |
+| `/var/lib/minitun/state.db` | schema v6 resource state and stable identity |
 | `/var/lib/minitun/credentials.db` | daemon private credential database |
 | `/etc/minitun-server/server.crt` | server TLS certificate chain |
 | `/etc/minitun-server/server.key` | server TLS private key |

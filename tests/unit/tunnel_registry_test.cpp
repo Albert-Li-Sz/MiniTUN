@@ -270,6 +270,101 @@ TEST(TunnelRegistryTest, RejectsOutOfPolicyAndMalformedBindings) {
     EXPECT_FALSE(registry.register_tunnel({client_id, 1U, tunnel_id, "localhost", 6'000U}));
 }
 
+TEST(TunnelRegistryTest, RejectsSocks5BindingsOutsideNumericLoopback) {
+    asio::io_context io_context;
+    const std::uint16_t port = available_port(io_context);
+    auto allowed = common::PortRange::parse(std::to_string(port));
+    ASSERT_TRUE(allowed) << allowed.error();
+    TunnelRegistry registry{io_context.get_executor(), *allowed, 1U};
+    const std::string client_id = generated_id(common::IdKind::client);
+    const std::string tunnel_id = generated_id(common::IdKind::tunnel);
+
+    for (const auto* host :
+         {"0.0.0.0", "::", "192.0.2.1", "10.0.0.1", "2001:db8::1", "::ffff:127.0.0.1"}) {
+        SCOPED_TRACE(host);
+        const auto rejected = registry.register_tunnel(
+            {client_id, 1U, tunnel_id, host, port, 1U, protocol::TunnelMode::socks5});
+        ASSERT_FALSE(rejected);
+        EXPECT_EQ(rejected.error().code(), common::ErrorCode::permission_denied);
+        EXPECT_EQ(registry.size(), 0U);
+        EXPECT_EQ(registry.client_size(client_id), 0U);
+    }
+
+    const auto hostname = registry.register_tunnel(
+        {client_id, 1U, tunnel_id, "localhost", port, 1U, protocol::TunnelMode::socks5});
+    ASSERT_FALSE(hostname);
+    EXPECT_EQ(hostname.error().code(), common::ErrorCode::invalid_argument);
+    EXPECT_EQ(registry.size(), 0U);
+
+    asio::ip::tcp::acceptor probe{io_context, asio::ip::tcp::endpoint{asio::ip::tcp::v4(), port}};
+    EXPECT_TRUE(probe.is_open());
+}
+
+TEST(TunnelRegistryTest, KeepsLoopbackSocks5ListenerWhenReplacementIsRejected) {
+    asio::io_context io_context;
+    const std::uint16_t port = available_port(io_context);
+    auto allowed = common::PortRange::parse(std::to_string(port));
+    ASSERT_TRUE(allowed) << allowed.error();
+    TunnelRegistry registry{io_context.get_executor(), *allowed, 1U};
+    const std::string client_id = generated_id(common::IdKind::client);
+    const std::string tunnel_id = generated_id(common::IdKind::tunnel);
+    ASSERT_TRUE(registry.register_tunnel(
+        {client_id, 1U, tunnel_id, "127.0.0.1", port, 1U, protocol::TunnelMode::socks5}));
+
+    const auto rejected = registry.register_tunnel(
+        {client_id, 1U, tunnel_id, "0.0.0.0", port, 2U, protocol::TunnelMode::socks5});
+    ASSERT_FALSE(rejected);
+    EXPECT_EQ(rejected.error().code(), common::ErrorCode::permission_denied);
+    EXPECT_EQ(registry.size(), 1U);
+
+    asio::ip::tcp::socket public_socket{io_context};
+    asio::error_code error;
+    public_socket.connect({asio::ip::make_address("127.0.0.1"), port}, error);
+    EXPECT_FALSE(error) << error.message();
+}
+
+TEST(TunnelRegistryTest, AcceptsSocks5Ipv6LoopbackBinding) {
+    asio::io_context io_context;
+    const auto address = asio::ip::make_address("::1");
+    asio::ip::tcp::acceptor probe{io_context};
+    asio::error_code error;
+    probe.open(asio::ip::tcp::v6(), error);
+    if (!error) {
+        probe.bind({address, 0U}, error);
+    }
+    if (error) {
+        GTEST_SKIP() << "IPv6 loopback is unavailable: " << error.message();
+    }
+    const std::uint16_t port = probe.local_endpoint().port();
+    probe.close();
+    auto allowed = common::PortRange::parse(std::to_string(port));
+    ASSERT_TRUE(allowed) << allowed.error();
+    TunnelRegistry registry{io_context.get_executor(), *allowed, 1U};
+    ASSERT_TRUE(registry.register_tunnel({generated_id(common::IdKind::client), 1U,
+                                          generated_id(common::IdKind::tunnel), "::1", port, 1U,
+                                          protocol::TunnelMode::socks5}));
+
+    asio::ip::tcp::socket public_socket{io_context};
+    public_socket.connect({address, port}, error);
+    EXPECT_FALSE(error) << error.message();
+}
+
+TEST(TunnelRegistryTest, AllowsTcpWildcardBinding) {
+    asio::io_context io_context;
+    const std::uint16_t port = available_port(io_context);
+    auto allowed = common::PortRange::parse(std::to_string(port));
+    ASSERT_TRUE(allowed) << allowed.error();
+    TunnelRegistry registry{io_context.get_executor(), *allowed, 1U};
+    ASSERT_TRUE(registry.register_tunnel({generated_id(common::IdKind::client), 1U,
+                                          generated_id(common::IdKind::tunnel), "0.0.0.0", port, 1U,
+                                          protocol::TunnelMode::tcp}));
+
+    asio::ip::tcp::socket public_socket{io_context};
+    asio::error_code error;
+    public_socket.connect({asio::ip::make_address("127.0.0.1"), port}, error);
+    EXPECT_FALSE(error) << error.message();
+}
+
 TEST(TunnelRegistryTest, AcceptsConfiguredAndZeroUdpPeerSessionLimits) {
     asio::io_context io_context;
     auto allowed = common::PortRange::parse("6000-6001");

@@ -105,8 +105,10 @@ minitun-p2p tunnel.example.com:6003 --listen 127.0.0.1:6501
 `--remote-host` 是 server 侧的数值 bind address，默认 `0.0.0.0`。SOCKS5 强制使用
 loopback bind，只支持 no-auth `CONNECT`（IPv4、IPv6、domain），不支持 BIND 或 UDP
 ASSOCIATE。UDP 保留 datagram 边界，单个 payload 上限 65,507 字节。P2P 先尝试一次性
-token 认证的 direct TCP candidate，失败时自动回退到 TLS relay；它不提供
-ICE/STUN/TURN/NAT 打洞；direct path 经 TLS 1.3 PSK 加密。
+token 认证的 direct TCP candidate，再尝试 server 辅助的 TCP simultaneous open，失败时
+自动回退到 TLS relay。direct path 经 TLS 1.3 加密，token 用作外部 PSK。
+`--simultaneous-open` 默认开启；连接 v1.0 daemon 时需 `--no-simultaneous-open`。
+当前支持双 EIM NAT 的 TCP 打洞，不提供 ICE/STUN/TURN 或 UDP 打洞。
 
 修改公开端口时先撤销旧 listener，再注册新端口。新端口失败时资源保持新期望配置并
 显示 `failed`，旧入口不会继续存在。disable 保留记录并注销 listener；enable 后重新

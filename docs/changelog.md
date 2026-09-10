@@ -8,6 +8,13 @@ title: 变更日志
 [CHANGELOG.md](https://github.com/Albert-Li-Sz/MiniTUN/blob/main/CHANGELOG.md) 为准。
 这里保留官网常用的近期版本摘要，方便从文档站快速了解最新能力。
 
+## [Unreleased]
+
+- 服务端强制 SOCKS5 注册使用数值 loopback，直接发送注册的客户端也不能绕过校验。
+- P2P direct context 复用统一显式 TLS 策略，继续仅使用 TLS 1.3 和一次性 token external PSK。
+- UDP record 在读取 payload 前拒绝超过 65,507 字节的声明，并增加超长 wire record 回归。
+- 当前文档同步 schema v6、direct TLS 加密、TCP simultaneous open 与新增 capability 说明。
+
 ## [1.2.2] - 2026-09-09
 
 - 服务端启动时比较 `--max-total-connections` 与可见内存天花板，默认值放不下时输出警告，
@@ -43,6 +50,9 @@ title: 变更日志
 
 ## [1.1.0] - 2026-08-15
 
+- 状态库升级至 schema v6，新增默认关闭的 `tunnels.proxy_protocol`；v4/v5 数据自动在
+  事务中迁移至 v6，保留现有资源、配置与凭据引用。回滚需恢复升级前的成对备份。
+
 - tcp tunnel 支持 PROXY protocol v1 头（`--proxy-protocol`），旧版 peer 保持字节兼容。
 - `minitun-server` 新增 `/v1/*` 客户端策略管理 API（列表/创建/更新/删除/PSK 轮换），
   轮换带优雅窗口，旧会话不中断。
@@ -65,8 +75,9 @@ title: 变更日志
   占用，适合路由器、NAS 与边缘设备。
 
 ::: warning P2P 边界
-当前 P2P 不实现 ICE/STUN/TURN/NAT 打洞；direct path 经 TLS 1.3 PSK 加密；候选不可达时
-自动回退到认证 TLS relay。
+当前 P2P 支持 server 辅助的 TCP simultaneous open，不实现 ICE/STUN/TURN 或 UDP 打洞；
+direct path 经 TLS 1.3 加密，以一次性 token 作为外部 PSK；直连失败时自动回退到认证
+TLS relay。上述 TLS 升级与 TCP 打洞自 v1.1.0 引入，v1.2.0 补齐 NAT 候选观测地址。
 :::
 
 ::: tip 已发布

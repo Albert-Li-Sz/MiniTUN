@@ -20,7 +20,7 @@ features:
   - title: Secure transport
     details: TLS 1.2+ and Protocol v2; per-client PSK, optional certificate binding, port ACL, quotas, replay protection and authentication rate limiting.
   - title: Durable control plane
-    details: schema v5 stores stable identity, transport mode, configuration revision and ownership; a generation-scoped reconciler converges deterministically after disconnects and out-of-order responses.
+    details: schema v6 stores stable identity, transport mode, configuration revision and ownership; a generation-scoped reconciler converges deterministically after disconnects and out-of-order responses.
   - title: Multiple server sessions
     details: A single client daemon can connect to several public servers at once, with sessions, tunnels and worker pools isolated from one another.
   - title: Four data planes
@@ -98,7 +98,7 @@ For the complete command reference, JSON output and exit codes, see the [CLI doc
 - [Installation Guide](/en/installation): signature verification, DEB/RPM/OCI installation, source builds, first deployment and uninstall.
 - [Command Line Interface](/en/cli): lifecycle commands, PSK input, JSON output and exit codes.
 - [Configuration & Policies](/en/configuration): per-client policies and declarative resources.
-- [System Architecture](/en/architecture): schema v5, the reconciler, sessions, Workers and the multiple data planes.
+- [System Architecture](/en/architecture): schema v6, the reconciler, sessions, Workers and the multiple data planes.
 - [Remote Protocol v2](/en/protocol): capability negotiation, authentication, registration and data relay.
 - [SDK](/en/sdk): local-control C11/C++20 APIs and the Remote Protocol C++20 codec/decoder.
 - [Operations & Observability](/en/operations): admin endpoints, metrics, auditing and backups.

@@ -54,6 +54,11 @@ struct ClientTlsContextOptions final {
     std::string_view client_private_key_pem{};
 };
 
+/// Applies the shared cipher and transport policy without lowering a stricter
+/// minimum TLS version or changing the context's maximum version. Direct P2P
+/// contexts retain their TLS 1.3-only bounds.
+[[nodiscard]] common::Result<void> configure_tls_context(asio::ssl::context& context);
+
 [[nodiscard]] common::Result<std::shared_ptr<asio::ssl::context>>
 make_server_tls_context(const ServerTlsContextOptions& options);
 

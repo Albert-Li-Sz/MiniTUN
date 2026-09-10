@@ -20,7 +20,7 @@ the CLI and the local SDK.
 flowchart LR
     operator["Operator / Automation"] --> control["minitun / Local SDK"]
     control -->|"Unix IPC envelope v1"| daemon["minitund"]
-    daemon --> state[("state.db / schema v5")]
+    daemon --> state[("state.db / schema v6")]
     daemon --> secrets[("credentials.db")]
     daemon <-->|"TLS / Remote Protocol v2"| server["minitun-server"]
     public["Public TCP / UDP / SOCKS5 / P2P client"] --> server
@@ -53,9 +53,9 @@ parsing, listener ownership, quota, worker pool, state convergence, declarative 
 admin HTTP each live in separate modules. Network async paths never hold a database
 transaction across `co_await`.
 
-## schema v5 and credentials
+## schema v6 and credentials
 
-The `state.db` schema v5 contains:
+The `state.db` schema v6 contains:
 
 - `daemon_identity`: the `client_...` ID, stable across restarts;
 - `servers`: stable ID, optional unique name, endpoint, TLS server name, opaque credential
@@ -63,7 +63,7 @@ The `state.db` schema v5 contains:
   info, `config_revision` and `managed_by_config`;
 - `tunnels`: stable ID, optional name, immutable server ownership, `tcp`/`udp`/`socks5`/
   `p2p` mode, local endpoint, public bind host/port, desired/actual state, last sync time,
-  `config_revision` and `managed_by_config`;
+  `config_revision`, `managed_by_config` and `proxy_protocol` (disabled by default);
 - the sequential `schema_version` migration history and constraints/indexes.
 
 After opening a connection, WAL, foreign keys, synchronous mode, busy timeout, schema
@@ -71,12 +71,13 @@ definition, integrity and foreign keys are verified. Future schemas, drifted obj
 broken migration history or a non-empty database without a version all refuse to start and
 are never automatically deleted or rebuilt.
 
-Historical schema v4 (the v1.0 era) data is migrated to v5 by rebuilding the tunnel table
-in a transaction; existing tunnels default to `tcp` and the public bind host defaults to
-`0.0.0.0`. IDs, names, endpoints, tunnels and the original PSK references are preserved.
+Historical schema v4 data migrates through v5 to v6; v5 data migrates directly to v6.
+Migration rebuilds the tunnel table and restores its indexes in one transaction, preserving
+IDs, names, endpoints, modes, public bindings, revisions, ownership and original credential
+references. v6 adds `tunnels.proxy_protocol`, disabled (`0`) for every migrated tunnel.
 schema v1–v3 databases from the v0.x era are no longer supported; opening one is refused
-directly without modifying the file. Old programs cannot open schema v5; rolling back
-requires restoring the paired backups from before the upgrade.
+directly without modifying the file. Older programs that support only v4/v5 cannot open
+schema v6; rolling back requires restoring the paired backups from before the upgrade.
 
 Secrets live in a separate `credentials.db`; the state database only stores opaque
 references. Each class of server credential uses two bounded rotation slots: write the
@@ -203,10 +204,13 @@ All queues, peer sessions, records, handshakes and idle deadlines have explicit 
 half-close, reset, timeout and cancellation have deterministic resource-release paths; TLS
 session cache/resumption lowers the handshake cost of Worker reconnects.
 
-P2P direct suits LANs or routable addresses and does not implement ICE, STUN, TURN or NAT
-hole punching. The one-time token first authenticates the candidate connection, then both
-ends upgrade the socket to TLS 1.3 using the token as the external PSK; application data is
-encrypted throughout with no additional certificate infrastructure.
+P2P first tries a direct candidate on a LAN or routable address, then attempts negotiated
+server-assisted TCP simultaneous open, supporting dual-EIM-NAT traversal. It does not
+implement ICE, STUN, TURN or UDP hole punching. The one-time token first authenticates the
+candidate connection, then both ends upgrade the socket to TLS 1.3 using the token as the
+external PSK; application data is encrypted throughout with no additional certificate
+infrastructure. Direct contexts apply the same explicit cipher policy, compression and
+renegotiation restrictions, with the protocol version restricted to TLS 1.3.
 
 ## Admin endpoints and metrics
 
@@ -236,8 +240,8 @@ queues, frames, connections, tunnels and Workers all have explicit limits.
 
 ## Non-goals
 
-- No ICE/STUN/TURN/NAT hole punching; for a viable evolution path and acceptance criteria,
-  see the [NAT traversal design proposal](/en/design/nat-traversal);
+- No ICE/STUN/TURN or UDP hole punching; for the implemented TCP simultaneous open path
+  and remaining acceptance criteria, see [NAT traversal design and implementation](/en/design/nat-traversal);
 - No commitment to non-Linux runtimes; macOS is compile-tested only;
 - The SDK does not embed the daemon/server runtime; the Remote SDK only provides the
   protocol codec/decoder/helper;

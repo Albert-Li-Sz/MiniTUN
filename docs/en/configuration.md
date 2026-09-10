@@ -186,11 +186,14 @@ Tunnel field rules:
 | `local_port` | required for TCP, UDP, P2P; optional for SOCKS5. |
 | `remote_host` | optional; default `0.0.0.0` for TCP/UDP/P2P, default and only allowed as a numeric loopback for SOCKS5. |
 | `remote_port` | required, range 1..65535, and constrained by the server's `allowed_ports`. |
+| `proxy_protocol` | optional boolean, default `false`; only `tcp` may enable it to prepend a PROXY protocol v1 header to the local target connection. |
 
-SOCKS5 only implements no-auth CONNECT; confining it to the server loopback is a mandatory
-security boundary. P2P suits LANs or already-routable paths; it does not include
-ICE/STUN/TURN/NAT hole punching and the direct path adds no transport encryption on its
-own; a failed negotiation automatically falls back to the TLS relay.
+SOCKS5 only implements no-auth CONNECT; both the daemon and server enforce a numeric
+loopback bind. P2P first tries LANs or already-routable paths, then attempts negotiated
+server-assisted TCP simultaneous open, supporting dual-EIM-NAT traversal. It does not
+include ICE/STUN/TURN or UDP hole punching. After one-time token authentication, the direct
+path upgrades to TLS 1.3 using that token as an external PSK to encrypt application data;
+a failed direct connection automatically falls back to the TLS relay.
 
 Relative credential paths are resolved against the directory containing the config file.
 `plan` is fully read-only and actions are sorted by resource type and stable key:

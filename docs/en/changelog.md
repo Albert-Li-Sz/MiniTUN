@@ -9,6 +9,13 @@ The complete version history is governed by the
 repository root. This page keeps the recent-version summary used by the website, so you can
 quickly learn the latest capabilities from the docs site.
 
+## [Unreleased]
+
+- The server enforces numeric loopback SOCKS5 registration, including clients bypassing the daemon.
+- P2P direct contexts reuse the shared explicit TLS policy, retaining TLS 1.3 and one-time token external PSK.
+- UDP records reject declared payloads above 65,507 bytes before reading, with oversized wire-record regressions.
+- Current docs now reflect schema v6, direct TLS encryption, TCP simultaneous open and the added capabilities.
+
 ## [1.2.2] - 2026-09-09
 
 - Server startup compares `--max-total-connections` with the visible memory ceiling and warns
@@ -50,6 +57,10 @@ quickly learn the latest capabilities from the docs site.
 
 ## [1.1.0] - 2026-08-15
 
+- The state database upgrades to schema v6 with `tunnels.proxy_protocol` disabled by default.
+  v4/v5 data migrates transactionally to v6, preserving resources, configuration and credential
+  references; rollback requires restoring paired backups from before the upgrade.
+
 - tcp tunnels support PROXY protocol v1 headers (`--proxy-protocol`), staying
   byte-compatible with older peers.
 - `minitun-server` gains a `/v1/*` client policy management API (list/create/update/
@@ -77,9 +88,11 @@ quickly learn the latest capabilities from the docs site.
   devices and edge hardware.
 
 ::: warning P2P boundary
-The current P2P implementation does not do ICE/STUN/TURN/NAT hole punching; the direct
-path is encrypted via TLS 1.3 PSK; when a candidate is unreachable it automatically falls
-back to the authenticated TLS relay.
+Current P2P supports server-assisted TCP simultaneous open; ICE/STUN/TURN and UDP hole
+punching are not implemented. The direct path encrypts application data using TLS 1.3 with
+a one-time token as external PSK; failed direct connections fall back to the authenticated
+TLS relay. TLS upgrades and TCP hole punching were introduced in v1.1.0, with NAT candidate
+observed addresses added in v1.2.0.
 :::
 
 ::: tip Released

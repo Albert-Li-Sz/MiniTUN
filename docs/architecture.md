@@ -16,7 +16,7 @@ MiniTun 聚焦最小资源占用：不提供 Web GUI，控制面只有 CLI 与�
 flowchart LR
     operator["操作者 / 自动化"] --> control["minitun / Local SDK"]
     control -->|"Unix IPC envelope v1"| daemon["minitund"]
-    daemon --> state[("state.db / schema v5")]
+    daemon --> state[("state.db / schema v6")]
     daemon --> secrets[("credentials.db")]
     daemon <-->|"TLS / Remote Protocol v2"| server["minitun-server"]
     public["公网 TCP / UDP / SOCKS5 / P2P 客户端"] --> server
@@ -47,9 +47,9 @@ CLI 与 SDK 不直接打开数据库；server 不知道本地目标地址。只�
 quota、worker pool、状态收敛、声明式配置和 admin HTTP 已分别位于独立模块中。网络异步
 路径不跨 `co_await` 持有数据库事务。
 
-## schema v5 与凭据
+## schema v6 与凭据
 
-`state.db` 的 schema v5 包含：
+`state.db` 的 schema v6 包含：
 
 - `daemon_identity`：跨重启稳定的 `client_...` ID；
 - `servers`：稳定 ID、可选唯一名称、endpoint、TLS server name、PSK/CA/client cert/key
@@ -57,17 +57,18 @@ quota、worker pool、状态收敛、声明式配置和 admin HTTP 已分别位�
   `config_revision` 和 `managed_by_config`；
 - `tunnels`：稳定 ID、可选名称、不可变 server 归属、`tcp`/`udp`/`socks5`/`p2p`
   mode、本地 endpoint、公开 bind host/port、desired/actual state、最后同步时间、
-  `config_revision` 和 `managed_by_config`；
+  `config_revision`、`managed_by_config` 和默认关闭的 `proxy_protocol`；
 - 连续的 `schema_version` 迁移历史和约束/索引。
 
 打开连接后强制验证 WAL、foreign keys、同步模式、busy timeout、schema 定义、完整性和
 外键。未来 schema、漂移对象、断裂迁移历史或无版本的非空数据库都会拒绝启动，不会被
 自动删除或重建。
 
-历史 schema v4（v1.0 时代）数据会以事务重建 tunnel 表并迁移到 v5，原有
-tunnel 默认为 `tcp`、公开 bind host 默认为 `0.0.0.0`。ID、名称、endpoint、tunnel 和
-原 PSK 引用保持不变。v0.x 时代的 schema v1–v3 数据库不再支持，打开会直接拒绝且
-不修改原文件。旧程序不能打开 schema v5；回滚必须恢复升级前的成对备份。
+历史 schema v4 数据会顺序经 v5 迁移到 v6；v5 数据直接迁移到 v6。迁移在同一事务中
+重建 tunnel 表并恢复索引，保留 ID、名称、endpoint、mode、公开绑定、revision、ownership
+和原凭据引用。v6 新增 `tunnels.proxy_protocol`，所有迁入 tunnel 默认为关闭（`0`）。
+v0.x 时代的 schema v1–v3 数据库不再支持，打开会直接拒绝且不修改原文件。只支持
+v4/v5 的旧程序不能打开 schema v6；回滚必须恢复升级前的成对备份。
 
 秘密位于独立 `credentials.db`，状态库只保存不透明引用。每类 server 凭据使用两个有界
 轮换槽：先写非活动槽，再在状态事务中切换引用，最后清理旧槽。失败会清理暂存项；启动
@@ -172,9 +173,11 @@ quota lease 后才等待 Worker。
 超时与取消具有确定性资源释放路径；TLS session cache/resumption 减少 Worker 重连握手
 成本。
 
-P2P direct 适用于 LAN 或可路由地址，不实现 ICE、STUN、TURN 或 NAT 打洞。一次性 token
-先验证候选连接，随后两端把 socket 升级为 TLS 1.3，以 token 作为外部 PSK；应用数据
-全程加密，无需额外证书基础设施。
+P2P 先尝试 LAN 或可路由地址的 direct candidate，再按协商结果尝试 server 辅助的
+TCP simultaneous open，支持双 EIM NAT 穿透；不实现 ICE、STUN、TURN 或 UDP 打洞。
+一次性 token 先验证候选连接，随后两端把 socket 升级为 TLS 1.3，以 token 作为外部
+PSK；应用数据全程加密，无需额外证书基础设施。direct context 使用同一套显式 TLS
+套件及禁压缩、禁重协商策略，并将协议版本限制为 TLS 1.3。
 
 ## 管理端点与指标
 
@@ -200,8 +203,8 @@ SIGHUP 在 server 侧完整重读 TLS 和 client policy；在 daemon 侧触发�
 
 ## 非目标
 
-- 不提供 ICE/STUN/TURN/NAT 打洞；可行的演进路径与验收标准见
-  [NAT 打洞设计提案](design/nat-traversal.md)；
+- 不提供 ICE/STUN/TURN 或 UDP 打洞；已实现的 TCP simultaneous open 与剩余验收标准见
+  [NAT 打洞设计与实现](design/nat-traversal.md)；
 - 不承诺非 Linux 运行时；macOS 仅做编译测试；
 - SDK 不嵌入 daemon/server 运行时；Remote SDK 只提供协议 codec/decoder/helper；
 - 默认不支持 multiplexed relay；可选性能验证可为后续是否启用提供工程依据。

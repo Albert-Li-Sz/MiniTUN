@@ -20,7 +20,7 @@ features:
   - title: 安全传输
     details: TLS 1.2+ 与 Protocol v2；每客户端 PSK、可选证书绑定、端口 ACL、配额、重放防护与认证限速。
   - title: 持久控制面
-    details: schema v5 保存稳定身份、transport mode、配置 revision 和 ownership；generation-scoped reconciler 在断线与乱序响应后确定性收敛。
+    details: schema v6 保存稳定身份、transport mode、配置 revision 和 ownership；generation-scoped reconciler 在断线与乱序响应后确定性收敛。
   - title: 多服务器会话
     details: 一个客户端守护进程可同时连接多个公网服务器，会话、隧道与 Worker Pool 相互隔离。
   - title: 四种数据面
@@ -95,7 +95,7 @@ minitun-p2p tunnel.example.com:6003 --listen 127.0.0.1:6501
 - [安装指南](/installation)：校验签名、DEB/RPM/OCI 安装、源码构建、首次部署与卸载。
 - [命令行界面](/cli)：生命周期命令、PSK 输入、JSON 输出与退出码。
 - [配置与策略](/configuration)：每客户端策略和声明式资源。
-- [系统架构](/architecture)：schema v5、reconciler、session、Worker 与多种数据面。
+- [系统架构](/architecture)：schema v6、reconciler、session、Worker 与多种数据面。
 - [Remote Protocol v2](/protocol)：能力协商、认证、注册与数据中继。
 - [SDK](/sdk)：本地控制 C11/C++20 API 与 Remote Protocol C++20 codec/decoder。
 - [运维与可观测性](/operations)：管理端点、指标、审计和备份。

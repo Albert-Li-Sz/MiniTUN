@@ -112,8 +112,10 @@ minitun-p2p tunnel.example.com:6003 --listen 127.0.0.1:6501
 enforces a loopback bind and only supports no-auth `CONNECT` (IPv4, IPv6, domain); it does
 not support BIND or UDP ASSOCIATE. UDP preserves datagram boundaries, with a single payload
 limit of 65,507 bytes. P2P first tries a direct TCP candidate authenticated by a one-time
-token, and automatically falls back to the TLS relay on failure; it provides no
-ICE/STUN/TURN/NAT hole punching; the direct path is encrypted via TLS 1.3 PSK.
+token, then server-assisted TCP simultaneous open, and automatically falls back to the TLS
+relay on failure. The direct path uses TLS 1.3 encryption with the token as an external PSK.
+`--simultaneous-open` defaults on; use `--no-simultaneous-open` with v1.0 daemons.
+TCP hole punching supports dual EIM NAT; ICE/STUN/TURN and UDP hole punching are not provided.
 
 When changing the public port, the old listener is revoked before the new port is
 registered. If the new port fails, the resource keeps the new desired configuration and
