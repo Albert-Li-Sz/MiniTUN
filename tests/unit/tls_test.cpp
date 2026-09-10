@@ -55,6 +55,10 @@ TEST(TlsTest, SharedPolicyPinsCiphersAndPreservesTls13OnlyContexts) {
         SCOPED_TRACE(static_cast<int>(method));
         asio::ssl::context context{method};
         auto* native = context.native_handle();
+        // Distribution crypto policies may set version bounds even for
+        // generic contexts. Preserve the maximum and any stricter minimum.
+        const auto initial_minimum = SSL_CTX_get_min_proto_version(native);
+        const auto initial_maximum = SSL_CTX_get_max_proto_version(native);
         const bool direct = method == asio::ssl::context::tlsv13_client ||
                             method == asio::ssl::context::tlsv13_server;
         // Start from a policy that includes ciphers explicitly excluded by
@@ -65,8 +69,12 @@ TEST(TlsTest, SharedPolicyPinsCiphersAndPreservesTls13OnlyContexts) {
         const auto configured = configure_tls_context(context);
         ASSERT_TRUE(configured) << configured.error();
         EXPECT_EQ(SSL_CTX_get_min_proto_version(native),
-                  direct ? TLS1_3_VERSION : TLS1_2_VERSION);
-        EXPECT_EQ(SSL_CTX_get_max_proto_version(native), direct ? TLS1_3_VERSION : 0);
+                  initial_minimum > TLS1_2_VERSION ? initial_minimum : TLS1_2_VERSION);
+        EXPECT_EQ(SSL_CTX_get_max_proto_version(native), initial_maximum);
+        if (direct) {
+            EXPECT_EQ(SSL_CTX_get_min_proto_version(native), TLS1_3_VERSION);
+            EXPECT_EQ(SSL_CTX_get_max_proto_version(native), TLS1_3_VERSION);
+        }
         const auto options = SSL_CTX_get_options(native);
         EXPECT_NE(options & SSL_OP_NO_COMPRESSION, 0U);
         EXPECT_NE(options & SSL_OP_NO_RENEGOTIATION, 0U);
